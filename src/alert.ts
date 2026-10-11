@@ -1,6 +1,7 @@
-// "DEA 高位 + DIFF 多头" 监控告警
+// "周K>0 + 1m DEA 高位 + 1m DIFF 多头" 监控告警
 //
 // 判定规则：
+//   - 周K > 0: row.weekChangePercent > 0
 //   - DEA 高位: row.high === true （DEA ≥ HIGH_RATIO × 窗口峰值，且 DEA > 0）
 //   - DIFF 多头: row.bullish === true （DIF ≥ DEA — 面板 DIFF 列「多头」）
 //
@@ -34,12 +35,13 @@ export function formatStreak(count: number, dir: "up" | "down" | null): string {
   return `${count}连${name}`;
 }
 
-/** 筛选满足「DEA 高位 + DIFF 多头」的币种及连数详情（保留原榜单顺序并去重） */
+/** 筛选满足「周K > 0 + 1m DEA 高位 + 1m DIFF 多头」的币种及连数详情（保留原榜单顺序并去重） */
 export function pickHighBullItems(rows: Row[]): AlertSymbolItem[] {
   const hit = new Set<string>();
   const items: AlertSymbolItem[] = [];
   for (const r of rows) {
-    if (r.high === true && r.bullish === true && !hit.has(r.symbol)) {
+    const isWeekPositive = r.weekChangePercent != null && r.weekChangePercent > 0;
+    if (r.high === true && r.bullish === true && isWeekPositive && !hit.has(r.symbol)) {
       hit.add(r.symbol);
       items.push({
         symbol: r.symbol,
@@ -51,7 +53,7 @@ export function pickHighBullItems(rows: Row[]): AlertSymbolItem[] {
   return items;
 }
 
-/** 筛选满足「DEA 高位 + DIFF 多头」的币种列表（保留原榜单顺序并去重） */
+/** 筛选满足「周K > 0 + 1m DEA 高位 + 1m DIFF 多头」的币种列表（保留原榜单顺序并去重） */
 export function pickHighBull(rows: Row[]): string[] {
   return pickHighBullItems(rows).map((i) => i.symbol);
 }

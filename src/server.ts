@@ -4,7 +4,7 @@
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fetch24hTickers, pickTops, fetch1mCandles, type Ticker24h, type TickerTops } from "./binance.ts";
+import { fetch24hTickers, pickTops, fetch1mCandles, fetchWeeklyOpen, type Ticker24h, type TickerTops } from "./binance.ts";
 import { analyzeMacd, consecutiveStreak } from "./macd.ts";
 import { TelegramAlerter } from "./alert.ts";
 import { telegramConfigured } from "./telegram.ts";
@@ -36,7 +36,10 @@ async function buildRows(group: Ticker24h[]): Promise<Row[]> {
     while (queue.length) {
       const t = queue.shift()!;
       try {
-        const candles = await fetch1mCandles(t.symbol, KLINE_LIMIT);
+        const [candles, weekOpen] = await Promise.all([
+          fetch1mCandles(t.symbol, KLINE_LIMIT),
+          fetchWeeklyOpen(t.symbol),
+        ]);
         const sig = analyzeMacd(candles.map((c) => c.close), {
           highRatio: HIGH_RATIO,
           highWindow: HIGH_WINDOW,
@@ -50,6 +53,10 @@ async function buildRows(group: Ticker24h[]): Promise<Row[]> {
               : sig.dea >= 0
                 ? "mid"
                 : "low";
+        const weekChangePercent =
+          weekOpen != null && weekOpen > 0
+            ? ((t.lastPrice - weekOpen) / weekOpen) * 100
+            : null;
         rows.push({
           ...t,
           state: sig?.state ?? "n/a",
@@ -58,6 +65,7 @@ async function buildRows(group: Ticker24h[]): Promise<Row[]> {
           high: sig ? sig.highPosition : null,
           dea: sig?.dea ?? null,
           deaLevel,
+          weekChangePercent,
           streakCount: streak.count,
           streakDir: streak.direction,
         });
@@ -70,6 +78,7 @@ async function buildRows(group: Ticker24h[]): Promise<Row[]> {
           high: null,
           dea: null,
           deaLevel: null,
+          weekChangePercent: null,
           streakCount: 0,
           streakDir: null,
         });

@@ -14,7 +14,7 @@ interface GroupSectionProps {
 // Sortable columns. Each header maps to a key whose value is extracted from a
 // row via sortValue below. The change column's value depends on the group's
 // changeKey (priceChangePercent for gainers/losers, quoteVolume for volume).
-type SortKey = "symbol" | "change" | "lastPrice" | "streak" | "high" | "bullish";
+type SortKey = "symbol" | "change" | "weekChange" | "lastPrice" | "streak" | "high" | "bullish";
 type SortDir = "asc" | "desc";
 
 export function GroupSection({
@@ -37,7 +37,8 @@ export function GroupSection({
   const cols: { key: SortKey; label: string }[] = [
     { key: "symbol", label: "币种" },
     { key: "change", label: changeHeader },
-    { key: "streak", label: "连阳/连阴" },
+    { key: "weekChange", label: "周K" },
+    { key: "streak", label: "连续" },
     { key: "high", label: "DEA" },
     { key: "bullish", label: "DIFF" },
   ];
@@ -62,6 +63,8 @@ export function GroupSection({
         return r.symbol;
       case "change":
         return changeLabel(r);
+      case "weekChange":
+        return r.weekChangePercent ?? null;
       case "lastPrice":
         return r.lastPrice;
       case "streak":

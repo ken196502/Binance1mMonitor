@@ -112,3 +112,25 @@ export async function fetch1mCandles(symbol: string, limit = 100): Promise<Candl
     volume: +d[5],
   }));
 }
+
+const weeklyOpenCache = new Map<string, { open: number; closeTime: number }>();
+
+/** 获取当前周 K 线的开盘价（按周缓存直至该根周 K 收盘，开盘价全周不变） */
+export async function fetchWeeklyOpen(symbol: string): Promise<number | null> {
+  const cached = weeklyOpenCache.get(symbol);
+  if (cached && Date.now() < cached.closeTime) {
+    return cached.open;
+  }
+  try {
+    const r = await binanceFetch(`/fapi/v1/klines?symbol=${symbol}&interval=1w&limit=1`);
+    if (!r.ok) return cached ? cached.open : null;
+    const data = (await r.json()) as any[];
+    if (!data || data.length === 0) return null;
+    const open = parseFloat(data[0][1]);
+    const closeTime = Number(data[0][6]);
+    weeklyOpenCache.set(symbol, { open, closeTime });
+    return open;
+  } catch {
+    return cached ? cached.open : null;
+  }
+}

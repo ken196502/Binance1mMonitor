@@ -25,6 +25,9 @@ export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
         </a>
       </td>
       <td className={colClass(changeLabel)}>{isPercentage ? pct(changeLabel) : fmt(changeLabel, 2)}</td>
+      <td className={row.weekChangePercent == null ? "muted" : colClass(row.weekChangePercent)}>
+        {pct(row.weekChangePercent)}
+      </td>
       {row.streakDir && row.streakCount > 0 ? (
         <td className={row.streakDir === "up" ? "pos" : "neg"}>
           {row.streakCount}

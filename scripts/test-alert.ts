@@ -55,6 +55,7 @@ function row(
   symbol?: string,
   streakCount = 0,
   streakDir: "up" | "down" | null = null,
+  weekChangePercent: number | null = 1.5,
 ): Row {
   return {
     symbol: symbol ?? `SYM${++n}`,
@@ -65,6 +66,7 @@ function row(
     alert: false,
     bullish,
     high,
+    weekChangePercent,
     streakCount,
     streakDir,
   };
@@ -80,14 +82,17 @@ assert.equal(formatStreak(0, "up"), "");
 assert.equal(formatStreak(3, null), "");
 console.log("0. formatStreak 阳阴连数文案 ✓");
 
-// --- 1. pickHighBull: filter high === true && bullish === true -----------------
+// --- 1. pickHighBull: filter high === true && bullish === true && weekChangePercent > 0 --
 const testList = [
-  row(true, true, "BULL1", 4, "up"),   // match
-  row(true, false, "BEAR1"),  // no
-  row(false, true, "LOW1"),   // no
-  row(false, false, "NONE"),  // no
-  row(true, true, "BULL2", 2, "down"), // match
-  row(true, true, "BULL1"),   // dupe
+  row(true, true, "BULL1", 4, "up", 2.5),   // match (week > 0)
+  row(true, false, "BEAR1", 0, null, 3.0),  // no (not bullish)
+  row(false, true, "LOW1", 0, null, 1.0),   // no (not high)
+  row(false, false, "NONE", 0, null, 0.5),  // no
+  row(true, true, "NEG_WEEK", 2, "up", -1.2), // no (week <= 0)
+  row(true, true, "ZERO_WEEK", 2, "up", 0),  // no (week == 0)
+  row(true, true, "NULL_WEEK", 2, "up", null), // no (week is null)
+  row(true, true, "BULL2", 2, "down", 0.8), // match
+  row(true, true, "BULL1", 4, "up", 2.5),   // dupe
 ];
 assert.deepEqual(pickHighBull(testList), ["BULL1", "BULL2"]);
 const items = pickHighBullItems(testList);
@@ -95,7 +100,7 @@ assert.equal(items.length, 2);
 assert.equal(items[0].symbol, "BULL1");
 assert.equal(items[0].streakCount, 4);
 assert.equal(items[0].streakDir, "up");
-console.log("1. pickHighBull + pickHighBullItems filter + dedupe ✓");
+console.log("1. pickHighBull + pickHighBullItems filter (周K>0 + DEA高位 + DIFF多头) + dedupe ✓");
 
 // --- 2. below threshold on all 3 boards (< 3) → no alert ---------------------
 const a = new TelegramAlerter();

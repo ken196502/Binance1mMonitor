@@ -13,6 +13,7 @@ export interface Row extends Ticker24h {
   high: boolean | null; // DEA at/near window peak → 高位; null when data is missing
   dea?: number | null;
   deaLevel?: "high" | "mid" | "low" | null; // 高位 / 中 (DEA≥0) / 低 (DEA<0)
+  weekChangePercent?: number | null; // 周K涨跌幅度%
   streakCount: number;
   streakDir: "up" | "down" | null;
 }
