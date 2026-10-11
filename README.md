@@ -2,6 +2,25 @@
 
 监控 Binance **u本位永续合约（USDM Futures）** 24h **涨幅前十 / 跌幅前十 / 成交额前十** 的 **1 分钟 MACD** 是否出现**高位死叉**，命中则高亮显示。
 
+## 独立 CLI 做空策略研究
+
+研究通过 CLI 单独运行，与监控服务、页面和 Telegram 无依赖。当前重点是 **gainers 涨幅榜：1m DEA 高位 + DIF ≥ DEA 直接做空，小止损、大止盈，不要求死叉**。全市场 USDT 永续小时数据用于重建每个历史整点的 24h 涨幅榜，分钟数据用于信号和成交回测。
+
+```bash
+# 首次获取全市场小时数据（已有缓存可复用）
+npm run research -- fetch --data data/hourly
+
+# 先研究一个完整 UTC 日；官方历史归档可用于公共 API 无法访问时
+npm run research -- gainers --data data/research/hourly-initial --end 2026-10-11 --days 1 --minute-source archive --minutes-data data/research/gainers-1m-archive-1day --out reports/gainers-day1
+
+# 缓存完成后离线重放（报告使用新目录）
+npm run research -- gainers --data data/research/hourly-initial --end 2026-10-11 --days 1 --minutes-data data/research/gainers-1m-archive-1day --offline --out reports/gainers-day1-replay
+```
+
+输出 `report.md`、`result.json`、`trials.csv`、`test-trades.csv`、`board-history.csv`。默认 3 轮 × 20 组，止损 0.2/0.3/0.5%，止盈 1.5/2/3/5%；按时间使用 60% 训练、20% 验证、20% 最终测试。原三榜小时级实验仍可通过 `backtest --board all` 复现。
+
+完整参数、收益计算和数据边界见 [research/README.md](research/README.md)。当前合约池不包含已退市币种，报告会注明历史覆盖与存活偏差。
+
 ## 高位死叉定义
 
 - **死叉**：最近一根已收盘 1m K 线上，MACD 的 DIF 下穿 DEA（前一根 `DIF ≥ DEA`，当前 `DIF < DEA`）。
@@ -118,6 +137,7 @@ src/
   telegram.ts  # Telegram Bot API 发送（走全局代理）
   alert.ts     # 「DEA 高位 + DIFF 空头」计数 + 边沿触发 Telegram 告警状态机
   server.ts    # 本地 HTTP 服务 + 托管 web/dist 静态资源 + /api/status
+research/      # 独立 CLI：小时数据、历史三榜、多轮参数回测与报告
 web/           # React 前端（Vite + TypeScript）
   src/
     App.tsx          # 面板布局：header / 窄屏 tab / 三个榜单
@@ -126,5 +146,7 @@ web/           # React 前端（Vite + TypeScript）
     hooks/useStatus.ts  # 每 5s 轮询 /api/status
     lib/format.ts    # fmt / pct / colClass
 ```
+
+开发验证：`npm run typecheck`、`npm test`、`npm run build`。测试使用本地模拟数据与模拟 Telegram 服务，不请求真实通知服务。
 
 > 仅用于研究/观察，不构成交易建议。MACD 1m 信号噪声大，高位死叉需结合其他条件判断。

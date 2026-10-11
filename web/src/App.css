@@ -89,6 +89,15 @@ th .sort-th.active .arrow { color: var(--amber); opacity: 1; }
 td:first-child, th:first-child { text-align: left; }
 tbody tr.alert { background: var(--alert-bg); }
 tbody tr.alert td:first-child { box-shadow: inset 3px 0 0 var(--alert-border); }
+tbody tr.high-bull {
+  background: rgba(0, 255, 255, 0.12);
+}
+tbody tr.high-bull td:first-child {
+  box-shadow: inset 3px 0 0 rgba(0, 255, 255, 0.7);
+}
+tbody tr.alert.high-bull {
+  background: linear-gradient(90deg, rgba(241, 196, 15, 0.18), rgba(0, 255, 255, 0.12));
+}
 .pos { color: var(--green); }
 .neg { color: var(--red); }
 .muted { color: var(--muted); }

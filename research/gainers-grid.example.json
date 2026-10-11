@@ -1,0 +1,6 @@
+{
+  "highRatio": [0.8],
+  "holdMinutes": [15, 30, 60, 120, 240],
+  "stopLossPercent": [0.2, 0.3, 0.5],
+  "takeProfitPercent": [1.5, 2, 3, 5]
+}

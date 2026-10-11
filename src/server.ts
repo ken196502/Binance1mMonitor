@@ -106,7 +106,6 @@ async function refresh(): Promise<Status> {
     const details = [
       highBull.gainers.triggered ? `涨幅榜(${highBull.gainers.count})` : "",
       highBull.losers.triggered ? `跌幅榜(${highBull.losers.count})` : "",
-      highBull.volume.triggered ? `成交额榜(${highBull.volume.count})` : "",
     ].filter(Boolean).join(", ");
     console.log(`[tg-alert] 命中阈值(≥${highBull.min}): ${details}`);
   }

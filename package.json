@@ -9,7 +9,10 @@
     "dev": "concurrently -k -n server,web -c green,cyan \"tsx watch --env-file-if-exists=.env src/server.ts\" \"npm --prefix web run dev\"",
     "dev:server": "tsx watch --env-file-if-exists=.env src/server.ts",
     "dev:web": "npm --prefix web run dev",
-    "build": "npm --prefix web run build"
+    "build": "npm --prefix web run build",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
+    "test": "tsx --test research/tests/*.test.ts && tsx scripts/test-alert.ts",
+    "research": "tsx --env-file-if-exists=.env research/cli.ts"
   },
   "dependencies": {
     "@esbuild/linux-arm64": "^0.28.2",
