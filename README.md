@@ -10,6 +10,32 @@
 
 > 只有当窗口内 DEA 曾达到正值峰值时才判定为"高位"，避免全程为负时把"最不低"的值误判为高位。
 
+## Telegram 计数告警（DEA 高位 + DIFF 多头）
+
+在面板高亮之外，后端还会进行**榜单告警判定**：
+
+当 **24h 涨幅榜、跌幅榜、成交额榜** 三个榜单中，**任意一个榜单**出现 **≥ `TG_ALERT_MIN`（默认 3）个**同时满足：
+
+- **DEA 高位**（`DEA ≥ HIGH_RATIO × 窗口峰值` 且 `DEA > 0`，与面板 DEA 列「高位」判定一致）；
+- **DIFF 多头**（`DIF ≥ DEA`，与面板 DIFF 列「多头」判定一致）。
+
+的币种时，发出 Telegram 通知：
+
+- **防骚扰**：首次达到阈值时发出通知。**持续命中期间不因数量变化而重复播报，避免频繁轰炸**；若全部榜单回落至阈值以下则重置状态，后续再次触发时重新通知。
+- **后台常驻监测**：服务端启动后自动常驻后台轮询（默认每 20s 刷新），即使没有打开浏览器也会持续监控并推送通知。
+- **发送重试**：发送失败不吞掉异常，控制台显式报错且状态机不推进，下轮刷新自动重试直到送达。
+- **代理支持**：Telegram 走与 Binance 相同的代理链路（`PROXY` / `HTTP(S)_PROXY`），墙内无需额外配置。
+
+启用步骤：
+
+```bash
+# 1. @BotFather 建 bot 拿 token；2. 给 bot 发条消息；3. 浏览器打开（走代理）:
+#    https://api.telegram.org/bot<TOKEN>/getUpdates  → 取 result[].message.chat.id
+# 4. 写入 .env:
+#    TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+#    TELEGRAM_CHAT_ID=123456789
+```
+
 MACD 参数：`12 / 26 / 9`，柱状值 `= 2 × (DIF − DEA)`（Binance 口径）。
 
 ## 运行
@@ -55,7 +81,13 @@ npm start              # 起后端，托管 web/dist 静态资源 + /api/status
 | `HIGH_WINDOW` | `100` | "高位"观察窗口（1m 根数） |
 | `BINANCE_BASE` | `https://fapi.binance.com` | 合约行情基址 |
 | `FALLBACK_BASE` | _(空)_ | 主基址网络不可达时自动重试的回退地址（仅对连接级失败生效，HTTP 错误如 429/451 不重试）。合约无公开镜像，默认空；仅在自建反代时设置 |
-| `PROXY` | _(空)_ | 本应用专用的代理地址（如 `http://127.0.0.1:7890`），**设置后强制走该代理**；未设置则回退到标准 `HTTPS_PROXY`/`HTTP_PROXY`（`NO_PROXY` 同样生效），都未设置则直连。由 undici `ProxyAgent`/`EnvHttpProxyAgent` 应用到所有 fetch |
+| `TELEGRAM_BOT_TOKEN` | _(空)_ | Telegram Bot Token（@BotFather 创建）。**不配则不推送**（启动与命中时都会显式警告，不静默） |
+| `TELEGRAM_CHAT_ID` | _(空)_ | 接收告警的 chat id（个人：向 @userinfobot 查询；群：把 bot 拉入后用 getUpdates 拿） |
+| `TELEGRAM_API_BASE` | `https://api.telegram.org` | Telegram Bot API 基址（自建反代时可改） |
+| `TG_ALERT_MIN` | `3` | Telegram 告警阈值：任意一个榜单出现 ≥ N 个「DEA 高位 + DIFF 多头」时推送 |
+| `TG_REPEAT_MINUTES` | `0` | 持续命中时的重发间隔（分钟），0 = 仅在首次触发时通知 |
+| `DASHBOARD_URL` | `https://macd.reluv.xyz` | Telegram 提醒中附带的面板链接地址 |
+| `PROXY` | _(空)_ | 本应用专用的代理地址（如 `http://127.0.0.1:7890`），**设置后强制走该代理**；未设置则回退到标准 `HTTPS_PROXY`/`HTTP_PROXY`（`NO_PROXY` 同样生效），都未设置则直连。由 undici `ProxyAgent`/`EnvHttpProxyAgent` 应用到所有 fetch（**含 Telegram API**） |
 
 示例：
 
@@ -80,9 +112,11 @@ npm start
 
 ```
 src/
-  types.ts     # 共享类型（Row / Status），server 与 web 都用，纯类型无副作用
+  types.ts     # 共享类型（Row / Status / HighBearSummary），server 与 web 都用，纯类型无副作用
   macd.ts      # EMA / MACD 计算 + 高位死叉判定
   binance.ts   # Binance REST 客户端（24h 行情 + 1m K 线）
+  telegram.ts  # Telegram Bot API 发送（走全局代理）
+  alert.ts     # 「DEA 高位 + DIFF 空头」计数 + 边沿触发 Telegram 告警状态机
   server.ts    # 本地 HTTP 服务 + 托管 web/dist 静态资源 + /api/status
 web/           # React 前端（Vite + TypeScript）
   src/

@@ -12,24 +12,26 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: "s1", label: "24h 涨幅前十" },
-  { id: "s2", label: "24h 跌幅前十" },
-  { id: "s3", label: "24h 成交额前十" },
+  { id: "s1", label: "涨幅前十" },
+  { id: "s2", label: "跌幅前十" },
+  { id: "s3", label: "成交额前十" },
 ];
 
 export default function App() {
-  const { status, error, lastFetchedAt } = useStatus();
+  const { status, error } = useStatus();
   const [active, setActive] = useState<TabId>("s1");
-  const [remaining, setRemaining] = useState(5);
+  const [remaining, setRemaining] = useState(60);
 
-  // Countdown ring: seconds since the last poll, ticking ~10×/s for smoothness.
+  // Countdown ring: seconds left until the current 1m candle closes (the
+  // wall-clock minute boundary). Driven off the clock, not lastFetchedAt, so it
+  // keeps ticking down correctly even if a poll failed or is in flight.
   useEffect(() => {
     const id = setInterval(() => {
-      const elapsed = (Date.now() - lastFetchedAt) / 1000;
-      setRemaining(Math.max(0, 5 - elapsed));
+      const secIntoMinute = (Date.now() / 1000) % 60;
+      setRemaining(Math.max(0, 60 - secIntoMinute));
     }, 100);
     return () => clearInterval(id);
-  }, [lastFetchedAt]);
+  }, []);
 
   // Dot colour mirrors the original: green = ok, red = API error, orange = fetch failed.
   let dotColor = "#2ecc71";
@@ -46,7 +48,7 @@ export default function App() {
         `更新于 ${new Date(status.at).toLocaleTimeString()}` +
         ` · 数据源 ${status.base}` +
         ` · 高位=DEA≥${status.highRatio}×窗口峰值(${status.highWindow}m)` +
-        ` · 每 5s 轮询`;
+        ` · 每分钟轮询（对齐1m收盘）`;
     }
   }
 
@@ -55,7 +57,7 @@ export default function App() {
       <header>
         <h1>
           Binance 1m Monitor
-          <Countdown remaining={remaining} total={5} />
+          <Countdown remaining={remaining} total={60} />
         </h1>
         <div className="meta">
           <span className="dot" style={{ background: dotColor }} />

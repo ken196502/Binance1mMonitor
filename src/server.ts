@@ -6,6 +6,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fetch24hTickers, pickTops, fetch1mCandles, type Ticker24h, type TickerTops } from "./binance.ts";
 import { analyzeMacd, consecutiveStreak } from "./macd.ts";
+import { TelegramAlerter } from "./alert.ts";
+import { telegramConfigured } from "./telegram.ts";
 import type { Row, Status } from "./types.ts";
 
 // Directory the built React frontend is emitted to (web/dist). In dev you run
@@ -18,8 +20,12 @@ const TOP_N = Number(process.env.TOP_N ?? 10);
 const REFRESH_TTL_MS = Number(process.env.REFRESH_TTL_MS ?? 20_000); // cache the snapshot for ~20s
 const KLINE_LIMIT = Number(process.env.KLINE_LIMIT ?? 100);
 // "High position" = current DEA is at/near the highest DEA in the window.
-const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.9); // within 90% of the window peak
+const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
 const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in 1m bars
+
+// Telegram alert: 当三个榜单任意一个出现 ≥ TG_ALERT_MIN 个「DEA高位 + DIFF多头」时发出通知。
+// 首次命中时通知，持续命中期间不因数量变化而重复播报。
+const alerter = new TelegramAlerter();
 
 let cache: { at: number; promise: Promise<Status> } | null = null;
 
@@ -36,12 +42,22 @@ async function buildRows(group: Ticker24h[]): Promise<Row[]> {
           highWindow: HIGH_WINDOW,
         });
         const streak = consecutiveStreak(candles);
+        const deaLevel =
+          sig == null
+            ? null
+            : sig.highPosition
+              ? "high"
+              : sig.dea >= 0
+                ? "mid"
+                : "low";
         rows.push({
           ...t,
           state: sig?.state ?? "n/a",
           alert: sig?.alert ?? false,
           bullish: sig ? !sig.deathCross : null,
           high: sig ? sig.highPosition : null,
+          dea: sig?.dea ?? null,
+          deaLevel,
           streakCount: streak.count,
           streakDir: streak.direction,
         });
@@ -52,6 +68,8 @@ async function buildRows(group: Ticker24h[]): Promise<Row[]> {
           alert: false,
           bullish: null,
           high: null,
+          dea: null,
+          deaLevel: null,
           streakCount: 0,
           streakDir: null,
         });
@@ -73,12 +91,24 @@ async function refresh(): Promise<Status> {
     buildRows(tops.losers),
     buildRows(tops.volume),
   ]);
+  // Telegram alert runs only on fresh snapshots (not cached polls).
+  const { summary: highBull } = await alerter.check({ gainers, losers, volume });
+  if (highBull.triggered) {
+    const details = [
+      highBull.gainers.triggered ? `涨幅榜(${highBull.gainers.count})` : "",
+      highBull.losers.triggered ? `跌幅榜(${highBull.losers.count})` : "",
+      highBull.volume.triggered ? `成交额榜(${highBull.volume.count})` : "",
+    ].filter(Boolean).join(", ");
+    console.log(`[tg-alert] 命中阈值(≥${highBull.min}): ${details}`);
+  }
   return {
     at: new Date().toISOString(),
     base,
     topN: TOP_N,
     highRatio: HIGH_RATIO,
     highWindow: HIGH_WINDOW,
+    highBull,
+    highBear: highBull,
     gainers,
     losers,
     volume,
@@ -101,6 +131,20 @@ async function getStatus(): Promise<Status> {
   }));
   cache = { at: now, promise };
   return promise;
+}
+
+// Background polling loop: keeps checking and alerting even if no browser client is connected.
+let isPolling = false;
+async function pollLoop() {
+  if (isPolling) return;
+  isPolling = true;
+  try {
+    await getStatus();
+  } catch (e) {
+    console.error("[monitor] 轮询异常:", e instanceof Error ? e.message : String(e));
+  } finally {
+    isPolling = false;
+  }
 }
 
 // MIME types for the static assets Vite emits. Anything not listed falls back
@@ -168,9 +212,27 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  const reqUrl = req.url ?? "/";
+  const u = new URL(reqUrl, `http://${req.headers.host ?? "localhost"}`);
+
+  if (u.pathname.startsWith("/go/") || (u.pathname === "/go" && u.searchParams.has("symbol"))) {
+    let symbol = "";
+    if (u.pathname.startsWith("/go/")) {
+      symbol = u.pathname.slice(4).split("/")[0].trim().toUpperCase();
+    } else {
+      symbol = (u.searchParams.get("symbol") ?? "").trim().toUpperCase();
+    }
+    symbol = symbol.replace(/[^A-Z0-9_]/g, "");
+    if (symbol) {
+      res.writeHead(302, { Location: `https://www.binance.com/zh-CN/futures/${symbol}` });
+      res.end();
+      return;
+    }
+  }
+
   // Static asset? Try web/dist first; if missing, fall back to the SPA shell so
   // client-side routes resolve. When the frontend isn't built, return a hint.
-  if (req.url && req.url !== "/" && (await serveStatic(req.url, res))) return;
+  if (reqUrl !== "/" && (await serveStatic(reqUrl, res))) return;
   const html = await getIndex();
   if (html == null) {
     res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
@@ -188,4 +250,11 @@ server.listen(PORT, () => {
     `base=${process.env.BINANCE_BASE ?? "https://fapi.binance.com"}  proxy=${proxy}  topN=${TOP_N}  ttl=${REFRESH_TTL_MS}ms  highRatio=${HIGH_RATIO}  highWindow=${HIGH_WINDOW}m`,
   );
   console.log(`前端: 开发用 \`npm run dev\`（Vite 开 :5173）；生产先 \`npm run build\` 再 \`npm start\`，由后端托管 web/dist`);
+  console.log(
+    `Telegram: ${telegramConfigured() ? "已配置" : "未配置（TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 缺失，命中不会推送）"}  阈值 TG_ALERT_MIN=${process.env.TG_ALERT_MIN ?? 3}  恢复通知 TG_SEND_RECOVERY=${process.env.TG_SEND_RECOVERY ?? "true"}`,
+  );
+
+  // 启动后台定时轮询检测
+  pollLoop();
+  setInterval(pollLoop, REFRESH_TTL_MS);
 });

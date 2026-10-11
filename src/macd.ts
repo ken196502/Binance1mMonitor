@@ -35,17 +35,21 @@ export interface Streak {
 }
 
 /**
- * Count consecutive same-direction 1m candles from the latest candle backward.
- * A candle is 阳 (up) when close > open, 阴 (down) when close < open. The run
- * restarts whenever the direction flips; a doji (close === open) breaks it.
- * Returns { count: 0, direction: null } when the latest candle is a doji.
+ * Count consecutive same-direction 1m candles from the latest *closed* candle
+ * backward. The last element of the kline array is the still-forming (未收盘)
+ * 1m candle, so it is excluded — its direction is not final and could flip
+ * before close. A candle is 阳 (up) when close > open, 阴 (down) when close <
+ * open. The run restarts whenever the direction flips; a doji (close === open)
+ * breaks it. Returns { count: 0, direction: null } when there is no closed
+ * candle yet or the latest closed candle is a doji.
  */
 export function consecutiveStreak(candles: Candle[]): Streak {
-  const last = candles[candles.length - 1];
+  // Skip the last candle: it is the in-progress 1m bar, not closed yet.
+  const last = candles[candles.length - 2];
   if (!last || last.close === last.open) return { count: 0, direction: null };
   const dir = last.close > last.open ? "up" : "down";
   let count = 0;
-  for (let i = candles.length - 1; i >= 0; i--) {
+  for (let i = candles.length - 2; i >= 0; i--) {
     const c = candles[i];
     const d = c.close > c.open ? "up" : c.close < c.open ? "down" : null;
     if (d !== dir) break;
@@ -65,7 +69,7 @@ export function computeMacd(closes: number[], fast = 12, slow = 26, signal = 9):
 
 export interface AnalyzeOptions {
   /** "High position" = current DEA is at/above this fraction of the highest DEA
-   *  observed in the window. e.g. 0.9 → within 90% of the recent high. */
+   *  observed in the window. e.g. 0.8 → within 80% of the recent high. */
   highRatio?: number;
   /** How many recent DEA values define the observation window (defaults to all). */
   highWindow?: number;
@@ -116,7 +120,7 @@ function alertArmed(dif: number[], dea: number[], opts: {
   };
   const highPosAt = (i: number): boolean => {
     const m = windowMaxAt(i);
-    return m > 0 && dea[i] >= highRatio * m;
+    return dea[i] > 0 && dea[i] >= highRatio * m;
   };
   let lastHighDeathIdx = -1;
   for (let i = warmup + 1; i < n; i++) {
@@ -136,7 +140,8 @@ function alertArmed(dif: number[], dea: number[], opts: {
  *
  * "High position" is defined per user spec: the current DEA is at or near the
  * highest DEA value within the observation window (highWindow, default = all
- * warmed-up values). "Near" = >= highRatio × max DEA in the window.
+ * warmed-up values), AND the current DEA is > 0 (above the zero axis). "Near" =
+ * >= highRatio × max DEA in the window.
  *
  * The alert is *persistent*: once a high-position death cross fires, the row
  * stays armed until the next golden cross (DIF crossing back above DEA), not
@@ -154,14 +159,15 @@ export function analyzeMacd(closes: number[], opts: AnalyzeOptions = {}): MacdSi
 
   // Skip the EMA warmup (slow + signal ≈ 35) so the window max reflects settled values.
   const warmup = 35;
-  const highRatio = opts.highRatio ?? 0.9;
+  const highRatio = opts.highRatio ?? 0.8;
   const window = opts.highWindow ?? Math.max(0, n - warmup);
   const start = Math.max(warmup, n - window);
   let maxDea = -Infinity;
   for (let i = start; i < n; i++) if (dea[i] > maxDea) maxDea = dea[i];
-  // Only treat as "high" when the window actually reached a positive peak;
-  // otherwise everything below zero would falsely qualify as "near the high".
-  const highPosition = maxDea > 0 && curDea >= highRatio * maxDea;
+  // Per spec, "high" requires the current DEA itself to be above the zero axis
+  // (DEA > 0) — a rising but still-negative DEA near its recent peak is not a
+  // high position.
+  const highPosition = curDea > 0 && curDea >= highRatio * maxDea;
 
   const freshCross = prevDif >= prevDea && curDif < curDea; // fresh death cross on the last candle
   const goldenCross = prevDif <= prevDea && curDif > curDea; // fresh golden cross on the last candle
@@ -188,12 +194,3 @@ export function analyzeMacd(closes: number[], opts: AnalyzeOptions = {}): MacdSi
     alert,
   };
 }
-
-export const STATE_LABEL: Record<MacdState, string> = {
-  "high-death-cross": "⚠️ 高位死叉",
-  "high-below": "高位空头",
-  "high-above": "高位多头",
-  "low-death-cross": "低位死叉",
-  "low-below": "低位空头",
-  "low-above": "低位多头",
-};

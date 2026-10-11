@@ -4,24 +4,24 @@ import type { Status } from "../../../src/types.ts";
 export interface StatusState {
   status: Status | null;
   error: string | null;
-  // Wall-clock ms of the last poll attempt (success or failure). The countdown
-  // ring in App uses this to show time-until-next-refresh.
-  lastFetchedAt: number;
 }
 
-// Polls /api/status immediately and every 5s, matching the original dashboard's
-// behaviour. A request failure surfaces as `error` (and turns the dot orange),
-// just like the old catch block did.
-export function useStatus(intervalMs = 5000): StatusState {
+// Polls /api/status immediately on mount, then at the close of each 1-minute
+// candle (the wall-clock minute boundary). Detection runs on already-closed 1m
+// K-lines, so there's no value in polling mid-minute — the data only changes at
+// the boundary. A request failure surfaces as `error` (and turns the dot
+// orange). Each poll re-arms itself relative to Date.now(), so setTimeout
+// drift never accumulates across cycles.
+export function useStatus(): StatusState {
   const [state, setState] = useState<StatusState>({
     status: null,
     error: null,
-    lastFetchedAt: Date.now(),
   });
   const req = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
     const poll = async () => {
       try {
@@ -30,26 +30,36 @@ export function useStatus(intervalMs = 5000): StatusState {
         req.current = ac;
         const r = await fetch("/api/status", { signal: ac.signal });
         const s = (await r.json()) as Status;
-        if (active) setState({ status: s, error: null, lastFetchedAt: Date.now() });
+        if (active) setState({ status: s, error: null });
       } catch (e) {
         if (!active) return;
         if (e instanceof DOMException && e.name === "AbortError") return;
         setState({
           status: null,
           error: e instanceof Error ? e.message : String(e),
-          lastFetchedAt: Date.now(),
         });
       }
     };
 
-    poll();
-    const id = setInterval(poll, intervalMs);
+    // ms from now until the next minute boundary (when the current 1m candle
+    // closes and the next one opens). Schedules a poll there, then re-arms.
+    const msToNextMinute = () => 60000 - (Date.now() % 60000);
+    const scheduleNext = () => {
+      timer = setTimeout(async () => {
+        await poll();
+        if (active) scheduleNext();
+      }, msToNextMinute());
+    };
+
+    poll(); // immediate on mount so the page isn't blank until the boundary
+    scheduleNext();
+
     return () => {
       active = false;
-      clearInterval(id);
+      if (timer) clearTimeout(timer);
       req.current?.abort();
     };
-  }, [intervalMs]);
+  }, []);
 
   return state;
 }
