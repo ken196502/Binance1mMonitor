@@ -106,22 +106,32 @@ tbody tr.dropped-row td {
   background: rgba(255, 255, 255, 0.02);
 }
 th.col-rank, td.col-rank {
-  width: 2.8ch;
-  min-width: 2.8ch;
-  max-width: 3.2ch;
+  width: 1%;
+  min-width: 18px;
+  max-width: 22px;
   text-align: center;
-  padding-left: 2px;
-  padding-right: 2px;
+  padding-left: 1px;
+  padding-right: 1px;
   white-space: nowrap;
 }
 th.col-shift, td.col-shift {
-  width: 2.8ch;
-  min-width: 2.8ch;
-  max-width: 3.2ch;
+  width: 1%;
+  min-width: 24px;
+  max-width: 28px;
   text-align: center;
-  padding-left: 2px;
-  padding-right: 2px;
+  padding-left: 1px;
+  padding-right: 1px;
   white-space: nowrap;
+}
+th.col-shift .sort-th {
+  justify-content: center;
+  gap: 1px;
+}
+th.col-shift .sort-th .arrow {
+  font-size: 8px;
+}
+th.col-symbol, td.col-symbol {
+  text-align: left;
 }
 .rank-num {
   font-variant-numeric: tabular-nums;

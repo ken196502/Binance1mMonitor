@@ -99,7 +99,7 @@ export function formatAlertMessage(params: {
 }): string {
   const { min, boards, pinned } = params;
 
-  const header = `🚨 <b>无支撑 + 1m DIFF>0 + 5m DIFF<0 告警</b>（触发阈值 ≥ ${min}）`;
+  const header = `🚨 <b>无支撑 + 1m DIFF&gt;0 + 5m DIFF&lt;0 告警</b>（触发阈值 ≥ ${min}）`;
   const dashboardUrl = getDashboardUrl();
 
   let pinnedBlock = "";

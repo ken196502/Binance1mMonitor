@@ -35,9 +35,9 @@ export function GroupSection({
     changeKey === "quoteVolume" ? r.quoteVolume / 1e8 : r.priceChangePercent;
 
   const cols: { key: SortKey; label: string; className?: string }[] = [
-    { key: "rank", label: "排名", className: "col-rank" },
+    { key: "rank", label: "", className: "col-rank" },
     { key: "shift", label: "升跌", className: "col-shift" },
-    { key: "symbol", label: "币种" },
+    { key: "symbol", label: "币种", className: "col-symbol" },
     { key: "change", label: changeHeader },
     { key: "support", label: "支撑" },
     { key: "streak", label: "连续" },
@@ -139,24 +139,30 @@ export function GroupSection({
             <tr>
               {cols.map((c) => {
                 const isActive = sortKey === c.key;
-                const arrow = isActive ? (sortDir === "asc" ? "▲" : "▼") : "↕";
+                const arrow = isActive ? (sortDir === "asc" ? "▲" : "▼") : (c.key === "shift" ? "" : "↕");
                 return (
-                  <th key={c.key} className={c.className}>
-                    <button
-                      type="button"
-                      className={`sort-th${isActive ? " active" : ""}`}
-                      onClick={() => onSort(c.key)}
-                      aria-sort={
-                        isActive
-                          ? sortDir === "asc"
-                            ? "ascending"
-                            : "descending"
-                          : "none"
+                  <th
+                    key={c.key}
+                    className={c.className}
+                    aria-label={c.key === "rank" ? "排名" : undefined}
+                  >
+                    {c.label ? (
+                      <button
+                        type="button"
+                        className={`sort-th${isActive ? " active" : ""}`}
+                        onClick={() => onSort(c.key)}
+                        aria-sort={
+                          isActive
+                            ? sortDir === "asc"
+                              ? "ascending"
+                              : "descending"
+                            : "none"
                         }
-                    >
-                      {c.label}
-                      <span className="arrow">{arrow}</span>
-                    </button>
+                      >
+                        {c.label}
+                        {arrow ? <span className="arrow">{arrow}</span> : null}
+                      </button>
+                    ) : null}
                   </th>
                 );
               })}

@@ -83,7 +83,10 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
     // 5m 仅在未初始化时请求一次（拉取 100 根），之后完全不发 5m 请求
     let fetch5mPromise: Promise<Candle[]> | null = null;
     if (!symCache.initialized5m) {
-      fetch5mPromise = fetch5mCandles(t.symbol, KLINE_LIMIT).catch(() => [] as Candle[]);
+      fetch5mPromise = fetch5mCandles(t.symbol, KLINE_LIMIT).catch((err) => {
+        console.warn(`[kline-5m] ${t.symbol} 初始化 5m K 线失败: ${err?.message ?? err}，将在下轮重试`);
+        return [] as Candle[];
+      });
     }
 
     const [candles1mRes, candles5mInit, weekOpen] = await Promise.all([
@@ -98,14 +101,15 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
     }
     const candles = symCache.candles1m;
 
-    // 5m 初始化设置
-    if (!symCache.initialized5m && candles5mInit.length > 0) {
+    // 5m 初始化设置：首次必须成功拉取到足够的 5m 历史 K 线才标记为 initialized5m
+    if (!symCache.initialized5m && candles5mInit.length >= 35) {
       symCache.candles5m = candles5mInit;
       symCache.initialized5m = true;
+      console.log(`[kline-5m] ${t.symbol} 成功同步 ${candles5mInit.length} 根 5m K 线`);
     }
 
-    // 自行用 1m 计算/更新 5m K 线
-    if (candles.length > 0) {
+    // 自行用 1m 计算/更新 5m K 线：前提是已成功完成 5m 初始化
+    if (symCache.initialized5m && candles.length > 0) {
       symCache.candles5m = update5mFrom1m(symCache.candles5m, candles, KLINE_LIMIT);
     }
     const candles5m = symCache.candles5m;

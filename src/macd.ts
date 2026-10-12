@@ -269,6 +269,11 @@ export interface DiffAnalysisOptions {
   highRatio?: number;
   /** How many recent DIF values define the observation window (defaults to all settled values). */
   highWindow?: number;
+  /**
+   * Whether to evaluate on the latest closed candle (index n - 2).
+   * Defaults to true because monitor candles end with a still-forming bar.
+   */
+  useClosedBar?: boolean;
 }
 
 export interface DiffSignal {
@@ -288,14 +293,18 @@ export function analyzeDiff(
   if (closes.length < 35) return null;
   const { dif } = computeMacd(closes);
   const n = dif.length;
-  const curDif = dif[n - 1];
 
+  const useClosedBar = opts.useClosedBar ?? true;
+  const targetIdx = useClosedBar ? n - 2 : n - 1;
+  if (targetIdx < 0 || targetIdx >= n) return null;
+
+  const curDif = dif[targetIdx];
   const warmup = 35;
   const highRatio = opts.highRatio ?? 0.8;
-  const window = opts.highWindow ?? Math.max(0, n - warmup);
-  const start = Math.max(warmup, n - window);
+  const window = opts.highWindow ?? Math.max(0, targetIdx + 1 - warmup);
+  const start = Math.max(warmup, targetIdx + 1 - window);
   let maxDif = -Infinity;
-  for (let i = start; i < n; i++) {
+  for (let i = start; i <= targetIdx; i++) {
     if (dif[i] > maxDif) maxDif = dif[i];
   }
 

@@ -57,7 +57,7 @@ export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
           </span>
         ) : null}
       </td>
-      <td>
+      <td className="col-symbol">
         <a
           href={`https://www.binance.com/zh-CN/futures/${row.symbol}`}
           target="_blank"
