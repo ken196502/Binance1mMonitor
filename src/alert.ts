@@ -1,12 +1,13 @@
-// "周K>0 + 1m DEA 高位 + 1m DIFF 多头" 监控告警
+// "周K>0 + 1m DEA 高位 + 1m DIFF 多头 + 无支撑" 监控告警
 //
 // 判定规则：
 //   - 周K > 0: row.weekChangePercent > 0
 //   - DEA 高位: row.high === true （DEA ≥ HIGH_RATIO × 窗口峰值，且 DEA > 0）
 //   - DIFF 多头: row.bullish === true （DIF ≥ DEA — 面板 DIFF 列「多头」）
+//   - 无支撑: !row.supportMa （支撑为 N/A，即 null）
 //
 // 告警逻辑：
-//   - 三个榜（24h涨幅榜、跌幅榜、成交额榜），任意榜出现 ≥ TG_ALERT_MIN (默认 3) 个满足条件的币种时进入关注。
+//   - 两个榜（24h涨幅榜、跌幅榜），任意榜出现 ≥ TG_ALERT_MIN (默认 3) 个满足条件的币种时进入关注。
 //   - 每个榜记录上次播报时的币种列表 JSON。
 //   - 每次检测比对各榜：只要某个榜「达标且币种与上次存的 JSON 不同」，就播报该榜，并更新该榜存的 JSON。
 //   - 每次只播报达标的榜，其他榜不播报；榜币没变绝不重复播报。
@@ -14,18 +15,19 @@
 import type { Row, BoardAlertInfo, HighBullSummary, AlertSymbolItem } from "./types.ts";
 import { sendTelegramMessage, telegramConfigured, type TelegramSendResult } from "./telegram.ts";
 
-export type BoardKey = "gainers" | "losers" | "volume";
+export type BoardKey = "gainers" | "losers";
 
 export interface BoardCounts {
   gainers: number;
   losers: number;
-  volume: number;
+  volume?: number;
 }
 
 export interface AlertInput {
   gainers: Row[];
   losers: Row[];
-  volume: Row[];
+  volume?: Row[];
+  pinned?: Row[];
 }
 
 /** 格式化连阳/连阴文案（如 3连阳、2连阴） */
@@ -35,18 +37,23 @@ export function formatStreak(count: number, dir: "up" | "down" | null): string {
   return `${count}连${name}`;
 }
 
-/** 筛选满足「周K > 0 + 1m DEA 高位 + 1m DIFF 多头」的币种及连数详情（保留原榜单顺序并去重） */
+/** 筛选满足「周K > 0 + 1m DEA 高位 + 1m DIFF 多头 + 无支撑」的币种及连数详情（保留原榜单顺序并去重） */
 export function pickHighBullItems(rows: Row[]): AlertSymbolItem[] {
   const hit = new Set<string>();
   const items: AlertSymbolItem[] = [];
   for (const r of rows) {
     const isWeekPositive = r.weekChangePercent != null && r.weekChangePercent > 0;
-    if (r.high === true && r.bullish === true && isWeekPositive && !hit.has(r.symbol)) {
+    const isNoSupport = !r.supportMa;
+    if (r.high === true && r.bullish === true && isWeekPositive && isNoSupport && !hit.has(r.symbol)) {
       hit.add(r.symbol);
       items.push({
         symbol: r.symbol,
         streakCount: r.streakCount ?? 0,
         streakDir: r.streakDir ?? null,
+        rank: r.rank ?? null,
+        rankChange: r.rankChange ?? null,
+        rankDelta: r.rankDelta ?? null,
+        isDropped: r.isDropped ?? false,
       });
     }
   }
@@ -84,25 +91,59 @@ function getDashboardUrl(): string {
 export function formatAlertMessage(params: {
   min: number;
   boards: { info: BoardAlertInfo; icon: string }[];
+  pinned?: AlertSymbolItem[];
 }): string {
-  const { min, boards } = params;
+  const { min, boards, pinned } = params;
 
-  const header = `🚨 <b>MACD 高位+多头告警</b>（触发阈值 ≥ ${min}）`;
+  const header = `🚨 <b>MACD 高位+多头+无支撑告警</b>（触发阈值 ≥ ${min}）`;
   const dashboardUrl = getDashboardUrl();
+
+  let pinnedBlock = "";
+  if (pinned && pinned.length > 0) {
+    const list = pinned
+      .map((item) => {
+        const streak = formatStreak(item.streakCount, item.streakDir);
+        const streakSuffix = streak ? ` (${streak})` : "";
+        return `• 📌 <a href="https://www.binance.com/zh-CN/futures/${item.symbol}"><b>${item.symbol}</b></a>${streakSuffix}`;
+      })
+      .join("\n");
+    pinnedBlock = `📌 <b>置顶标的</b>：\n${list}`;
+  }
 
   const formatBoard = (b: BoardAlertInfo, icon: string) => {
     let line = `${icon} <b>${b.name}</b>：<b>${b.count}</b> 个`;
-    const items =
+    const items: AlertSymbolItem[] =
       b.items && b.items.length > 0
         ? b.items
-        : b.symbols.map((s) => ({ symbol: s, streakCount: 0, streakDir: null as "up" | "down" | null }));
+        : b.symbols.map((s) => ({
+            symbol: s,
+            streakCount: 0,
+            streakDir: null,
+            rank: null,
+            rankChange: null,
+            rankDelta: null,
+            isDropped: false,
+          }));
 
-    if (items.length > 0) {
-      const symList = items
+    // 若已在置顶标的展示，则榜单中不重复列出
+    const unpinnedItems = pinned && pinned.length > 0
+      ? items.filter((item) => !pinned.some((p) => p.symbol === item.symbol))
+      : items;
+
+    if (unpinnedItems.length > 0) {
+      const symList = unpinnedItems
         .map((item) => {
           const streak = formatStreak(item.streakCount, item.streakDir);
           const streakSuffix = streak ? ` (${streak})` : "";
-          return `• <a href="https://www.binance.com/zh-CN/futures/${item.symbol}"><b>${item.symbol}</b></a>${streakSuffix}`;
+          let rankTag = "";
+          if (item.isDropped) {
+            rankTag = " [跌出前十↓]";
+          } else if (item.rank != null && item.rankChange === "up") {
+            rankTag = item.rankDelta ? ` [#${item.rank} ↑+${item.rankDelta}]` : ` [#${item.rank} ↑]`;
+          } else if (item.rank != null && item.rankChange === "down") {
+            rankTag = item.rankDelta ? ` [#${item.rank} ↓${item.rankDelta}]` : ` [#${item.rank} ↓]`;
+          }
+          return `• <a href="https://www.binance.com/zh-CN/futures/${item.symbol}"><b>${item.symbol}</b></a>${streakSuffix}${rankTag}`;
         })
         .join("\n");
       return `${line}\n${symList}`;
@@ -113,7 +154,7 @@ export function formatAlertMessage(params: {
   const body = boards.map((b) => formatBoard(b.info, b.icon)).join("\n\n");
   const footer = dashboardUrl ? `🔗 <a href="${dashboardUrl}">点击查看监控面板</a>` : "";
 
-  return [header, body, footer].filter(Boolean).join("\n\n");
+  return [header, pinnedBlock, body, footer].filter(Boolean).join("\n\n");
 }
 
 export class TelegramAlerter {
@@ -121,23 +162,21 @@ export class TelegramAlerter {
   private savedBoards: Record<BoardKey, string[] | null> = {
     gainers: null,
     losers: null,
-    volume: null,
   };
 
-  /** 获取当前三个榜存的 JSON 数据副本 */
+  /** 获取当前榜单存的 JSON 数据副本 */
   getSavedBoards(): Record<BoardKey, string[] | null> {
     return JSON.parse(JSON.stringify(this.savedBoards));
   }
 
   /** 获取最近一次通知状态统计（兼容接口） */
   getLastNotifiedCounts(): BoardCounts | null {
-    if (!this.savedBoards.gainers && !this.savedBoards.losers && !this.savedBoards.volume) {
+    if (!this.savedBoards.gainers && !this.savedBoards.losers) {
       return null;
     }
     return {
       gainers: this.savedBoards.gainers?.length ?? 0,
       losers: this.savedBoards.losers?.length ?? 0,
-      volume: this.savedBoards.volume?.length ?? 0,
     };
   }
 
@@ -146,7 +185,6 @@ export class TelegramAlerter {
     this.savedBoards = {
       gainers: null,
       losers: null,
-      volume: null,
     };
   }
 
@@ -157,21 +195,40 @@ export class TelegramAlerter {
 
     let gainersRows: Row[];
     let losersRows: Row[];
-    let volumeRows: Row[];
+    let pinnedRows: Row[] = [];
+
+    const PINNED_SYMBOLS = ["BTCUSDT", "SOLUSDT"];
 
     if (Array.isArray(input)) {
       gainersRows = input[0] ?? [];
       losersRows = input[1] ?? [];
-      volumeRows = input[2] ?? [];
     } else {
       gainersRows = input.gainers ?? [];
       losersRows = input.losers ?? [];
-      volumeRows = input.volume ?? [];
+      pinnedRows = input.pinned ?? [];
     }
+
+    // 若未显式传入 pinned，从榜单数据中查找置顶标的
+    if (pinnedRows.length === 0) {
+      const allRows = [...gainersRows, ...losersRows];
+      const seen = new Set<string>();
+      for (const sym of PINNED_SYMBOLS) {
+        const r = allRows.find((row) => row.symbol === sym);
+        if (r && !seen.has(r.symbol)) {
+          seen.add(r.symbol);
+          pinnedRows.push(r);
+        }
+      }
+    }
+
+    const pinnedItems: AlertSymbolItem[] = pinnedRows.map((r) => ({
+      symbol: r.symbol,
+      streakCount: r.streakCount ?? 0,
+      streakDir: r.streakDir ?? null,
+    }));
 
     const gainersItems = pickHighBullItems(gainersRows);
     const losersItems = pickHighBullItems(losersRows);
-    const volumeItems = pickHighBullItems(volumeRows);
 
     const boards: { key: BoardKey; info: BoardAlertInfo; icon: string }[] = [
       {
@@ -196,17 +253,6 @@ export class TelegramAlerter {
           triggered: losersItems.length >= min,
         },
       },
-      {
-        key: "volume",
-        icon: "📊",
-        info: {
-          name: "24h 成交额榜",
-          count: volumeItems.length,
-          symbols: volumeItems.map((i) => i.symbol),
-          items: volumeItems,
-          triggered: volumeItems.length >= min,
-        },
-      },
     ];
 
     const summary: HighBullSummary = {
@@ -214,7 +260,6 @@ export class TelegramAlerter {
       triggered: boards.some((b) => b.info.triggered),
       gainers: boards[0].info,
       losers: boards[1].info,
-      volume: boards[2].info,
     };
 
     // 当榜单数量归 0 时清空对应存储的 json，待下轮达标时可重新报
@@ -237,10 +282,11 @@ export class TelegramAlerter {
       return { summary };
     }
 
-    // 每次只播报达标且有更新的榜
+    // 每次只播报达标且有更新的榜，每条播报均附带固定的置顶标的（BTC、SOL）
     const message = formatAlertMessage({
       min,
       boards: boardsToAlert.map((b) => ({ info: b.info, icon: b.icon })),
+      pinned: pinnedItems,
     });
 
     const sent = await this.deliver(message);

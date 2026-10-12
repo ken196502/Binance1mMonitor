@@ -1,6 +1,6 @@
 # 独立 CLI：Gainers 分钟做空策略研究
 
-当前研究集中于历史涨幅榜，**1m DEA 高位 + DIF 多头即可入场**：MACD(12,26,9)，DEA > 0，DEA ≥ 0.8 × 最近 100 根已收盘分钟 DEA 峰值（含当前），DIF ≥ DEA。无死叉、阴线、连阴、量比、周线或额外涨幅过滤。该研究通过 `gainers` 命令运行，独立于服务和通知。
+当前研究集中于历史涨幅榜，**1m DEA 高位 + DIF 多头 + 无 MA 支撑才可入场**：MACD(12,26,9)，DEA > 0，DEA ≥ 0.8 × 最近 100 根已收盘分钟 DEA 峰值（含当前），DIF ≥ DEA，且 MA5/7/10/20/25/30/60/99/120 均不满足当根已收盘分钟线 `low < MA < close`。与监控共用同一函数，MA 含当根收盘价，等于边界不算支撑；要求连续历史足够计算全部 MA。无死叉、阴线、连阴、量比、周线或额外涨幅过滤。该研究通过 `gainers` 命令运行，独立于服务和通知。
 
 ```bash
 # 先获取全市场小时数据（已有数据可跳过）
@@ -48,7 +48,7 @@ npm run research -- fetch --start 2026-09-01 --end 2026-10-01 --data data/septem
 # 三个榜独立回测，也可只运行 gainers / losers / volume
 npm run research -- backtest --board all --data data/september --out reports/september
 
-# 保留原报告，用同一数据和自定义网格做新的参数实验（无需联网）
+# 保留已有报告，用同一数据和自定义网格做新的参数实验（无需联网）
 npm run research -- backtest --board losers --data data/september --out reports/losers-round2 --grid research/grid.example.json --rounds 5 --trials 50 --seed 123
 
 npm run research -- --help
@@ -140,3 +140,87 @@ npm run build
 ```
 
 测试覆盖历史排名轮换、跨榜同币保留、未来数据隔离、24h 成交额、缺失数据、费用、止损跳空、时间边界剔除、多轮搜索可复现、测试区间不参与选参、全市场分页获取与离线回测。测试只使用本地模拟行情和模拟 Telegram 服务。
+
+## M1 Pro GPU 超短线挖掘与 Telegram 成果播报
+
+新增独立入口 `npm run mine`，以 `reports/research/gainers-high-bull-1day/gainers/report.md` 为基线，复用原有历史榜单、1m MACD 和成交模型，将1m与15m各自的DEA高/中/低、DIFF多/空交叉为36种组合；两个周期均强制无MA支撑，并独立设置高位阈值、连阳/连阴方向与最少根数。需要 Apple Silicon、支持 Metal 的 macOS、原生 arm64 Python 3.12 和 `uv`。PyTorch **MPS** 在 GPU 上批量计算参数×信号×持仓分钟的首次退出（包括强平）；GPU 不可用时明确报错。`--device cpu` 只供排错，报告会显示真实设备。
+
+```bash
+# 仅首次安装，依赖隔离于本仓库 .venv-gpu
+npm run mine:setup
+
+# 使用原报告的完整本地行情，直接进行本轮预定清单 GPU 挖掘并发送 TG
+npm run mine -- --fetch-fifteen --batch 128 --leverage 10 --margin-usdt 100 --balance-usdt 1000
+
+# 限本次运行5轮；下次从同一目录接着跑，直至完成预定清单
+npm run mine -- --rounds 5 --batch 128
+npm run mine -- --resume --batch 128
+
+# 仅重试已经落盘的未发送消息，无需重新运行GPU或回测
+npm run mine -- --notify-only
+
+# 查看全部参数、验证 GPU
+npm run mine -- --help
+npm run test:gpu
+```
+
+Telegram 沿用 `.env` 的 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`、`TELEGRAM_API_BASE` 和 `PROXY` / 标准代理变量。默认要求凭据存在；`--no-telegram` 可明确离线运行，消息仍保存，之后 `--notify-only` 可补发。测试只访问本地模拟 Telegram；实际挖掘会向配置的 chat 发送启动、训练发现和完成结果。
+
+默认 `research/miner-grid-streak.json` 对两个周期使用相同参数维度、独立数值网格，做笛卡尔积，不把两个周期绑定为相同值，也不排除碰巧相等的有效组合：
+
+|维度|1m|15m|
+|---|---|---|
+|DEA档位|`minuteDea`: high/mid/low|`fifteenDea`: high/mid/low|
+|DIFF方向|`minuteDif`: bull/bear|`fifteenDif`: bull/bear|
+|DEA高位比例|`highRatio`: 0.60–1.00，共9档|`fifteenHighRatio`: 0.65/0.80/0.90|
+|连续阈值|`minuteStreak`: 0/±1/±2/±3/±5/±8|`fifteenStreak`: 0/±1/±2/±3/±4/±6|
+|MA支撑|必须无支撑|必须无支撑|
+
+连续阈值正N表示**至少N连阳**，负N表示**至少N连阴**，0表示不限。阳线是close>open，阴线是close<open；十字星、方向切换或数据缺口中断连续段。包含当根已收盘线，监控与研究共用 `consecutiveStreakAt`。例如 `minuteStreak:3, fifteenStreak:-4` 表示1m至少3连阳且15m至少4连阴；与DIFF多空是独立维度。两周期各11种连续条件交叉为121组。DEA和DIFF还接受 `any` 表示该状态不限，但仍强制无MA支撑。
+
+交易参数继续保留持仓11档（1/2/3/5/8/10/15/20/30/45/60分钟）、止损11档（0.10–1.00%）、止盈15档（0.50–10.00%）。只保留名义止盈/止损≥3且按入场和出场分别扣费后目标盈亏比≥3的组合，默认每边手续费5bps+滑点2bps。某周期处于低位/不限DEA时，其高位比例不影响规则，只去除该周期重复阈值；不会删除另一周期的独立阈值。
+
+全空间去重及盈亏比过滤后为 **58,063,544组**。默认 `--max-trials 400000`：按双周期DEA/DIFF状态×1m连续阈值×15m连续阈值分成4,356层，尽量等额分配预算，每层内无放回抽取数值参数。若一层已抽完，预算分配给其他层；预算不足以覆盖全部层时会报错。清单在加载行情收益前由固定seed生成，不参考训练/验证/留出成绩，不会把未运行组合算作验证通过。小网格在预算内则全量遍历。报告的search字段记录possible、selected、exhaustive、method和seed所在配置；改变预算/网格/种子需新输出目录。
+
+目标盈亏比不代表包含跳空和超时退出的实际平均盈亏比。旧的双周期无连续过滤网格仍保留在 `miner-grid-15m.json`（205,656组）；可显式指定它并使用新输出目录复现研究规则。
+
+默认使用**10倍逐仓、每笔100 USDT保证金、初始账户1000 USDT**，因此每笔名义金额1000 USDT。可用 `--leverage`、`--margin-usdt`、`--balance-usdt`、`--max-positions` 修改；这些是可复现的回测参数，不代表交易建议或交易所对每个币种支持的档位。开仓锁定保证金并支付按名义金额计算的开仓成本；资金不足跳过，平仓后释放资金；同分钟入场竞争按币种代码排序。固定每笔保证金，不将浮盈当作可用资金。
+
+规则是历史涨幅前十；1m、15m均使用MACD(12,26,9)。DEA高位=DEA>0且≥阈值×最近100根DEA峰值；中位=DEA≥0且未达高位；低位=DEA<0。1m阈值使用highRatio网格，15m独立使用fifteenHighRatio网格（未提供时默认0.8）。DIFF≥DEA为多头（含相等），DIFF<DEA为空头。1m不再固定高位多头，全部状态参与搜索。
+
+两个周期各自的MA5/7/10/20/25/30/60/99/120均不满足已收盘线 `low < MA < close` 才能入场，有支撑直接排除，不提供“有支撑”选项。15m使用原生K线与至少300根（75小时）连续预热，不能从稀疏1m缓存推导。`--fifteen-data` 指定缓存目录；首次加 `--fetch-fifteen` 下载，以后可离线复用SHA256校验后的完整缓存。入场t仅关联 `floor(t/15m)*15m` 时收盘的线：10:14用10:00收盘线，10:15用10:15收盘线；缺失、尚未收盘或预热不足不准入场，缺口后重新预热，不沿用过期状态。
+
+完整小时合约池重建历史榜单。下一分钟开盘做空、同币单仓、离榜不强平、无额外冷却；开盘跳空按开盘，跳过强平线时先强平；同根双触先处理不利退出，连续上涨先触发止损/强平中较近的阈值。GPU 使用 float32 计算首次触发位置；阈值附近用原 CPU 双精度逐根复算，成交价格、杠杆后盈亏及保证金占用由时间顺序账户账本计算。GPU首次退出按持仓时长/有效止损/止盈缓存复用，状态过滤在CPU进行。每轮首组和最佳训练组逐笔核对 CPU；所有拟播报发现再核对 CPU。
+
+训练/验证/留出按时间60/20/20切分，每个参数按其最长持有期事前剔除跨段入场。默认训练至少100笔，验证和留出至少34笔。每轮只搜索训练区间：有样本达标、无缺失交易、无强平、账户净收益率为正且PF>1的新纪录时立即播报“**训练阶段发现，尚未留出验证**”。完成预定清单后，固定按训练账户净收益率排序的前五名参与验证，按验证账户净收益率选择一个参数，同收益率优先较小账户净值回撤，最终留出只评估此参数。每个分段独立从设定初始资金开始，不能把三段相加当连续账户收益。只有三段都达到门槛才标为“达到研究成果门槛”；没有达标则如实发送完成结果。全盈利时PF分母为零，报告使用“—”，门槛按无亏损且正均值处理。
+
+报告列出36种DEA/DIFF组合和121种连阳/连阴组合的训练结果比较，不读取各组合留出收益排名。完整CSV/报告每64轮、训练新纪录与结束时更新，分片检查点和TG队列仍每轮保存。每轮参数按固定种子洗牌后分批遍历，不重复、不无限重搜已经看过的留出段。`--rounds N` 是本次运行的轮数上限，预定清单未完成不会提前打开留出集；默认0表示跑完本轮预定清单，抽样模式不代表穷尽全空间。`--batch` 默认32，`--signal-batch` 默认1024，内存有限时可降低后者。当前网格和一天数据不保证GPU比CPU更快，收益取决于批量规模；这里不会虚构加速比。
+
+输出默认 `reports/research/gainers-gpu-margin-no-ma-streak/`（v4分片检查点，拒绝混用旧版参数或数据）：
+
+- `report.md`：真实计算设备、逐轮耗时、规则与最终结果。
+- `state.json`：数据/代码/参数SHA256、断点、试验分片索引、入围验证结果、完整留出交易、待发消息与Telegram回执。
+- `trials-起点-终点.json`：每轮训练试验，只写新增分片并校验SHA256；避免20万组网格每轮重写整个状态。读取全部试验可使用 `hydrateMiningState`。
+- `trials.csv`：每组双周期状态参数的账户收益、回撤、资金不足跳过和强平次数。
+- `test-trades.csv`：每笔杠杆、保证金、名义金额、数量、费用、净盈亏、保证金收益率及两个周期入场DEA、DIFF、档位、方向、支撑状态、连阳/连阴实际方向与根数和15m收盘时间。
+- `test-equity.csv`：分钟账户净值、可用余额、锁定保证金及浮动盈亏。
+- `training.f32`：只含训练区间的GPU输入，可重新生成。
+
+状态与消息先原子保存再发送；失败指数退避，尊重Telegram限流。本轮和结束时会重试，仍失败以退出码2结束，保留队列供 `--notify-only` 补发。完成状态续跑只检查/补发，不重新选参或看留出。进程锁避免同目录双开；Ctrl-C/SIGTERM在当前轮结束后保存断点。改变杠杆/保证金/总资金/维持保证金等账户设置、数据、代码、种子、费率、网格、每轮批量或筛选门槛须用新输出目录，以免混合研究。进程在远端确认送达后、本地回执落盘前异常退出，可能造成一次重复；消息附研究与事件ID便于识别。
+
+若要使用更长或新的行情，先用原有获取流程生成完整缓存：
+
+```bash
+# 选择已经发布官方分钟归档的时间段；下列为历史样例
+npm run research -- fetch --start 2026-09-01 --end 2026-10-01 --data data/research/gpu-september-hourly
+npm run research -- gainers --data data/research/gpu-september-hourly --minutes-data data/research/gpu-september-minutes --minute-source archive --grid research/miner-grid.json --fetch-only
+npm run mine -- --data data/research/gpu-september-hourly --minutes-data data/research/gpu-september-minutes --fifteen-data data/research/gpu-september-15m --fetch-fifteen --batch 128 --out reports/research/gpu-september
+```
+
+小时与分钟清单及全部行情都校验SHA256；沿用原报告更长退出覆盖的分钟缓存也可使用。无法读取完整缓存时先修复下载，不会静默缩小历史榜单池。原报告的一天行情已经被观察，重跑它不能算新独立验证。这里输出的是历史研究，不自动下单；未导入历史资金费或真实订单簿，小样本正收益不证明未来盈利。
+
+强平采用明确的近似模型：`强平价 = 入场价 × (1 + 1/杠杆) / (1 + 维持保证金率 + 预估平仓成本率)`，`--maintenance-margin-percent` 默认0.5%，`--liquidation-fee-bps` 默认50bps。保证金不足不自动追加，强平损失限定于该逐仓保证金，开仓成本另计；穿仓缺口单列。**成交价OHLC仅作为标记价格代理，固定维持保证金率不是币安实际分档，也未建模资金费、订单精度与保险基金真实清算过程。**
+
+账户收益率按总初始资金计算；单笔保证金收益率按该笔保证金计算，二者不会混为一谈。账户净值包括未实现盈亏，回撤按分钟收盘和入场扣费时点统计，不覆盖完整分钟内路径。以默认参数、0.5%止损/5%止盈为例，正常止损约亏6.4035 USDT，正常止盈约赚48.635 USDT；跳空或提前强平会改变结果。
+
+仅复现旧的1m高位多头搜索时，显式使用 `--grid research/miner-grid.json --out 新目录`，无需15m缓存。不能直接用旧检查点混合续跑新增维度。

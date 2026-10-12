@@ -13,14 +13,50 @@ interface RowProps {
 export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
   const isHigh = row.deaLevel === "high" || (row.deaLevel == null && row.high === true);
   const isHighBull = isHigh && row.bullish === true;
+  const isPinned = row.isPinned ?? (row.symbol === "BTCUSDT" || row.symbol === "SOLUSDT");
 
   const rowClasses = [
     row.alert ? "alert" : "",
     isHighBull ? "high-bull" : "",
+    isPinned ? "pinned-row" : "",
+    row.isDropped ? "dropped-row" : "",
   ].filter(Boolean).join(" ");
 
   return (
     <tr className={rowClasses}>
+      <td className="col-rank">
+        {isPinned ? (
+          <span className="pin-icon" title="置顶标的">📌</span>
+        ) : row.rank != null ? (
+          <span className="rank-num">{row.rank}</span>
+        ) : (
+          <span className="muted">-</span>
+        )}
+      </td>
+      <td className="col-shift">
+        {row.isDropped ? (
+          <span
+            className="shift-dropped"
+            title={row.prevRank ? `上期第 ${row.prevRank} 名，已跌出前十` : "已跌出前十"}
+          >
+            跌
+          </span>
+        ) : row.rankChange === "up" ? (
+          <span
+            className="shift-up"
+            title={row.rankDelta ? `较上期上升 ${row.rankDelta} 名` : "新进入前十"}
+          >
+            {row.rankDelta ? `▲${row.rankDelta}` : "▲"}
+          </span>
+        ) : row.rankChange === "down" ? (
+          <span
+            className="shift-down"
+            title={row.rankDelta ? `较上期下降 ${Math.abs(row.rankDelta)} 名` : "排名下降"}
+          >
+            {row.rankDelta ? `▼${Math.abs(row.rankDelta)}` : "▼"}
+          </span>
+        ) : null}
+      </td>
       <td>
         <a
           href={`https://www.binance.com/zh-CN/futures/${row.symbol}`}
@@ -33,9 +69,11 @@ export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
         </a>
       </td>
       <td className={colClass(changeLabel)}>{isPercentage ? pct(changeLabel) : fmt(changeLabel, 2)}</td>
-      <td className={row.weekChangePercent == null ? "muted" : colClass(row.weekChangePercent)}>
-        {pct(row.weekChangePercent)}
-      </td>
+      {row.supportMa ? (
+        <td>{row.supportMa}</td>
+      ) : (
+        <td className="pink">N/A</td>
+      )}
       {row.streakDir && row.streakCount > 0 ? (
         <td className={row.streakDir === "up" ? "pos" : "neg"}>
           {row.streakCount}

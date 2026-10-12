@@ -11,8 +11,8 @@ const HELP = `独立做空策略研究 CLI
 
 用法：npm run research -- <gainers|fetch|backtest|run> [选项]
 
-gainers   当前研究：历史涨幅榜 + 1m DEA高位/DIF多头做空，小止损大止盈
-          只用这两个 1m 条件入场，不要求死叉、阴线、量比或周线过滤
+gainers   当前研究：历史涨幅榜 + 1m DEA高位/DIF多头/无MA支撑做空，小止损大止盈
+          这三个 1m 条件同时满足才入场，不要求死叉、阴线、量比或周线过滤
           必填 --data；自动补分钟数据后回测。--offline 可仅用缓存
           默认3轮×20组；止损0.2/0.3/0.5%，止盈1.5/2/3/5%，至少3R
 --minutes-data DIR                gainers 的分钟缓存目录

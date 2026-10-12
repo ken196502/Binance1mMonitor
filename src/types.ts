@@ -13,15 +13,26 @@ export interface Row extends Ticker24h {
   high: boolean | null; // DEA at/near window peak → 高位; null when data is missing
   dea?: number | null;
   deaLevel?: "high" | "mid" | "low" | null; // 高位 / 中 (DEA≥0) / 低 (DEA<0)
-  weekChangePercent?: number | null; // 周K涨跌幅度%
+  weekChangePercent?: number | null; // 周K涨跌幅度%（保留供告警过滤等使用）
+  supportMa?: string | null; // 支撑MA，如 "ma10"，无支撑为 null
   streakCount: number;
   streakDir: "up" | "down" | null;
+  rank?: number | null; // 榜单自然排名 1..10，置顶或跌出时为 null
+  prevRank?: number | null; // 上期自然排名 1..10
+  rankChange?: "up" | "down" | null; // "up": 上升; "down": 下跌; null: 无变化/未对比
+  rankDelta?: number | null; // 名次变动差值（如上升2位为 +2，下降3位为 -3，新进为 null）
+  isDropped?: boolean; // 是否跌出前十
+  isPinned?: boolean; // 是否置顶
 }
 
 export interface AlertSymbolItem {
   symbol: string;
   streakCount: number;
   streakDir: "up" | "down" | null;
+  rank?: number | null;
+  rankChange?: "up" | "down" | null;
+  rankDelta?: number | null;
+  isDropped?: boolean;
 }
 
 export interface BoardAlertInfo {
@@ -37,7 +48,7 @@ export interface HighBullSummary {
   triggered: boolean; // 任意一个榜单 count >= min
   gainers: BoardAlertInfo;
   losers: BoardAlertInfo;
-  volume: BoardAlertInfo;
+  volume?: BoardAlertInfo;
 }
 
 // Keep HighBearSummary / HighBearState alias to prevent breaking existing types
@@ -56,6 +67,6 @@ export interface Status {
   highBear?: HighBullSummary; // backwards compatibility alias
   gainers: Row[];
   losers: Row[];
-  volume: Row[];
+  volume?: Row[];
   error?: string;
 }

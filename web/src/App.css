@@ -98,12 +98,74 @@ tbody tr.high-bull td:first-child {
 tbody tr.alert.high-bull {
   background: linear-gradient(90deg, rgba(241, 196, 15, 0.18), rgba(0, 255, 255, 0.12));
 }
+tbody tr.pinned-row td {
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.15);
+}
+tbody tr.dropped-row td {
+  opacity: 0.85;
+  background: rgba(255, 255, 255, 0.02);
+}
+th.col-rank, td.col-rank {
+  width: 2.8ch;
+  min-width: 2.8ch;
+  max-width: 3.2ch;
+  text-align: center;
+  padding-left: 2px;
+  padding-right: 2px;
+  white-space: nowrap;
+}
+th.col-shift, td.col-shift {
+  width: 2.8ch;
+  min-width: 2.8ch;
+  max-width: 3.2ch;
+  text-align: center;
+  padding-left: 2px;
+  padding-right: 2px;
+  white-space: nowrap;
+}
+.rank-num {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-weight: 600;
+  display: inline-block;
+  text-align: center;
+}
+.shift-up {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-block;
+  text-align: center;
+  line-height: 1;
+}
+.shift-down {
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-block;
+  text-align: center;
+  line-height: 1;
+}
+.shift-dropped {
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-block;
+  text-align: center;
+  line-height: 1;
+}
+.pin-icon {
+  font-size: 11px;
+  margin-right: 2px;
+  display: inline-block;
+}
 .pos { color: var(--green); }
 .neg { color: var(--red); }
 .muted { color: var(--muted); }
 .badge { padding: 1px 5px; border-radius: 3px; font-size: 11px; background: var(--panel2); border: 1px solid var(--border); }
 .err { color: var(--amber); }
 .amber { color: var(--amber); }
+.pink { color: #ff79c6; font-weight: 500; }
 .symbol-link {
   color: var(--text);
   text-decoration: none;
@@ -135,10 +197,10 @@ tbody tr.alert.high-bull {
 .tab.active { color: var(--text); border-color: var(--amber); }
 .tab .alert-num { color: var(--amber); font-weight: 600; }
 
-@media (min-width: 1100px) {
-  .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (min-width: 900px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (max-width: 1099px) {
+@media (max-width: 899px) {
   body { padding: 10px 8px; }
   .tabs { display: flex; }
   .grid section { display: none; }

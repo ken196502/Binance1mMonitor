@@ -1,4 +1,6 @@
 import type { Bar, Manifest, Metrics } from "./types.ts";
+import type { FifteenFeature } from './fifteen.ts';
+import type { Streak } from '../src/macd.ts';
 
 export const MINUTE = 60_000;
 export interface GainersParameters {
@@ -55,6 +57,9 @@ export interface MinuteSignal {
   dea: number;
   peakDea: number;
   deaPeakRatio: number;
+  supportMa: string | null; // null only after evaluating all configured MAs on the signal bar.
+  fifteen?: FifteenFeature | null; // null: missing, stale or still warming up; undefined: legacy 1m research.
+  streak?: Streak;
 }
 export interface MinuteTrade {
   symbol: string;
@@ -79,7 +84,7 @@ export interface MinuteTrial {
 }
 export interface GainersStudy {
   version: 1;
-  strategy: "gainers-high-bull-1m";
+  strategy: "gainers-high-bull-no-ma-1m";
   createdAt: string;
   hourly: Manifest;
   minute: MinuteManifest;

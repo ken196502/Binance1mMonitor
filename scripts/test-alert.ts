@@ -1,6 +1,6 @@
 // Behavioral test for src/alert.ts + src/telegram.ts.
 // Runs a local fake Telegram Bot API and asserts the alerter's state machine end to end:
-//   - Trigger condition: any of the 3 leaderboards has >= 3 DEA high and DIFF bullish
+//   - Trigger condition: any of the 2 leaderboards has >= 3 DEA high and DIFF bullish
 //   - State memory & deduplication: only notify when counts change; do not repeat on unchanged checks
 //   - Delivery retries on failures
 //   - Recovery notification when all drop below threshold
@@ -56,6 +56,7 @@ function row(
   streakCount = 0,
   streakDir: "up" | "down" | null = null,
   weekChangePercent: number | null = 1.5,
+  supportMa: string | null = null,
 ): Row {
   return {
     symbol: symbol ?? `SYM${++n}`,
@@ -67,6 +68,7 @@ function row(
     bullish,
     high,
     weekChangePercent,
+    supportMa,
     streakCount,
     streakDir,
   };
@@ -82,17 +84,18 @@ assert.equal(formatStreak(0, "up"), "");
 assert.equal(formatStreak(3, null), "");
 console.log("0. formatStreak 阳阴连数文案 ✓");
 
-// --- 1. pickHighBull: filter high === true && bullish === true && weekChangePercent > 0 --
+// --- 1. pickHighBull: filter high === true && bullish === true && weekChangePercent > 0 && supportMa == null --
 const testList = [
-  row(true, true, "BULL1", 4, "up", 2.5),   // match (week > 0)
-  row(true, false, "BEAR1", 0, null, 3.0),  // no (not bullish)
-  row(false, true, "LOW1", 0, null, 1.0),   // no (not high)
-  row(false, false, "NONE", 0, null, 0.5),  // no
-  row(true, true, "NEG_WEEK", 2, "up", -1.2), // no (week <= 0)
-  row(true, true, "ZERO_WEEK", 2, "up", 0),  // no (week == 0)
-  row(true, true, "NULL_WEEK", 2, "up", null), // no (week is null)
-  row(true, true, "BULL2", 2, "down", 0.8), // match
-  row(true, true, "BULL1", 4, "up", 2.5),   // dupe
+  row(true, true, "BULL1", 4, "up", 2.5, null),   // match (week > 0, supportMa is null)
+  row(true, false, "BEAR1", 0, null, 3.0, null),  // no (not bullish)
+  row(false, true, "LOW1", 0, null, 1.0, null),   // no (not high)
+  row(false, false, "NONE", 0, null, 0.5, null),  // no
+  row(true, true, "NEG_WEEK", 2, "up", -1.2, null), // no (week <= 0)
+  row(true, true, "ZERO_WEEK", 2, "up", 0, null),  // no (week == 0)
+  row(true, true, "NULL_WEEK", 2, "up", null, null), // no (week is null)
+  row(true, true, "HAS_SUPPORT", 2, "up", 2.0, "ma10"), // no (has support ma)
+  row(true, true, "BULL2", 2, "down", 0.8, null), // match
+  row(true, true, "BULL1", 4, "up", 2.5, null),   // dupe
 ];
 assert.deepEqual(pickHighBull(testList), ["BULL1", "BULL2"]);
 const items = pickHighBullItems(testList);
@@ -100,14 +103,13 @@ assert.equal(items.length, 2);
 assert.equal(items[0].symbol, "BULL1");
 assert.equal(items[0].streakCount, 4);
 assert.equal(items[0].streakDir, "up");
-console.log("1. pickHighBull + pickHighBullItems filter (周K>0 + DEA高位 + DIFF多头) + dedupe ✓");
+console.log("1. pickHighBull + pickHighBullItems filter (周K>0 + DEA高位 + DIFF多头 + 无支撑) + dedupe ✓");
 
-// --- 2. below threshold on all 3 boards (< 3) → no alert ---------------------
+// --- 2. below threshold on both boards (< 3) → no alert ---------------------
 const a = new TelegramAlerter();
 const res1 = await a.check({
   gainers: [row(true, true), row(true, true)], // 2
   losers: [row(true, true)],                   // 1
-  volume: [row(true, true), row(true, false)], // 1
 });
 assert.equal(res1.summary.triggered, false);
 assert.equal(res1.sent, undefined);
@@ -122,27 +124,26 @@ const res2 = await a.check({
     row(true, true, "SOLUSDT", 1, "up"),
   ],
   losers: [],
-  volume: [row(true, true, "DOGEUSDT", 2, "up")],
 });
 assert.equal(res2.summary.triggered, true);
 assert.equal(res2.summary.gainers.count, 3);
 assert.equal(countOf(res2.sent), 1);
 assert.equal(received.length, 1);
-assert.match(received[0].text, /高位\+多头告警/);
+assert.match(received[0].text, /高位\+多头\+无支撑告警/);
 assert.match(received[0].text, /24h 涨幅榜.*3/);
 assert.doesNotMatch(received[0].text, /24h 跌幅榜/);
 assert.doesNotMatch(received[0].text, /24h 成交额榜/);
+assert.match(received[0].text, /置顶标的/);
 assert.match(received[0].text, /BTCUSDT<\/b><\/a> \(3连阳\)/);
 assert.match(received[0].text, /ETHUSDT<\/b><\/a> \(5连阴\)/);
 assert.match(received[0].text, /SOLUSDT<\/b><\/a> \(1连阳\)/);
 assert.match(received[0].auth, /TESTTOKEN/);
-console.log("3. gainers reaches 3 → alert sent only for gainers (未达标榜单不播报) with 阳阴连数 ✓");
+console.log("3. gainers reaches 3 → alert sent only for gainers (未达标榜单不播报) with 置顶标的及阳阴连数 ✓");
 
 // --- 4. check again with EXACT SAME symbols (BTC, ETH, SOL) → no repeated notification -
 const res3 = await a.check({
   gainers: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT"), row(true, true, "SOLUSDT")], // still BTC, ETH, SOL
   losers: [],
-  volume: [row(true, true, "DOGEUSDT")],                                                          // still 1
 });
 assert.equal(res3.summary.triggered, true);
 assert.equal(res3.sent, undefined); // NOT sent!
@@ -215,30 +216,28 @@ const res7 = await a.check({
 assert.equal(res7.summary.triggered, true);
 assert.equal(countOf(res7.sent), 1);
 assert.equal(received.length, 3);
-assert.match(received[2].text, /高位\+多头告警/);
+assert.match(received[2].text, /高位\+多头\+无支撑告警/);
 assert.match(received[2].text, /24h 跌幅榜.*3/);
 console.log("8. re-trigger after recovery on losers → alert sent ✓");
 
 // --- 9. clear & re-trigger with send failure → retries on next check ----------
 a.resetState();
 failNext = true;
-// Trigger again with volume: 3 (BTC, ETH, SOL)
+// Trigger again with gainers: 3 (BTC, ETH, SOL)
 const res8 = await a.check({
-  gainers: [],
+  gainers: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT"), row(true, true, "SOLUSDT")], // 3
   losers: [],
-  volume: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT"), row(true, true, "SOLUSDT")], // 3
 });
 assert.equal(res8.sent?.ok, false); // failed
 assert.equal(received.length, 3);   // not recorded in fake
-// Next check with volume: 3 — must retry because previous send failed!
+// Next check with gainers: 3 — must retry because previous send failed!
 const res9 = await a.check({
-  gainers: [],
+  gainers: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT"), row(true, true, "SOLUSDT")], // 3
   losers: [],
-  volume: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT"), row(true, true, "SOLUSDT")], // 3
 });
 assert.equal(res9.sent?.ok, true); // succeeded!
 assert.equal(received.length, 4);
-assert.match(received[3].text, /24h 成交额榜.*3/);
+assert.match(received[3].text, /24h 涨幅榜.*3/);
 console.log("9. failed send retries on subsequent check until delivered ✓");
 
 // --- 10. unconfigured telegram → explicit failure without crashing ------------

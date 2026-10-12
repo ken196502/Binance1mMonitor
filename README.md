@@ -29,14 +29,16 @@ npm run research -- gainers --data data/research/hourly-initial --end 2026-10-11
 
 > 只有当窗口内 DEA 曾达到正值峰值时才判定为"高位"，避免全程为负时把"最不低"的值误判为高位。
 
-## Telegram 计数告警（DEA 高位 + DIFF 多头）
+## Telegram 计数告警（周K>0 + DEA 高位 + DIFF 多头 + 无支撑）
 
 在面板高亮之外，后端还会进行**榜单告警判定**：
 
 当 **24h 涨幅榜、跌幅榜、成交额榜** 三个榜单中，**任意一个榜单**出现 **≥ `TG_ALERT_MIN`（默认 3）个**同时满足：
 
+- **周K > 0**（本周涨幅为正，当前价高于本周开盘价）；
 - **DEA 高位**（`DEA ≥ HIGH_RATIO × 窗口峰值` 且 `DEA > 0`，与面板 DEA 列「高位」判定一致）；
-- **DIFF 多头**（`DIF ≥ DEA`，与面板 DIFF 列「多头」判定一致）。
+- **DIFF 多头**（`DIF ≥ DEA`，与面板 DIFF 列「多头」判定一致）；
+- **无支撑**（`supportMa` 为 N/A，即当前未获得任何 MA 均线支撑）。
 
 的币种时，发出 Telegram 通知：
 
@@ -150,3 +152,18 @@ web/           # React 前端（Vite + TypeScript）
 开发验证：`npm run typecheck`、`npm test`、`npm run build`。测试使用本地模拟数据与模拟 Telegram 服务，不请求真实通知服务。
 
 > 仅用于研究/观察，不构成交易建议。MACD 1m 信号噪声大，高位死叉需结合其他条件判断。
+
+### M1 Pro GPU 策略挖掘
+
+以现有报告为基线，交叉搜索1m、15m各自的DEA高/中/低及DIFF多/空，共36种状态组合，再交叉独立的高位阈值与连阳/连阴根数；两个周期都强制无 MA 支撑（MA5/7/10/20/25/30/60/99/120），可用 Apple Metal 批量挖掘 1–60 分钟、小止损、扣费后目标盈亏比 ≥3 的参数组合。默认10倍逐仓、每笔100 USDT保证金、总资金1000 USDT；按账户收益与净值回撤选参，处理资金不足、保证金占用和近似强平。默认使用报告的本地完整行情和 `.env` Telegram 配置，每轮正收益训练新纪录、最终验证结果会播报，并保存断点与失败重试队列。
+
+```bash
+npm run mine:setup
+npm run mine -- --fetch-fifteen --batch 128
+# 中断后继续
+npm run mine -- --resume --batch 128
+```
+
+两个周期分别配置、交叉组合：1m连续根数1/2/3/5/8，15m为1/2/3/4/6，各含连阳、连阴和不限。默认从58,063,544组有效参数中按状态和连续条件分层抽取400,000组（`--max-trials`），固定种子、无放回，完成只表示预定清单跑完。
+
+默认输出 `reports/research/gainers-gpu-margin-no-ma-streak/report.md`。训练发现会明确标注“尚未留出验证”；复用原报告的一天数据不构成新独立验证。完整选项、验证流程、新数据获取及 Telegram 补发见 [GPU 挖掘说明](research/README.md#m1-pro-gpu-超短线挖掘与-telegram-成果播报)。

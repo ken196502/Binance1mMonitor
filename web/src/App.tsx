@@ -4,7 +4,7 @@ import { GroupSection } from "./components/GroupSection";
 import { Countdown } from "./components/Countdown";
 import "./App.css";
 
-type TabId = "s1" | "s2" | "s3";
+type TabId = "s1" | "s2";
 
 interface TabDef {
   id: TabId;
@@ -14,7 +14,6 @@ interface TabDef {
 const TABS: TabDef[] = [
   { id: "s1", label: "涨幅前十" },
   { id: "s2", label: "跌幅前十" },
-  { id: "s3", label: "成交额前十" },
 ];
 
 export default function App() {
@@ -100,21 +99,12 @@ export default function App() {
               changeKey="priceChangePercent"
               active={active === "s2"}
             />
-            <GroupSection
-              id="s3"
-              title="24h 成交额前十"
-              changeHeader="成交额(亿)"
-              rows={status.volume}
-              changeKey="quoteVolume"
-              active={active === "s3"}
-            />
           </>
         ) : (
-          // keep the three sections present (so narrow-screen CSS stays coherent) but empty
+          // keep the two sections present (so narrow-screen CSS stays coherent) but empty
           <>
             <GroupSection id="s1" title="24h 涨幅前十" changeHeader="涨幅%" rows={[]} changeKey="priceChangePercent" active={active === "s1"} />
             <GroupSection id="s2" title="24h 跌幅前十" changeHeader="跌幅%" rows={[]} changeKey="priceChangePercent" active={active === "s2"} />
-            <GroupSection id="s3" title="24h 成交额前十" changeHeader="成交额(亿)" rows={[]} changeKey="quoteVolume" active={active === "s3"} />
           </>
         )}
       </div>
@@ -123,6 +113,6 @@ export default function App() {
 }
 
 function countAlerts(status: NonNullable<ReturnType<typeof useStatus>["status"]>, id: TabId): number {
-  const rows = id === "s1" ? status.gainers : id === "s2" ? status.losers : status.volume;
+  const rows = id === "s1" ? status.gainers : status.losers;
   return rows.filter((r) => r.alert).length;
 }

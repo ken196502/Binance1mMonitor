@@ -3,18 +3,18 @@ import type { Row } from "../../../src/types.ts";
 import { StatusRow } from "./Row";
 
 interface GroupSectionProps {
-  id: string; // s1 | s2 | s3
-  title: string; // 24h 涨幅前十 / 跌幅前十 / 成交额前十
-  changeHeader: string; // 涨幅% / 跌幅% / 成交额(亿)
+  id: string; // s1 | s2
+  title: string; // 24h 涨幅前十 / 跌幅前十
+  changeHeader: string; // 涨幅% / 跌幅%
   rows: Row[];
-  changeKey: "priceChangePercent" | "quoteVolume";
+  changeKey?: "priceChangePercent" | "quoteVolume";
   active: boolean; // narrow-screen tab active state
 }
 
 // Sortable columns. Each header maps to a key whose value is extracted from a
 // row via sortValue below. The change column's value depends on the group's
 // changeKey (priceChangePercent for gainers/losers, quoteVolume for volume).
-type SortKey = "symbol" | "change" | "weekChange" | "lastPrice" | "streak" | "high" | "bullish";
+type SortKey = "rank" | "shift" | "symbol" | "change" | "support" | "lastPrice" | "streak" | "high" | "bullish";
 type SortDir = "asc" | "desc";
 
 export function GroupSection({
@@ -34,24 +34,26 @@ export function GroupSection({
   const changeLabel = (r: Row) =>
     changeKey === "quoteVolume" ? r.quoteVolume / 1e8 : r.priceChangePercent;
 
-  const cols: { key: SortKey; label: string }[] = [
+  const cols: { key: SortKey; label: string; className?: string }[] = [
+    { key: "rank", label: "排名", className: "col-rank" },
+    { key: "shift", label: "升跌", className: "col-shift" },
     { key: "symbol", label: "币种" },
     { key: "change", label: changeHeader },
-    { key: "weekChange", label: "周K" },
+    { key: "support", label: "支撑" },
     { key: "streak", label: "连续" },
     { key: "high", label: "DEA" },
     { key: "bullish", label: "DIFF" },
   ];
 
   // Clicking a header: same key → toggle direction; new key → sensible default
-  // (string column asc, numeric/boolean columns desc so biggest/most-notable
+  // (rank and string column asc, numeric/boolean columns desc so biggest/most-notable
   // land on top).
   const onSort = (key: SortKey) => {
     if (key === sortKey) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(key);
-      setSortDir(key === "symbol" ? "asc" : "desc");
+      setSortDir(key === "symbol" || key === "rank" ? "asc" : "desc");
     }
   };
 
@@ -59,12 +61,23 @@ export function GroupSection({
   // | null; nulls (missing data) always sort to the bottom regardless of dir.
   const valueAt = (r: Row, key: SortKey): number | string | null => {
     switch (key) {
+      case "rank":
+        return r.rank != null ? r.rank : r.isDropped ? 999 : null;
+      case "shift": {
+        if (r.isDropped) return -999;
+        if (r.rankChange === "up") return r.rankDelta ?? 100;
+        if (r.rankChange === "down") return r.rankDelta != null ? -Math.abs(r.rankDelta) : -100;
+        return 0;
+      }
       case "symbol":
         return r.symbol;
       case "change":
         return changeLabel(r);
-      case "weekChange":
-        return r.weekChangePercent ?? null;
+      case "support": {
+        if (!r.supportMa) return null;
+        const num = parseInt(r.supportMa.replace(/^ma/i, ""), 10);
+        return isNaN(num) ? r.supportMa : num;
+      }
       case "lastPrice":
         return r.lastPrice;
       case "streak":
@@ -83,10 +96,21 @@ export function GroupSection({
     }
   };
 
+  const PINNED_SYMBOLS = ["BTCUSDT", "SOLUSDT"];
+
   const sortedRows = useMemo(() => {
-    if (!sortKey) return rows;
+    const pinned = PINNED_SYMBOLS
+      .map((sym) => rows.find((r) => r.symbol === sym))
+      .filter(Boolean) as Row[];
+    const unpinned = rows.filter((r) => !PINNED_SYMBOLS.includes(r.symbol));
+
+    if (!sortKey) return [...pinned, ...unpinned];
     const dir = sortDir === "asc" ? 1 : -1;
-    return [...rows].sort((a, b) => {
+    const sortedUnpinned = [...unpinned].sort((a, b) => {
+      // 跌出前十的始终排在尾部
+      if (a.isDropped && !b.isDropped) return 1;
+      if (!a.isDropped && b.isDropped) return -1;
+
       const va = valueAt(a, sortKey);
       const vb = valueAt(b, sortKey);
       if (va == null && vb == null) return 0;
@@ -96,6 +120,7 @@ export function GroupSection({
       if (va > vb) return 1 * dir;
       return 0; // stable: ties keep original (server) order
     });
+    return [...pinned, ...sortedUnpinned];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, sortKey, sortDir, changeKey]);
 
@@ -115,7 +140,7 @@ export function GroupSection({
                 const isActive = sortKey === c.key;
                 const arrow = isActive ? (sortDir === "asc" ? "▲" : "▼") : "↕";
                 return (
-                  <th key={c.key}>
+                  <th key={c.key} className={c.className}>
                     <button
                       type="button"
                       className={`sort-th${isActive ? " active" : ""}`}

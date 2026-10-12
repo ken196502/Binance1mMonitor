@@ -13,7 +13,7 @@ const parameterNames = ["highRatio", "holdMinutes", "stopLossPercent", "takeProf
 export async function writeGainersReport(study: GainersStudy, frames: Frame[], directory: string): Promise<void> {
   await mkdir(directory, { recursive: true });
   if ((await readdir(directory)).length) throw new Error(`报告目录非空，请指定新目录：${directory}`);
-  const files = ["types.ts", "data.ts", "client.ts", "backtest.ts", "cli.ts", "gainers.ts", "gainers-types.ts", "gainers-config.ts", "gainers-data.ts", "gainers-archive.ts", "gainers-backtest.ts", "gainers-report.ts"];
+  const files = ["types.ts", "data.ts", "client.ts", "backtest.ts", "cli.ts", "gainers.ts", "gainers-types.ts", "gainers-config.ts", "gainers-data.ts", "gainers-archive.ts", "gainers-backtest.ts", "gainers-report.ts", "../src/macd.ts"];
   const sourceHashes = Object.fromEntries(await Promise.all(files.map(async (file) => [file, digest(await readFile(new URL(file, import.meta.url)))])));
   const engineSha256 = digest(Buffer.from(JSON.stringify(sourceHashes)));
   const { hourly: h, minute: m, options: o, winner: w, split: s } = study;
@@ -23,13 +23,13 @@ export async function writeGainersReport(study: GainersStudy, frames: Frame[], d
   const eligible = frames.map((f) => f.eligibleSymbols);
   const combinations = o.grid.highRatio.length * o.grid.holdMinutes.length * o.grid.stopLossPercent.reduce((sum, stop) => sum + o.grid.takeProfitPercent.filter((take) => take / stop >= 3).length, 0);
   const lines = [
-    "# Gainers：1m DEA 高位 + DIF 多头做空研究", "",
+    "# Gainers：1m DEA 高位 + DIF 多头 + 无 MA 支撑做空研究", "",
     w ? `最终留出测试 ${w.test.trades} 笔；平均净收益 ${number(w.test.meanNetPercent)}%；扣费胜率 ${number(w.test.winRate, 1)}%。` : "没有参数达到训练和验证样本下限，未进入最终测试。", "",
     w && w.test.trades ? (w.test.meanNetPercent! > 0 ? "本次留出段平均净收益为正，仍需新的独立时期验证。" : "本次留出段平均净收益不为正，当前结果不支持该参数集的盈利假设。") : "没有可用于评价效果的最终测试交易。",
     "这是等名义金额的单笔交易统计，不是组合资金收益。", "",
     `生成时间：${study.createdAt}；策略：${study.strategy}；随机种子：${o.seed}。`, "",
     "## 入场与退出", "",
-    `只研究历史涨幅榜前 ${o.topN} 名。每分钟收盘后，MACD(12,26,9) 的 **DEA > 0、DEA ≥ highRatio × 最近 ${o.highWindow} 根已收盘 1m DEA 峰值（含当根）、DIF ≥ DEA** 即可做空。高位判断和多头状态是全部指标入场条件。`, "",
+    `只研究历史涨幅榜前 ${o.topN} 名。每分钟收盘后，MACD(12,26,9) 的 **DEA > 0、DEA ≥ highRatio × 最近 ${o.highWindow} 根已收盘 1m DEA 峰值（含当根）、DIF ≥ DEA** 且无 MA 支撑才可做空。MA5/7/10/20/25/30/60/99/120 均不满足信号分钟 low < MA < close；均线使用含当根的已收盘 close，与监控共用计算函数，等于边界不算支撑。`, "",
     "不要求死叉、阴线、连阴、量比、周涨幅或额外的日涨幅门槛。DIF 等于 DEA 也算多头。下一根分钟线开盘入场；同币同时一笔，其他币可同时持仓；退出后下一分钟条件仍满足即可重入，没有冷却期。离榜不强制平仓。", "",
     `小止损网格 ${o.grid.stopLossPercent.join(" / ")}%；大止盈网格 ${o.grid.takeProfitPercent.join(" / ")}%；仅搜索止盈/止损 ≥ 3 的组合。最长持有 ${o.grid.holdMinutes.join(" / ")} 分钟；DEA 高位比例 ${o.grid.highRatio.join(" / ")}。`, "",
     `单边手续费 ${o.feeBps} bps + 滑点 ${o.slippageBps} bps；入场、出场分别按各自名义金额扣费。毛收益 = (入场价 − 出场价) / 入场价 × 100%。`, "",
@@ -78,8 +78,8 @@ export async function writeGainersReport(study: GainersStudy, frames: Frame[], d
     `- 小时清单 SHA256：\`${m.plan.hourlyHash}\`；分钟清单 SHA256：\`${digest(Buffer.from(JSON.stringify(m)))}\`；研究代码索引 SHA256：\`${engineSha256}\`。逐源文件哈希见 result.json。`, "");
   const trials: unknown[][] = [["id", "round", ...parameterNames, "train_trades", "train_win_rate_pct", "train_mean_net_pct", "train_drawdown_points", "train_missing", "train_purged", "validation_trades", "validation_mean_net_pct"]];
   for (const t of study.trials) trials.push([t.id, t.round, ...parameterNames.map((k) => t.parameters[k]), t.train.trades, t.train.winRate, t.train.meanNetPercent, t.train.maxDrawdownPoints, t.train.missing, t.train.purged, t.validation?.trades, t.validation?.meanNetPercent]);
-  const trades: unknown[][] = [["symbol", "historical_rank", "board_utc", "signal_close_utc", "entry_utc", "exit_utc", "entry_price", "exit_price", "reason", "ambiguous_minute", "gross_pct", "net_pct", "dif_1m", "dea_1m", "peak_dea_1m", "dea_peak_ratio"]];
-  for (const t of w?.testTrades ?? []) trades.push([t.symbol, t.rank, iso(t.boardTime), iso(t.signal.time), iso(t.entryTime), iso(t.exitTime), t.entryPrice, t.exitPrice, t.reason, t.ambiguous, t.grossPercent, t.netPercent, t.signal.dif, t.signal.dea, t.signal.peakDea, t.signal.deaPeakRatio]);
+  const trades: unknown[][] = [["symbol", "historical_rank", "board_utc", "signal_close_utc", "entry_utc", "exit_utc", "entry_price", "exit_price", "reason", "ambiguous_minute", "gross_pct", "net_pct", "dif_1m", "dea_1m", "peak_dea_1m", "dea_peak_ratio", "support_ma"]];
+  for (const t of w?.testTrades ?? []) trades.push([t.symbol, t.rank, iso(t.boardTime), iso(t.signal.time), iso(t.entryTime), iso(t.exitTime), t.entryPrice, t.exitPrice, t.reason, t.ambiguous, t.grossPercent, t.netPercent, t.signal.dif, t.signal.dea, t.signal.peakDea, t.signal.deaPeakRatio, t.signal.supportMa]);
   const boards: unknown[][] = [["time_utc", "board", "rank", "symbol", "change_24h_pct", "quote_volume_24h", "eligible_market_symbols"]];
   for (const f of frames) for (const row of f.boards.gainers) boards.push([iso(f.time), "gainers", row.rank, row.symbol, row.dayChange, row.quoteVolume, f.eligibleSymbols]);
   await writeFile(path.join(directory, "result.json"), JSON.stringify({ ...study, sourceHashes, engineSha256 }, null, 2));

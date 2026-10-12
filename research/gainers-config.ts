@@ -16,7 +16,7 @@ export function validateGainersGrid(value: unknown): GainersGrid {
       (key === "highRatio" || key === "stopLossPercent" ? v > 1 : key === "holdMinutes" ? !Number.isInteger(v) || v > 1440 : v >= 100))) throw new Error(`${key} 包含无效值（止损必须 >0 且 ≤1%）`);
   }
   const grid = input as unknown as GainersGrid;
-  if (Math.max(...grid.takeProfitPercent) / Math.min(...grid.stopLossPercent) < 3) throw new Error("至少需要一组止盈/止损比 ≥3 的参数");
+  if (Math.max(...grid.takeProfitPercent) / Math.min(...grid.stopLossPercent) < 3 - 1e-12) throw new Error("至少需要一组止盈/止损比 ≥3 的参数");
   return grid;
 }
 export function validateGainersOptions(o: GainersOptions): void {

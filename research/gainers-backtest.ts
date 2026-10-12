@@ -1,18 +1,31 @@
+import { deaLevel, type FifteenParameters } from './fifteen.ts';
+import { matchesStreak } from './streak.ts';
 import { shortReturn, summarize } from "./backtest.ts";
 import { HOUR, type Dataset, type Frame } from "./types.ts";
 import { validateGainersOptions } from "./gainers-config.ts";
+import { calculateSupportMaAt, consecutiveStreakAt, SUPPORT_MA_PERIODS } from "../src/macd.ts";
 import { MINUTE, type GainersOptions, type GainersParameters, type GainersStudy, type MinuteDataset, type MinuteSignal, type MinuteTrade, type MinuteTrial } from "./gainers-types.ts";
 
-/** The only indicator predicates for entry. DIF equality counts as bullish. */
+/** MACD predicates; the entry rule also requires an evaluated absence of MA support. */
 export function highBull(dif: number, dea: number, peakDea: number, highRatio: number): boolean {
   return [dif, dea, peakDea, highRatio].every(Number.isFinite) && dea > 0 && peakDea > 0 && dif >= dea && dea >= highRatio * peakDea;
 }
 
-export function buildMinuteSignals(data: MinuteDataset, frames: Frame[], highWindow: number, minRatio: number): MinuteSignal[] {
+export function matchesMinuteEntry(signal: MinuteSignal, highRatio: number, p?: FifteenParameters): boolean {
+  if (!matchesStreak(signal.streak, p?.minuteStreak)) return false;
+  if (!p || p.minuteDea === undefined && p.minuteDif === undefined) return signal.supportMa === null && highBull(signal.dif, signal.dea, signal.peakDea, highRatio);
+  if (signal.supportMa !== null || ![signal.dea, signal.dif, signal.peakDea].every(Number.isFinite)) return false;
+  const level = deaLevel(signal.dea, signal.peakDea, highRatio), direction = signal.dif >= signal.dea ? 'bull' : 'bear';
+  return (p.minuteDea === undefined || p.minuteDea === 'any' || p.minuteDea === level)
+    && (p.minuteDif === undefined || p.minuteDif === 'any' || p.minuteDif === direction);
+}
+
+export function buildMinuteSignals(data: MinuteDataset, frames: Frame[], highWindow: number, minRatio: number, allStates = false): MinuteSignal[] {
   const members = new Map(frames.map((f) => [f.time, new Map(f.boards.gainers.map((o) => [o.symbol, o.rank]))]));
   const signals: MinuteSignal[] = [];
   const { start, end, warmupMinutes } = data.manifest.plan;
   for (const [symbol, bars] of data.candles) {
+    const supportCandles = bars.map((bar) => ({ time: bar[0], open: bar[1], close: bar[4], low: bar[3] }));
     let fast = 0, slow = 0, dea = 0, segmentStart = 0;
     const deas: number[] = [];
     for (let i = 0; i < bars.length; i++) {
@@ -26,27 +39,35 @@ export function buildMinuteSignals(data: MinuteDataset, frames: Frame[], highWin
       }
       deas.push(dea);
       const time = c[0] + MINUTE;
-      if (time < start || time >= end || i - segmentStart + 1 < warmupMinutes) continue;
+      if (time < start || time >= end || i - segmentStart + 1 < Math.max(warmupMinutes, ...SUPPORT_MA_PERIODS)) continue;
       // Hourly membership is known only from this hour's already-closed 24h window.
       const boardTime = Math.floor(time / HOUR) * HOUR;
       const rank = members.get(boardTime)?.get(symbol);
       if (rank == null) continue;
       const dif = fast - slow;
       const peakDea = Math.max(...deas.slice(i - highWindow + 1, i + 1));
-      if (!highBull(dif, dea, peakDea, minRatio)) continue;
-      signals.push({ symbol, rank, boardTime, time, index: i, dif, dea, peakDea, deaPeakRatio: dea / peakDea });
+      if (!allStates && !highBull(dif, dea, peakDea, minRatio)) continue;
+      const supportMa = calculateSupportMaAt(supportCandles, i);
+      if (supportMa !== null) continue;
+      signals.push({ symbol, rank, boardTime, time, index: i, dif, dea, peakDea, deaPeakRatio: peakDea === 0 ? 0 : dea / peakDea, supportMa,
+        streak: consecutiveStreakAt(supportCandles, i, MINUTE) });
     }
   }
   return signals.sort((a, b) => a.time - b.time || a.symbol.localeCompare(b.symbol));
 }
 
 export function backtestMinutes(data: MinuteDataset, signals: MinuteSignal[], p: GainersParameters,
-  start: number, end: number, costBps: number) {
+  start: number, end: number, costBps: number, exitOffsets?: readonly number[]) {
+  // GPU supplies the first exit/gap offset. -1 asks for a scalar replay when a
+  // float32 comparison is too close to a threshold. Accounting stays float64.
+  if (exitOffsets && (exitOffsets.length !== signals.length || exitOffsets.some((x) => !Number.isInteger(x) || x < -1 || x >= p.holdMinutes))) {
+    throw new Error("GPU exit offsets do not match the signal/parameter batch");
+  }
   const trades: MinuteTrade[] = [];
   const available = new Map<string, number>();
   let missing = 0, purged = 0;
-  for (const signal of signals) {
-    if (signal.time < start || signal.time >= end || !highBull(signal.dif, signal.dea, signal.peakDea, p.highRatio) ||
+  for (const [signalIndex, signal] of signals.entries()) {
+    if (signal.time < start || signal.time >= end || !matchesMinuteEntry(signal, p.highRatio) ||
       (available.get(signal.symbol) ?? 0) > signal.time) continue;
     const deadline = signal.time + p.holdMinutes * MINUTE;
     if (deadline > end) { purged++; continue; }
@@ -57,7 +78,7 @@ export function backtestMinutes(data: MinuteDataset, signals: MinuteSignal[], p:
     const entryPrice = first[1];
     const stop = entryPrice * (1 + p.stopLossPercent / 100);
     const target = entryPrice * (1 - p.takeProfitPercent / 100);
-    for (let offset = 0; offset < p.holdMinutes; offset++) {
+    for (let offset = Math.max(0, exitOffsets?.[signalIndex] ?? 0); offset < p.holdMinutes; offset++) {
       const c = bars[signal.index + 1 + offset];
       if (!c || c[0] !== signal.time + offset * MINUTE) { missing++; break; }
       let exitPrice: number | null = null;
@@ -90,7 +111,7 @@ export function runGainersStudy(hourly: Dataset, minute: MinuteDataset, frames: 
   const trainEnd = start + Math.floor(duration * options.trainRatio) * MINUTE;
   const validationEnd = trainEnd + Math.floor(duration * options.validationRatio) * MINUTE;
   if (Math.min(trainEnd - start, validationEnd - trainEnd, end - validationEnd) < Math.max(...options.grid.holdMinutes) * MINUTE) throw new Error("每个数据分段需覆盖最大持有期");
-  log(`1m DEA 高位 + DIF 多头候选 ${signals.length} 条；开始 gainers 独立参数搜索`);
+  log(`1m DEA 高位 + DIF 多头 + 无 MA 支撑候选 ${signals.length} 条；开始 gainers 独立参数搜索`);
   const cost = options.feeBps + options.slippageBps;
   let seed = options.seed;
   const random = () => { seed = (Math.imul(1664525, seed) + 1013904223) >>> 0; return seed / 4294967296; };
@@ -108,7 +129,7 @@ export function runGainersStudy(hourly: Dataset, minute: MinuteDataset, frames: 
         p = { ...elites[Math.floor(random() * elites.length)].parameters };
         for (let i = 0; i < 2; i++) { const key = keys[Math.floor(random() * keys.length)]; p[key] = values[key]; }
       }
-      if (p.takeProfitPercent / p.stopLossPercent < 3) continue;
+      if (p.takeProfitPercent / p.stopLossPercent < 3 - 1e-12) continue;
       const signature = JSON.stringify(p);
       if (seen.has(signature)) continue;
       seen.add(signature);
@@ -127,6 +148,6 @@ export function runGainersStudy(hourly: Dataset, minute: MinuteDataset, frames: 
     const result = backtestMinutes(minute, signals, selected.parameters, validationEnd, end, cost);
     winner = { trialId: selected.id, parameters: selected.parameters, train: selected.train, validation: selected.validation!, test: result.metrics, testTrades: result.trades };
   }
-  return { version: 1, strategy: "gainers-high-bull-1m", createdAt: new Date().toISOString(), hourly: hourly.manifest,
+  return { version: 1, strategy: "gainers-high-bull-no-ma-1m", createdAt: new Date().toISOString(), hourly: hourly.manifest,
     minute: minute.manifest, options, signalCount: signals.length, split: { start, trainEnd, validationEnd, end }, trials, winner };
 }

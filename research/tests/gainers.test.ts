@@ -31,7 +31,7 @@ function minuteData(bars: Bar[], frames = [frame(START)], end = START + 10 * HOU
     plan: planGainersMinutes(hourly, frames, options), files: {} }, candles: new Map([[SYMBOL, bars]]) };
 }
 function signal(time = START, index = 0): MinuteSignal {
-  return { symbol: SYMBOL, rank: 1, boardTime: Math.floor(time / HOUR) * HOUR, time, index, dif: 1, dea: 0.9, peakDea: 1, deaPeakRatio: 0.9 };
+  return { symbol: SYMBOL, rank: 1, boardTime: Math.floor(time / HOUR) * HOUR, time, index, dif: 1, dea: 0.9, peakDea: 1, deaPeakRatio: 0.9, supportMa: null };
 }
 function bar(time: number, open = 100, high = 100.1, low = 99.9, close = 100): Bar {
   return [time, open, high, low, close, 10, 1000];
@@ -43,7 +43,7 @@ function accelerating(count: number, start = START - 300 * MINUTE): Bar[] {
   });
 }
 
-test("only positive high DEA and bullish DIF are required, including equality", () => {
+test("MACD high-bull predicate requires positive high DEA and includes DIF equality", () => {
   assert.equal(highBull(0.8, 0.8, 1, 0.8), true);
   assert.equal(highBull(0.799, 0.8, 1, 0.8), false);
   assert.equal(highBull(1, 0.799, 1, 0.8), false);
@@ -149,4 +149,28 @@ test("multiround search is deterministic and final-test price changes cannot sel
   assert.deepEqual(other.trials, a.trials);
   assert.deepEqual(other.winner?.parameters, a.winner.parameters);
   assert.notDeepEqual(other.winner?.test, a.winner.test);
+});
+
+test('MA support excludes an otherwise unchanged high-bull signal and uses only its closed candle', () => {
+  const bars = accelerating(360), frames = [frame(START)];
+  const clean = buildMinuteSignals(minuteData(bars), frames, 100, 0.8);
+  assert.equal(clean.length, 60);
+  assert.ok(clean.every((s) => s.supportMa === null));
+  // Lower only the signal candle's wick: MACD and every closing price stay identical.
+  const supported = structuredClone(bars); supported[299][3] = 90;
+  const filtered = buildMinuteSignals(minuteData(supported), frames, 100, 0.8);
+  assert.equal(filtered.length, 59);
+  assert.ok(!filtered.some((s) => s.time === START));
+  assert.deepEqual(filtered, clean.slice(1));
+  // An entry bar with support cannot retroactively remove the preceding signal.
+  const futureWick = structuredClone(bars); futureWick[300][3] = 80;
+  assert.deepEqual(buildMinuteSignals(minuteData(futureWick), frames, 100, 0.8)[0], clean[0]);
+});
+
+test('minute CPU backtest rejects supported or unevaluated signal metadata', () => {
+  const d = minuteData([bar(START - MINUTE), bar(START, 100, 101, 99)]);
+  for (const supportMa of ['ma5', 'ma120', undefined]) {
+    const s = { ...signal(), supportMa } as MinuteSignal;
+    assert.equal(backtestMinutes(d, [s], parameters, START, START + HOUR, 7).trades.length, 0);
+  }
 });

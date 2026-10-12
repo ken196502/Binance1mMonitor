@@ -12,7 +12,10 @@
     "build": "npm --prefix web run build",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "test": "tsx --test research/tests/*.test.ts && tsx scripts/test-alert.ts",
-    "research": "tsx --env-file-if-exists=.env research/cli.ts"
+    "research": "tsx --env-file-if-exists=.env research/cli.ts",
+    "mine": "tsx --env-file-if-exists=.env research/miner.ts",
+    "mine:setup": "uv venv --python 3.12 .venv-gpu && uv pip install --python .venv-gpu/bin/python -r research/gpu/requirements.txt",
+    "test:gpu": "GPU_REQUIRED=1 tsx --test research/tests/gpu.test.ts"
   },
   "dependencies": {
     "@esbuild/linux-arm64": "^0.28.2",

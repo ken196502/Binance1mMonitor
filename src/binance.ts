@@ -4,21 +4,41 @@
 // there: set HTTPS_PROXY (e.g. http://127.0.0.1:7890) and EnvHttpProxyAgent will
 // apply it to every fetch below. With no proxy env vars set it is a no-op.
 
-import { EnvHttpProxyAgent, ProxyAgent, setGlobalDispatcher } from "undici";
+if (typeof process.loadEnvFile === "function") {
+  try {
+    process.loadEnvFile();
+  } catch {
+    // ignore if .env does not exist
+  }
+}
+
+import {
+  fetch as undiciFetch,
+  EnvHttpProxyAgent,
+  ProxyAgent,
+  type Dispatcher,
+  type Response as UndiciResponse,
+} from "undici";
 import type { Candle } from "./macd.ts";
 
-// Proxy routing for Node's global fetch, resolved in priority order:
-//   1. PROXY (or BINANCE_PROXY) — app-specific, always forced when set.
-//   2. Standard HTTP_PROXY / HTTPS_PROXY / NO_PROXY env vars.
-//   3. No proxy at all (direct).
-// fapi.binance.com is blocked in some regions and has no public mirror (unlike
-// spot), so PROXY is usually required there — e.g. PROXY=http://127.0.0.1:7890.
-const PROXY = process.env.PROXY ?? process.env.BINANCE_PROXY ?? "";
+// Proxy routing for Binance requests:
+const PROXY =
+  process.env.PROXY ??
+  process.env.BINANCE_PROXY ??
+  process.env.HTTPS_PROXY ??
+  process.env.https_proxy ??
+  process.env.HTTP_PROXY ??
+  process.env.http_proxy ??
+  "";
+
 if (PROXY) {
-  setGlobalDispatcher(new ProxyAgent(PROXY));
-} else {
-  setGlobalDispatcher(new EnvHttpProxyAgent());
+  if (!process.env.HTTPS_PROXY) process.env.HTTPS_PROXY = PROXY;
+  if (!process.env.https_proxy) process.env.https_proxy = PROXY;
+  if (!process.env.HTTP_PROXY) process.env.HTTP_PROXY = PROXY;
+  if (!process.env.http_proxy) process.env.http_proxy = PROXY;
 }
+
+const dispatcher: Dispatcher = new EnvHttpProxyAgent();
 
 // fapi.binance.com is the only official USDM futures host. Override with
 // BINANCE_BASE if you need a custom endpoint. FALLBACK_BASE defaults to empty
@@ -62,14 +82,75 @@ function isNetworkError(e: unknown): boolean {
   );
 }
 
-/** fetch() wrapper that retries once on FALLBACK_BASE (if configured) on a network error. */
-async function binanceFetch(path: string): Promise<Response> {
+/** Timestamp in ms until which we must back off due to 418 IP ban or 429 rate limit. */
+let backoffUntil = 0;
+let backoffReason = "";
+
+export function getBackoffStatus(): { active: boolean; backoffUntil: number; reason: string } {
+  return {
+    active: Date.now() < backoffUntil,
+    backoffUntil,
+    reason: backoffReason,
+  };
+}
+
+const DEFAULT_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  Accept: "application/json",
+};
+
+/** fetch() wrapper that handles rate limiting, bans, and fallback base retry. */
+async function binanceFetch(path: string): Promise<UndiciResponse> {
+  const now = Date.now();
+  if (now < backoffUntil) {
+    const remainSec = Math.ceil((backoffUntil - now) / 1000);
+    throw new Error(`Binance 限频/封禁冷静期中 (${backoffReason})，剩余 ${remainSec} 秒，已暂停请求`);
+  }
+
+  let r: UndiciResponse;
   try {
-    return await fetch(`${BASE}${path}`);
+    r = await undiciFetch(`${BASE}${path}`, {
+      dispatcher,
+      headers: DEFAULT_HEADERS,
+    });
   } catch (e) {
     if (!FALLBACK_BASE || FALLBACK_BASE === BASE || !isNetworkError(e)) throw e;
-    return fetch(`${FALLBACK_BASE}${path}`);
+    r = await undiciFetch(`${FALLBACK_BASE}${path}`, {
+      dispatcher,
+      headers: DEFAULT_HEADERS,
+    });
   }
+
+  if (r.status === 418 || r.status === 429) {
+    const retryAfter = Number(r.headers.get("retry-after") ?? 60);
+    let waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60;
+    let detailMsg = `HTTP ${r.status}`;
+    try {
+      const errBody = (await r.json()) as any;
+      if (errBody?.msg) {
+        detailMsg = errBody.msg;
+        const match = /banned until (\d+)/i.exec(errBody.msg);
+        if (match) {
+          const untilTs = Number(match[1]);
+          if (untilTs > Date.now()) {
+            waitSec = Math.ceil((untilTs - Date.now()) / 1000);
+          }
+        }
+      }
+    } catch {
+      // ignore json parse error
+    }
+    // 限制单次避让上限（默认最多等待 300s），避免因币安返回长时间戳导致程序过长时间被彻底锁死
+    // 但必须预留足够冷静期，避免在封禁未结束前过早重试导致封禁被币安再次顺延
+    const maxBackoffSec = Number(process.env.MAX_BACKOFF_SECONDS ?? 300);
+    const actualWaitSec = Math.min(waitSec, maxBackoffSec);
+    backoffUntil = Date.now() + actualWaitSec * 1000;
+    backoffReason = `HTTP ${r.status}: ${detailMsg}`;
+    throw new Error(`Binance 触发限频/封禁 (${backoffReason})，避让等待 ${actualWaitSec} 秒后重试`);
+  }
+
+  return r;
 }
 
 export async function fetch24hTickers(): Promise<Ticker24h[]> {
@@ -89,14 +170,13 @@ export async function fetch24hTickers(): Promise<Ticker24h[]> {
 export interface TickerTops {
   gainers: Ticker24h[];
   losers: Ticker24h[];
-  volume: Ticker24h[];
+  volume?: Ticker24h[];
 }
 
 export function pickTops(tickers: Ticker24h[], n = 10): TickerTops {
   const gainers = [...tickers].sort((a, b) => b.priceChangePercent - a.priceChangePercent).slice(0, n);
   const losers = [...tickers].sort((a, b) => a.priceChangePercent - b.priceChangePercent).slice(0, n);
-  const volume = [...tickers].sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, n);
-  return { gainers, losers, volume };
+  return { gainers, losers, volume: [] };
 }
 
 export async function fetch1mCandles(symbol: string, limit = 100): Promise<Candle[]> {

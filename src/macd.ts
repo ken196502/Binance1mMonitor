@@ -45,11 +45,22 @@ export interface Streak {
  */
 export function consecutiveStreak(candles: Candle[]): Streak {
   // Skip the last candle: it is the in-progress 1m bar, not closed yet.
-  const last = candles[candles.length - 2];
+  return consecutiveStreakAt(candles, candles.length - 2);
+}
+
+/** Shared closed-bar rule; opposite colour, doji or a missing interval ends a run. */
+export function consecutiveStreakAt(
+  candles: readonly Pick<Candle, 'open' | 'close' | 'time'>[],
+  targetIndex: number,
+  intervalMs = 60_000,
+): Streak {
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= candles.length || !Number.isFinite(intervalMs) || intervalMs <= 0) return { count: 0, direction: null };
+  const last = candles[targetIndex];
   if (!last || last.close === last.open) return { count: 0, direction: null };
   const dir = last.close > last.open ? "up" : "down";
   let count = 0;
-  for (let i = candles.length - 2; i >= 0; i--) {
+  for (let i = targetIndex; i >= 0; i--) {
+    if (i < targetIndex && candles[i + 1].time - candles[i].time !== intervalMs) break;
     const c = candles[i];
     const d = c.close > c.open ? "up" : c.close < c.open ? "down" : null;
     if (d !== dir) break;
@@ -57,7 +68,51 @@ export function consecutiveStreak(candles: Candle[]): Streak {
   }
   return { count, direction: dir };
 }
+export const SUPPORT_MA_PERIODS = [5, 7, 10, 20, 25, 30, 60, 99, 120] as const;
 
+/** Shared monitor/research rule. Read only candles up to the specified closed bar. */
+export function calculateSupportMaAt(
+  candles: readonly Pick<Candle, "close" | "low">[],
+  targetIndex: number,
+  periods: readonly number[] = SUPPORT_MA_PERIODS,
+): string | null {
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= candles.length) return null;
+  const candle = candles[targetIndex];
+  if (!candle) return null;
+
+  const close = candle.close;
+  const low = candle.low;
+
+  let bestPeriod: number | null = null;
+  let maxMaValue = -Infinity;
+
+  for (const p of periods) {
+    if (targetIndex + 1 < p) continue; // not enough candles to compute MA
+    let sum = 0;
+    for (let i = targetIndex - p + 1; i <= targetIndex; i++) {
+      sum += candles[i].close;
+    }
+    const ma = sum / p;
+    // 条件：收盘价大于 且 最低价小于
+    if (close > ma && low < ma) {
+      // 如果有多条，取数值最大的那个
+      if (ma > maxMaValue) {
+        maxMaValue = ma;
+        bestPeriod = p;
+      }
+    }
+  }
+
+  return bestPeriod !== null ? `ma${bestPeriod}` : null;
+}
+
+export function calculateSupportMa(
+  candles: Candle[],
+  periods: readonly number[] = SUPPORT_MA_PERIODS,
+): string | null {
+  // Monitor input ends with a still-forming bar. Preserve its closed-bar behavior.
+  return calculateSupportMaAt(candles, candles.length - 2, periods);
+}
 export function computeMacd(closes: number[], fast = 12, slow = 26, signal = 9): MacdResult {
   const emaFast = ema(closes, fast);
   const emaSlow = ema(closes, slow);

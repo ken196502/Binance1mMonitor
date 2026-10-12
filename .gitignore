@@ -35,3 +35,8 @@ pnpm-debug.log*
 # Lock files (optional - uncomment if you want to ignore)
 # pnpm-lock.yaml
 # package-lock.json
+
+# Local Apple GPU research environment
+.venv-gpu/
+__pycache__/
+*.pyc
