@@ -284,6 +284,8 @@ export interface DiffSignal {
 
 /**
  * Analyze DIFF level on a series of closes.
+ * DIFF is defined as the MACD Histogram (红绿柱): 2 * (DIF - DEA).
+ * Positive (>0) = green bar (中/高), Negative (<0) = red bar (严格为低).
  * Returns null if there isn't enough history to compute a stable MACD.
  */
 export function analyzeDiff(
@@ -291,21 +293,21 @@ export function analyzeDiff(
   opts: DiffAnalysisOptions = {},
 ): DiffSignal | null {
   if (closes.length < 35) return null;
-  const { dif } = computeMacd(closes);
-  const n = dif.length;
+  const { hist } = computeMacd(closes);
+  const n = hist.length;
 
   const useClosedBar = opts.useClosedBar ?? true;
   const targetIdx = useClosedBar ? n - 2 : n - 1;
   if (targetIdx < 0 || targetIdx >= n) return null;
 
-  const curDif = dif[targetIdx];
+  const curDif = hist[targetIdx];
   const warmup = 35;
   const highRatio = opts.highRatio ?? 0.8;
   const window = opts.highWindow ?? Math.max(0, targetIdx + 1 - warmup);
   const start = Math.max(warmup, targetIdx + 1 - window);
   let maxDif = -Infinity;
   for (let i = start; i <= targetIdx; i++) {
-    if (dif[i] > maxDif) maxDif = dif[i];
+    if (hist[i] > maxDif) maxDif = hist[i];
   }
 
   const level = diffLevel(curDif, maxDif, highRatio);

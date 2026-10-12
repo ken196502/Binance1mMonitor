@@ -23,8 +23,8 @@ test('analyzeDiff computes DIF and high/mid/low classification over past window'
   // < 35 closes should return null
   assert.equal(analyzeDiff(new Array(34).fill(100)), null);
 
-  // Rising trend closes -> DIF > 0 and at peak -> high
-  const rising = Array.from({ length: 60 }, (_, i) => 100 + i * 2);
+  // Accelerating rising trend -> hist > 0 and at peak -> high
+  const rising = Array.from({ length: 60 }, (_, i) => 100 + i * i * 0.1);
   const sigRising = analyzeDiff(rising, { highRatio: 0.8, highWindow: 50 });
   assert.ok(sigRising !== null);
   assert.ok(sigRising.dif > 0);
