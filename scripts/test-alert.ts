@@ -61,8 +61,8 @@ function row(
   let symbol: string;
   let streakCount = 0;
   let streakDir: "up" | "down" | null = null;
-  let diff1m: number | null = 1.0;
-  let diff5m: number | null = -1.0;
+  let diff1mLevel: "high" | "mid" | "low" | null = "mid";
+  let diff5mLevel: "high" | "mid" | "low" | null = "mid";
   let supportMa: string | null = null;
 
   if (typeof arg1 === "boolean" || (arg1 === null && typeof arg2 === "boolean")) {
@@ -75,8 +75,8 @@ function row(
     symbol = arg1;
     streakCount = typeof arg2 === "number" ? arg2 : 0;
     streakDir = arg3 ?? null;
-    diff1m = arg4 !== undefined ? arg4 : 1.0;
-    diff5m = arg5 !== undefined ? arg5 : -1.0;
+    diff1mLevel = arg4 !== undefined ? arg4 : "mid";
+    diff5mLevel = arg5 !== undefined ? arg5 : "mid";
     supportMa = arg6 !== undefined ? arg6 : null;
   } else {
     symbol = `SYM${++n}`;
@@ -91,9 +91,12 @@ function row(
     alert: false,
     bullish: true,
     high: true,
-    diff1m,
-    diff5m,
-    diff15m: diff5m,
+    diff1m: 0.1,
+    diff1mLevel,
+    diff5m: 0.1,
+    diff5mLevel,
+    diff15m: 0.1,
+    diff15mLevel: diff5mLevel,
     supportMa,
     streakCount,
     streakDir,
@@ -110,26 +113,26 @@ assert.equal(formatStreak(0, "up"), "");
 assert.equal(formatStreak(3, null), "");
 console.log("0. formatStreak 阳阴连数文案 ✓");
 
-// --- 1. pickHighBull: filter !supportMa && diff1m > 0 && diff5m < 0 ---------
+// --- 1. pickHighBull: filter !supportMa && (1m=mid/low && 5m=mid) ------------
 const testList = [
-  row("MATCH1", 4, "up", 0.5, -0.3, null),      // match: no support, 1m > 0, 5m < 0
-  row("HAS_MA", 0, null, 0.5, -0.3, "ma10"),    // no: has support
-  row("DIFF1M_NEG", 0, null, -0.1, -0.3, null), // no: 1m <= 0
-  row("DIFF1M_ZERO", 0, null, 0, -0.3, null),   // no: 1m == 0
-  row("DIFF1M_NULL", 0, null, null, -0.3, null),// no: 1m is null
-  row("DIFF5M_POS", 0, null, 0.5, 0.2, null),   // no: 5m >= 0
-  row("DIFF5M_ZERO", 0, null, 0.5, 0, null),    // no: 5m == 0
-  row("DIFF5M_NULL", 0, null, 0.5, null, null), // no: 5m is null
-  row("MATCH2", 2, "down", 1.2, -0.8, null),    // match
-  row("MATCH1", 4, "up", 0.5, -0.3, null),      // dupe
+  row("MATCH_MID_MID", 4, "up", "mid", "mid", null),   // match: no support, 1m mid, 5m mid
+  row("MATCH_LOW_MID", 2, "down", "low", "mid", null), // match: no support, 1m low, 5m mid
+  row("HAS_MA", 0, null, "mid", "mid", "ma10"),        // no: has support
+  row("DIFF1M_HIGH", 0, null, "high", "mid", null),    // no: 1m is high
+  row("DIFF1M_NULL", 0, null, null, "mid", null),      // no: 1m is null
+  row("DIFF5M_HIGH", 0, null, "mid", "high", null),    // no: 5m is high
+  row("DIFF5M_LOW", 0, null, "mid", "low", null),      // no: 5m is low
+  row("DIFF5M_NULL", 0, null, "mid", null, null),      // no: 5m is null
+  row("MATCH_MID_MID", 4, "up", "mid", "mid", null),   // dupe
 ];
-assert.deepEqual(pickHighBull(testList), ["MATCH1", "MATCH2"]);
+assert.deepEqual(pickHighBull(testList), ["MATCH_MID_MID", "MATCH_LOW_MID"]);
 const items = pickHighBullItems(testList);
 assert.equal(items.length, 2);
-assert.equal(items[0].symbol, "MATCH1");
+assert.equal(items[0].symbol, "MATCH_MID_MID");
 assert.equal(items[0].streakCount, 4);
 assert.equal(items[0].streakDir, "up");
-console.log("1. pickHighBull + pickHighBullItems filter (无支撑 + 1m DIFF>0 + 5m DIFF<0) + dedupe ✓");
+assert.equal(items[1].symbol, "MATCH_LOW_MID");
+console.log("1. pickHighBull + pickHighBullItems filter (无支撑 + 5m中 + 1m中/低) + dedupe ✓");
 
 // --- 2. below threshold on both boards (< 3) → no alert ---------------------
 const a = new TelegramAlerter();
