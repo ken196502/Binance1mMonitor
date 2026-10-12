@@ -83,22 +83,22 @@ export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
         <td className="muted">-</td>
       )}
       {row.diff1mLevel == null ? (
-        <td className="muted">-</td>
+        <td className="muted" title={row.diff1m != null ? `1m DIFF: ${row.diff1m}` : undefined}>-</td>
       ) : row.diff1mLevel === "high" ? (
-        <td className="yellow">高</td>
+        <td className="yellow" title={`1m DIFF: ${row.diff1m != null ? row.diff1m.toFixed(4) : ""} (高)`}>高</td>
       ) : row.diff1mLevel === "mid" ? (
-        <td className="white">中</td>
+        <td className="white" title={`1m DIFF: ${row.diff1m != null ? row.diff1m.toFixed(4) : ""} (中)`}>中</td>
       ) : (
-        <td className="muted">低</td>
+        <td className="muted" title={`1m DIFF: ${row.diff1m != null ? row.diff1m.toFixed(4) : ""} (低)`}>低</td>
       )}
       {row.diff5mLevel == null ? (
-        <td className="muted">-</td>
+        <td className="muted" title={row.diff5m != null ? `5m DIFF: ${row.diff5m}` : undefined}>-</td>
       ) : row.diff5mLevel === "high" ? (
-        <td className="yellow">高</td>
+        <td className="yellow" title={`5m DIFF: ${row.diff5m != null ? row.diff5m.toFixed(4) : ""} (高)`}>高</td>
       ) : row.diff5mLevel === "mid" ? (
-        <td className="white">中</td>
+        <td className="white" title={`5m DIFF: ${row.diff5m != null ? row.diff5m.toFixed(4) : ""} (中)`}>中</td>
       ) : (
-        <td className="muted">低</td>
+        <td className="muted" title={`5m DIFF: ${row.diff5m != null ? row.diff5m.toFixed(4) : ""} (低)`}>低</td>
       )}
     </tr>
   );
