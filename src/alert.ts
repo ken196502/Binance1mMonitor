@@ -28,9 +28,9 @@ export interface AlertInput {
   pinned?: Row[];
 }
 
-/** 格式化连阳/连阴文案（如 3连阳、2连阴） */
+/** 格式化连阳/连阴文案（≥2 才算连续，如 2连阳、3连阴；1 根不叫“连”，返回空字符串） */
 export function formatStreak(count: number, dir: "up" | "down" | null): string {
-  if (!dir || count <= 0) return "";
+  if (!dir || count < 2) return "";
   const name = dir === "up" ? "阳" : "阴";
   return `${count}连${name}`;
 }

@@ -108,10 +108,11 @@ const countOf = (s?: { ok: boolean }) => (s?.ok ? 1 : 0);
 // --- 0. formatStreak helper test ---------------------------------------------
 assert.equal(formatStreak(3, "up"), "3连阳");
 assert.equal(formatStreak(2, "down"), "2连阴");
-assert.equal(formatStreak(1, "up"), "1连阳");
+assert.equal(formatStreak(1, "up"), ""); // 只有1根不算"连"，不展示
+assert.equal(formatStreak(1, "down"), "");
 assert.equal(formatStreak(0, "up"), "");
 assert.equal(formatStreak(3, null), "");
-console.log("0. formatStreak 阳阴连数文案 ✓");
+console.log("0. formatStreak 阳阴连数文案 (≥2 才展示) ✓");
 
 // --- 1. pickHighBull: filter !supportMa && (1m=mid/low && 5m=mid) ------------
 const testList = [
@@ -165,7 +166,7 @@ assert.doesNotMatch(received[0].text, /24h 成交额榜/);
 assert.match(received[0].text, /置顶标的/);
 assert.match(received[0].text, /BTCUSDT<\/b><\/a> \(3连阳\)/);
 assert.match(received[0].text, /ETHUSDT<\/b><\/a> \(5连阴\)/);
-assert.match(received[0].text, /SOLUSDT<\/b><\/a> \(1连阳\)/);
+assert.doesNotMatch(received[0].text, /SOLUSDT.*\(1连阳\)/); // 1根不算连，绝不展示 (1连阳)
 assert.match(received[0].auth, /TESTTOKEN/);
 console.log("3. gainers reaches 3 → alert sent only for gainers (未达标榜单不播报) with 置顶标的及阳阴连数 ✓");
 
