@@ -4,6 +4,8 @@
 
 ## 独立 CLI 做空策略研究
 
+新增独立研究 **涨幅榜 1m + BTC 5m**：`npm run mine:btc5m -- --fetch-btc-five --batch 128 --no-telegram`。两周期独立搜索 DEA/DIFF、连续K线条件及高位比例，结果保存至 `reports/research/gainers-gpu-margin-no-ma-btc5m/`。详见 [研究说明](research/README.md#新增独立研究涨幅榜-1m--btc-5m)。
+
 研究通过 CLI 单独运行，与监控服务、页面和 Telegram 无依赖。当前重点是 **gainers 涨幅榜：1m DEA 高位 + DIF ≥ DEA 直接做空，小止损、大止盈，不要求死叉**。全市场 USDT 永续小时数据用于重建每个历史整点的 24h 涨幅榜，分钟数据用于信号和成交回测。
 
 ```bash
@@ -29,20 +31,31 @@ npm run research -- gainers --data data/research/hourly-initial --end 2026-10-11
 
 > 只有当窗口内 DEA 曾达到正值峰值时才判定为"高位"，避免全程为负时把"最不低"的值误判为高位。
 
-## Telegram 计数告警（周K>0 + DEA 高位 + DIFF 多头 + 无支撑）
+> [!IMPORTANT]
+> ### 术语严格区分：DIF vs DIFF（切勿混淆！）
+> - **DIF（单个 F，快线）**：$EMA(12) - EMA(26)$，快慢均线之差。在 MACD 中为平滑曲线。
+> - **DEA（慢线 / 信号线）**：$EMA(DIF, 9)$。
+> - **DIFF（两个 F，红绿柱 / 差离柱）**：$2 \times (DIF - DEA)$（Binance 官方口径柱状图）。
+>   - **绿柱（$DIFF > 0$）**：
+>     - 若 $DIFF \ge 0.8 \times \text{窗口峰值} \implies$ **高**（亮黄）；
+>     - 其余 $DIFF \ge 0 \implies$ **中**（白色）；
+>   - **红柱（$DIFF < 0$）**：**严格判定为低（灰色），绝不允许任何负值判定为中或高**。
+>
+> 页面表头与告警中展示的 `1m DIFF`、`5m DIFF` **全部严格指代红绿柱（两个 F）**，绝不可与快线 DIF 混淆！
 
-在面板高亮之外，后端还会进行**榜单告警判定**：
+## Telegram 计数告警（无支撑 + 1m DIFF > 0 + 5m DIFF < 0）
 
-当 **24h 涨幅榜、跌幅榜、成交额榜** 三个榜单中，**任意一个榜单**出现 **≥ `TG_ALERT_MIN`（默认 3）个**同时满足：
+在面板高亮之外，后端进行**榜单实时告警判定**：
 
-- **周K > 0**（本周涨幅为正，当前价高于本周开盘价）；
-- **DEA 高位**（`DEA ≥ HIGH_RATIO × 窗口峰值` 且 `DEA > 0`，与面板 DEA 列「高位」判定一致）；
-- **DIFF 多头**（`DIF ≥ DEA`，与面板 DIFF 列「多头」判定一致）；
-- **无支撑**（`supportMa` 为 N/A，即当前未获得任何 MA 均线支撑）。
+当 **24h 涨幅榜、跌幅榜** 两个榜单中，**任意一个榜单**出现 **≥ `TG_ALERT_MIN`（默认 3）个**同时满足：
+
+- **无支撑**（`supportMa` 为 N/A，即当前未获得任何 MA 均线支撑）；
+- **1m DIFF > 0**（1m MACD 红绿柱为绿柱）；
+- **5m DIFF < 0**（5m MACD 红绿柱为红柱）。
 
 的币种时，发出 Telegram 通知：
 
-- **防骚扰**：首次达到阈值时发出通知。**持续命中期间不因数量变化而重复播报，避免频繁轰炸**；若全部榜单回落至阈值以下则重置状态，后续再次触发时重新通知。
+- **防骚扰**：当且仅当命中榜单达标且币种列表发生变动时才播报，榜币未变绝不重复骚扰；若榜单归零重置状态。
 - **后台常驻监测**：服务端启动后自动常驻后台轮询（默认每 20s 刷新），即使没有打开浏览器也会持续监控并推送通知。
 - **发送重试**：发送失败不吞掉异常，控制台显式报错且状态机不推进，下轮刷新自动重试直到送达。
 - **代理支持**：Telegram 走与 Binance 相同的代理链路（`PROXY` / `HTTP(S)_PROXY`），墙内无需额外配置。
@@ -57,7 +70,7 @@ npm run research -- gainers --data data/research/hourly-initial --end 2026-10-11
 #    TELEGRAM_CHAT_ID=123456789
 ```
 
-MACD 参数：`12 / 26 / 9`，柱状值 `= 2 × (DIF − DEA)`（Binance 口径）。
+MACD 参数：`12 / 26 / 9`，柱状值（DIFF）`= 2 × (DIF − DEA)`（Binance 口径）。
 
 ## 运行
 
