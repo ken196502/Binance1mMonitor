@@ -43,8 +43,12 @@ const dispatcher: Dispatcher = new EnvHttpProxyAgent();
 // fapi.binance.com is the only official USDM futures host. Override with
 // BINANCE_BASE if you need a custom endpoint. FALLBACK_BASE defaults to empty
 // because Binance publishes no futures mirror; set it only if you run your own.
-const BASE = process.env.BINANCE_BASE ?? "https://fapi.binance.com";
-const FALLBACK_BASE = process.env.FALLBACK_BASE ?? "";
+function getBase(): string {
+  return process.env.BINANCE_BASE ?? "https://fapi.binance.com";
+}
+function getFallbackBase(): string {
+  return process.env.FALLBACK_BASE ?? "";
+}
 
 export interface Ticker24h {
   symbol: string;
@@ -82,16 +86,33 @@ function isNetworkError(e: unknown): boolean {
   );
 }
 
-/** Timestamp in ms until which we must back off due to 418 IP ban or 429 rate limit. */
+/** Timestamp in ms until which we must back off due to 418 IP ban, 429 rate limit, or proactive backoff. */
 let backoffUntil = 0;
 let backoffReason = "";
+let lastUsedWeight1m = 0;
 
-export function getBackoffStatus(): { active: boolean; backoffUntil: number; reason: string } {
+// Binance USDM 单 IP 限额 2400 weight/min。
+// 设定主动避让阈值（默认 1800，预留 600 安全缓冲区）。当已用权重 >= 阈值时主动暂停请求直至下一分钟窗口重置。
+const PROACTIVE_BACKOFF_WEIGHT = Number(process.env.PROACTIVE_BACKOFF_WEIGHT ?? 1800);
+
+export function getBackoffStatus(): {
+  active: boolean;
+  backoffUntil: number;
+  reason: string;
+  usedWeight1m: number;
+} {
   return {
     active: Date.now() < backoffUntil,
     backoffUntil,
     reason: backoffReason,
+    usedWeight1m: lastUsedWeight1m,
   };
+}
+
+export function resetBackoffForTest(): void {
+  backoffUntil = 0;
+  backoffReason = "";
+  lastUsedWeight1m = 0;
 }
 
 const DEFAULT_HEADERS: Record<string, string> = {
@@ -100,28 +121,51 @@ const DEFAULT_HEADERS: Record<string, string> = {
   Accept: "application/json",
 };
 
-/** fetch() wrapper that handles rate limiting, bans, and fallback base retry. */
+/** fetch() wrapper that handles rate limiting, bans, proactive backoff, and fallback base retry. */
 async function binanceFetch(path: string): Promise<UndiciResponse> {
   const now = Date.now();
   if (now < backoffUntil) {
     const remainSec = Math.ceil((backoffUntil - now) / 1000);
-    throw new Error(`Binance 限频/封禁冷静期中 (${backoffReason})，剩余 ${remainSec} 秒，已暂停请求`);
+    throw new Error(`Binance 限频/避让冷静期中 (${backoffReason})，剩余 ${remainSec} 秒，已暂停请求`);
   }
 
   let r: UndiciResponse;
   try {
-    r = await undiciFetch(`${BASE}${path}`, {
+    const base = getBase();
+    r = await undiciFetch(`${base}${path}`, {
       dispatcher,
       headers: DEFAULT_HEADERS,
     });
   } catch (e) {
-    if (!FALLBACK_BASE || FALLBACK_BASE === BASE || !isNetworkError(e)) throw e;
-    r = await undiciFetch(`${FALLBACK_BASE}${path}`, {
+    const base = getBase();
+    const fallback = getFallbackBase();
+    if (!fallback || fallback === base || !isNetworkError(e)) throw e;
+    r = await undiciFetch(`${fallback}${path}`, {
       dispatcher,
       headers: DEFAULT_HEADERS,
     });
   }
 
+  // 1. 检查并记录当前 1 分钟权重占用，实施主动避让（Proactive Backoff 防 429）
+  const usedWeightHeader = r.headers.get("x-mbx-used-weight-1m");
+  if (usedWeightHeader) {
+    const usedWeight = parseInt(usedWeightHeader, 10);
+    if (Number.isFinite(usedWeight) && usedWeight > 0) {
+      lastUsedWeight1m = usedWeight;
+      // 若已用权重达到安全预警线（如 1800 / 2400），主动进入避让冷静期直到下一分钟窗口重置
+      if (usedWeight >= PROACTIVE_BACKOFF_WEIGHT && Date.now() >= backoffUntil) {
+        const secIntoMinute = Math.floor(Date.now() / 1000) % 60;
+        const waitSec = Math.max(5, 60 - secIntoMinute + 1);
+        backoffUntil = Date.now() + waitSec * 1000;
+        backoffReason = `主动避让防429：当前1分钟已用权重 ${usedWeight}/2400 已达安全阈值 ${PROACTIVE_BACKOFF_WEIGHT}`;
+        console.warn(
+          `[binance] ⚠️ 主动避让防429：当前1分钟已用权重达到 ${usedWeight}/2400 (阈值 ${PROACTIVE_BACKOFF_WEIGHT})，主动暂停请求 ${waitSec} 秒至窗口重置`,
+        );
+      }
+    }
+  }
+
+  // 2. 被动兜底：若仍收到 418/429，严格按照币安给出的冷静时间强制避让
   if (r.status === 418 || r.status === 429) {
     const retryAfter = Number(r.headers.get("retry-after") ?? 60);
     let waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60;
@@ -179,9 +223,9 @@ export function pickTops(tickers: Ticker24h[], n = 10): TickerTops {
   return { gainers, losers, volume: [] };
 }
 
-export async function fetch1mCandles(symbol: string, limit = 100): Promise<Candle[]> {
-  const r = await binanceFetch(`/fapi/v1/klines?symbol=${symbol}&interval=1m&limit=${limit}`);
-  if (!r.ok) throw new Error(`klines ${symbol} failed: HTTP ${r.status}`);
+export async function fetchCandles(symbol: string, interval = "1m", limit = 100): Promise<Candle[]> {
+  const r = await binanceFetch(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+  if (!r.ok) throw new Error(`klines ${symbol} (${interval}) failed: HTTP ${r.status}`);
   const data = (await r.json()) as any[];
   return data.map((d) => ({
     time: d[0],
@@ -191,6 +235,18 @@ export async function fetch1mCandles(symbol: string, limit = 100): Promise<Candl
     close: +d[4],
     volume: +d[5],
   }));
+}
+
+export async function fetch1mCandles(symbol: string, limit = 100): Promise<Candle[]> {
+  return fetchCandles(symbol, "1m", limit);
+}
+
+export async function fetch5mCandles(symbol: string, limit = 100): Promise<Candle[]> {
+  return fetchCandles(symbol, "5m", limit);
+}
+
+export async function fetch15mCandles(symbol: string, limit = 100): Promise<Candle[]> {
+  return fetchCandles(symbol, "15m", limit);
 }
 
 const weeklyOpenCache = new Map<string, { open: number; closeTime: number }>();

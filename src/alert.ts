@@ -1,10 +1,9 @@
-// "周K>0 + 1m DEA 高位 + 1m DIFF 多头 + 无支撑" 监控告警
+// "无支撑 + 1m DIFF > 0 + 5m DIFF < 0" 监控告警
 //
-// 判定规则：
-//   - 周K > 0: row.weekChangePercent > 0
-//   - DEA 高位: row.high === true （DEA ≥ HIGH_RATIO × 窗口峰值，且 DEA > 0）
-//   - DIFF 多头: row.bullish === true （DIF ≥ DEA — 面板 DIFF 列「多头」）
-//   - 无支撑: !row.supportMa （支撑为 N/A，即 null）
+// 判定规则（三个条件均需满足）：
+//   - 无支撑: !row.supportMa （支撑为 N/A，即 null 或空）
+//   - 1m DIFF > 0: row.diff1m != null && row.diff1m > 0
+//   - 5m DIFF < 0: (row.diff5m ?? row.diff15m) != null && (row.diff5m ?? row.diff15m)! < 0
 //
 // 告警逻辑：
 //   - 两个榜（24h涨幅榜、跌幅榜），任意榜出现 ≥ TG_ALERT_MIN (默认 3) 个满足条件的币种时进入关注。
@@ -37,14 +36,16 @@ export function formatStreak(count: number, dir: "up" | "down" | null): string {
   return `${count}连${name}`;
 }
 
-/** 筛选满足「周K > 0 + 1m DEA 高位 + 1m DIFF 多头 + 无支撑」的币种及连数详情（保留原榜单顺序并去重） */
+/** 筛选满足「无支撑 + 1m DIFF > 0 + 5m DIFF < 0」的币种及连数详情（保留原榜单顺序并去重） */
 export function pickHighBullItems(rows: Row[]): AlertSymbolItem[] {
   const hit = new Set<string>();
   const items: AlertSymbolItem[] = [];
   for (const r of rows) {
-    const isWeekPositive = r.weekChangePercent != null && r.weekChangePercent > 0;
     const isNoSupport = !r.supportMa;
-    if (r.high === true && r.bullish === true && isWeekPositive && isNoSupport && !hit.has(r.symbol)) {
+    const isDiff1mPos = r.diff1m != null && r.diff1m > 0;
+    const diff5mVal = r.diff5m ?? r.diff15m;
+    const isDiff5mNeg = diff5mVal != null && diff5mVal < 0;
+    if (isNoSupport && isDiff1mPos && isDiff5mNeg && !hit.has(r.symbol)) {
       hit.add(r.symbol);
       items.push({
         symbol: r.symbol,
@@ -60,7 +61,7 @@ export function pickHighBullItems(rows: Row[]): AlertSymbolItem[] {
   return items;
 }
 
-/** 筛选满足「周K > 0 + 1m DEA 高位 + 1m DIFF 多头」的币种列表（保留原榜单顺序并去重） */
+/** 筛选满足「无支撑 + 1m DIFF > 0 + 5m DIFF < 0」的币种列表（保留原榜单顺序并去重） */
 export function pickHighBull(rows: Row[]): string[] {
   return pickHighBullItems(rows).map((i) => i.symbol);
 }
@@ -70,7 +71,10 @@ export function pickHighBear(groups: Row[][]): string[] {
   const hit = new Set<string>();
   for (const rows of groups) {
     for (const r of rows) {
-      if (r.high === true && r.bullish === true) hit.add(r.symbol);
+      const diff5mVal = r.diff5m ?? r.diff15m;
+      if (!r.supportMa && r.diff1m != null && r.diff1m > 0 && diff5mVal != null && diff5mVal < 0) {
+        hit.add(r.symbol);
+      }
     }
   }
   return [...hit].sort();
@@ -95,7 +99,7 @@ export function formatAlertMessage(params: {
 }): string {
   const { min, boards, pinned } = params;
 
-  const header = `🚨 <b>MACD 高位+多头+无支撑告警</b>（触发阈值 ≥ ${min}）`;
+  const header = `🚨 <b>无支撑 + 1m DIFF>0 + 5m DIFF<0 告警</b>（触发阈值 ≥ ${min}）`;
   const dashboardUrl = getDashboardUrl();
 
   let pinnedBlock = "";

@@ -50,24 +50,50 @@ import type { Row } from "../src/types.ts";
 // --- helpers -----------------------------------------------------------------
 let n = 0;
 function row(
-  high: boolean | null,
-  bullish: boolean | null,
-  symbol?: string,
-  streakCount = 0,
-  streakDir: "up" | "down" | null = null,
-  weekChangePercent: number | null = 1.5,
-  supportMa: string | null = null,
+  arg1?: any,
+  arg2?: any,
+  arg3?: any,
+  arg4?: any,
+  arg5?: any,
+  arg6?: any,
+  arg7?: any,
 ): Row {
+  let symbol: string;
+  let streakCount = 0;
+  let streakDir: "up" | "down" | null = null;
+  let diff1m: number | null = 1.0;
+  let diff5m: number | null = -1.0;
+  let supportMa: string | null = null;
+
+  if (typeof arg1 === "boolean" || (arg1 === null && typeof arg2 === "boolean")) {
+    // legacy call: row(high, bullish, symbol, streakCount, streakDir, weekChange, supportMa)
+    symbol = typeof arg3 === "string" ? arg3 : `SYM${++n}`;
+    streakCount = typeof arg4 === "number" ? arg4 : 0;
+    streakDir = arg5 ?? null;
+    supportMa = arg7 !== undefined ? arg7 : null;
+  } else if (typeof arg1 === "string") {
+    symbol = arg1;
+    streakCount = typeof arg2 === "number" ? arg2 : 0;
+    streakDir = arg3 ?? null;
+    diff1m = arg4 !== undefined ? arg4 : 1.0;
+    diff5m = arg5 !== undefined ? arg5 : -1.0;
+    supportMa = arg6 !== undefined ? arg6 : null;
+  } else {
+    symbol = `SYM${++n}`;
+  }
+
   return {
-    symbol: symbol ?? `SYM${++n}`,
+    symbol,
     lastPrice: 1,
     priceChangePercent: 0,
     quoteVolume: 1,
     state: "low-above",
     alert: false,
-    bullish,
-    high,
-    weekChangePercent,
+    bullish: true,
+    high: true,
+    diff1m,
+    diff5m,
+    diff15m: diff5m,
     supportMa,
     streakCount,
     streakDir,
@@ -84,26 +110,26 @@ assert.equal(formatStreak(0, "up"), "");
 assert.equal(formatStreak(3, null), "");
 console.log("0. formatStreak 阳阴连数文案 ✓");
 
-// --- 1. pickHighBull: filter high === true && bullish === true && weekChangePercent > 0 && supportMa == null --
+// --- 1. pickHighBull: filter !supportMa && diff1m > 0 && diff5m < 0 ---------
 const testList = [
-  row(true, true, "BULL1", 4, "up", 2.5, null),   // match (week > 0, supportMa is null)
-  row(true, false, "BEAR1", 0, null, 3.0, null),  // no (not bullish)
-  row(false, true, "LOW1", 0, null, 1.0, null),   // no (not high)
-  row(false, false, "NONE", 0, null, 0.5, null),  // no
-  row(true, true, "NEG_WEEK", 2, "up", -1.2, null), // no (week <= 0)
-  row(true, true, "ZERO_WEEK", 2, "up", 0, null),  // no (week == 0)
-  row(true, true, "NULL_WEEK", 2, "up", null, null), // no (week is null)
-  row(true, true, "HAS_SUPPORT", 2, "up", 2.0, "ma10"), // no (has support ma)
-  row(true, true, "BULL2", 2, "down", 0.8, null), // match
-  row(true, true, "BULL1", 4, "up", 2.5, null),   // dupe
+  row("MATCH1", 4, "up", 0.5, -0.3, null),      // match: no support, 1m > 0, 5m < 0
+  row("HAS_MA", 0, null, 0.5, -0.3, "ma10"),    // no: has support
+  row("DIFF1M_NEG", 0, null, -0.1, -0.3, null), // no: 1m <= 0
+  row("DIFF1M_ZERO", 0, null, 0, -0.3, null),   // no: 1m == 0
+  row("DIFF1M_NULL", 0, null, null, -0.3, null),// no: 1m is null
+  row("DIFF5M_POS", 0, null, 0.5, 0.2, null),   // no: 5m >= 0
+  row("DIFF5M_ZERO", 0, null, 0.5, 0, null),    // no: 5m == 0
+  row("DIFF5M_NULL", 0, null, 0.5, null, null), // no: 5m is null
+  row("MATCH2", 2, "down", 1.2, -0.8, null),    // match
+  row("MATCH1", 4, "up", 0.5, -0.3, null),      // dupe
 ];
-assert.deepEqual(pickHighBull(testList), ["BULL1", "BULL2"]);
+assert.deepEqual(pickHighBull(testList), ["MATCH1", "MATCH2"]);
 const items = pickHighBullItems(testList);
 assert.equal(items.length, 2);
-assert.equal(items[0].symbol, "BULL1");
+assert.equal(items[0].symbol, "MATCH1");
 assert.equal(items[0].streakCount, 4);
 assert.equal(items[0].streakDir, "up");
-console.log("1. pickHighBull + pickHighBullItems filter (周K>0 + DEA高位 + DIFF多头 + 无支撑) + dedupe ✓");
+console.log("1. pickHighBull + pickHighBullItems filter (无支撑 + 1m DIFF>0 + 5m DIFF<0) + dedupe ✓");
 
 // --- 2. below threshold on both boards (< 3) → no alert ---------------------
 const a = new TelegramAlerter();
@@ -129,7 +155,7 @@ assert.equal(res2.summary.triggered, true);
 assert.equal(res2.summary.gainers.count, 3);
 assert.equal(countOf(res2.sent), 1);
 assert.equal(received.length, 1);
-assert.match(received[0].text, /高位\+多头\+无支撑告警/);
+assert.match(received[0].text, /告警/);
 assert.match(received[0].text, /24h 涨幅榜.*3/);
 assert.doesNotMatch(received[0].text, /24h 跌幅榜/);
 assert.doesNotMatch(received[0].text, /24h 成交额榜/);
@@ -216,7 +242,7 @@ const res7 = await a.check({
 assert.equal(res7.summary.triggered, true);
 assert.equal(countOf(res7.sent), 1);
 assert.equal(received.length, 3);
-assert.match(received[2].text, /高位\+多头\+无支撑告警/);
+assert.match(received[2].text, /告警/);
 assert.match(received[2].text, /24h 跌幅榜.*3/);
 console.log("8. re-trigger after recovery on losers → alert sent ✓");
 

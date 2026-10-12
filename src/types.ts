@@ -13,6 +13,12 @@ export interface Row extends Ticker24h {
   high: boolean | null; // DEA at/near window peak → 高位; null when data is missing
   dea?: number | null;
   deaLevel?: "high" | "mid" | "low" | null; // 高位 / 中 (DEA≥0) / 低 (DEA<0)
+  diff1m?: number | null;
+  diff1mLevel?: "high" | "mid" | "low" | null; // 1m DIFF: 过去N根百分之x且>0算高，>0算中，<0算低
+  diff5m?: number | null;
+  diff5mLevel?: "high" | "mid" | "low" | null; // 5m DIFF: 过去N根百分之x且>0算高，>0算中，<0算低
+  diff15m?: number | null;
+  diff15mLevel?: "high" | "mid" | "low" | null;
   weekChangePercent?: number | null; // 周K涨跌幅度%（保留供告警过滤等使用）
   supportMa?: string | null; // 支撑MA，如 "ma10"，无支撑为 null
   streakCount: number;

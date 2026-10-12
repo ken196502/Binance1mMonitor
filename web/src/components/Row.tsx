@@ -82,21 +82,23 @@ export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
       ) : (
         <td className="muted">-</td>
       )}
-      {row.deaLevel == null && row.high == null ? (
+      {row.diff1mLevel == null ? (
         <td className="muted">-</td>
-      ) : row.deaLevel === "high" || (row.deaLevel == null && row.high) ? (
-        <td className="amber">高</td>
-      ) : row.deaLevel === "mid" || (row.dea != null && row.dea >= 0) ? (
-        <td className="muted">中</td>
+      ) : row.diff1mLevel === "high" ? (
+        <td className="yellow">高</td>
+      ) : row.diff1mLevel === "mid" ? (
+        <td className="white">中</td>
       ) : (
         <td className="muted">低</td>
       )}
-      {row.bullish == null ? (
+      {row.diff5mLevel == null ? (
         <td className="muted">-</td>
-      ) : row.bullish ? (
-        <td className="pos">多头</td>
+      ) : row.diff5mLevel === "high" ? (
+        <td className="yellow">高</td>
+      ) : row.diff5mLevel === "mid" ? (
+        <td className="white">中</td>
       ) : (
-        <td className="neg">空头</td>
+        <td className="muted">低</td>
       )}
     </tr>
   );

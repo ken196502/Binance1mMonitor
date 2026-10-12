@@ -1,7 +1,6 @@
-// Telegram Bot API sender.
-// Uses the process-global undici dispatcher set up in binance.ts, so the same
-// PROXY / HTTP(S)_PROXY routing that reaches fapi.binance.com also reaches
-// api.telegram.org (both are blocked in some regions — one proxy serves both).
+import { fetch as undiciFetch, EnvHttpProxyAgent, type Dispatcher } from "undici";
+
+const dispatcher: Dispatcher = new EnvHttpProxyAgent();
 
 export interface TelegramSendResult {
   ok: boolean;
@@ -25,7 +24,8 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
     return { ok: false, error: "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 未配置（.env）" };
   }
   try {
-    const res = await fetch(`${apiBase}/bot${botToken}/sendMessage`, {
+    const res = await undiciFetch(`${apiBase}/bot${botToken}/sendMessage`, {
+      dispatcher,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -165,6 +165,8 @@ th.col-shift, td.col-shift {
 .badge { padding: 1px 5px; border-radius: 3px; font-size: 11px; background: var(--panel2); border: 1px solid var(--border); }
 .err { color: var(--amber); }
 .amber { color: var(--amber); }
+.yellow { color: var(--yellow); }
+.white { color: #ffffff; }
 .pink { color: #ff79c6; font-weight: 500; }
 .symbol-link {
   color: var(--text);

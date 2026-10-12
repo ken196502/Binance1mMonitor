@@ -8,12 +8,21 @@ import {
   fetch24hTickers,
   pickTops,
   fetch1mCandles,
+  fetch5mCandles,
+  fetch15mCandles,
   fetchWeeklyOpen,
   getBackoffStatus,
   type Ticker24h,
   type TickerTops,
 } from "./binance.ts";
-import { analyzeMacd, consecutiveStreak, calculateSupportMa } from "./macd.ts";
+import {
+  analyzeMacd,
+  analyzeDiff,
+  consecutiveStreak,
+  calculateSupportMa,
+  update5mFrom1m,
+  type Candle,
+} from "./macd.ts";
 import { TelegramAlerter } from "./alert.ts";
 import { telegramConfigured } from "./telegram.ts";
 import { enrichRankChanges, type BoardSnapshot } from "./rank.ts";
@@ -28,29 +37,94 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 4111;
 const TOP_N = Number(process.env.TOP_N ?? 10);
 const REFRESH_TTL_MS = Number(process.env.REFRESH_TTL_MS ?? 60_000); // 默认 60s 刷新一次，对齐 1m K 线收盘周期并防止 API 超频
 const KLINE_LIMIT = Number(process.env.KLINE_LIMIT ?? 100);
-// "High position" = current DEA is at/near the highest DEA in the window.
+// "High position" = current DEA/DIFF is at/near the highest value in the window.
 const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
-const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in 1m bars
+const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in bars
 
-// Telegram alert: 当三个榜单任意一个出现 ≥ TG_ALERT_MIN 个「DEA高位 + DIFF多头」时发出通知。
+// Telegram alert: 当三个榜单任意一个出现 ≥ TG_ALERT_MIN 个「无支撑 + 1m DIFF>0 + 5m DIFF<0」时发出通知。
 // 首次命中时通知，持续命中期间不因数量变化而重复播报。
 const alerter = new TelegramAlerter();
 
 let cache: { at: number; promise: Promise<Status> } | null = null;
 
+export interface SymbolCandleCache {
+  candles1m: Candle[];
+  candles5m: Candle[];
+  initialized5m: boolean;
+}
+
+const candleCache = new Map<string, SymbolCandleCache>();
+
+export function getCandleCacheForTest(): Map<string, SymbolCandleCache> {
+  return candleCache;
+}
+
+export function resetCandleCacheForTest(): void {
+  candleCache.clear();
+}
+
 /**
- * 并发拉取单币种的指标（1m K 线与周 K 开盘价），并发数适度控制以防瞬时尖峰。
+ * 并发拉取单币种指标：
+ * 1. 1m K 线拉取后在本地保存；
+ * 2. 5m K 线仅在首次遇到标的时向币安请求 100 根完成初始化，后续不再请求 5m 接口，自行利用 1m K 线在本地实时计算合成（节省 50% 请求，防 429）。
  */
 async function fetchRowData(t: Ticker24h): Promise<Row> {
   try {
-    const [candles, weekOpen] = await Promise.all([
-      fetch1mCandles(t.symbol, KLINE_LIMIT),
+    let symCache = candleCache.get(t.symbol);
+    if (!symCache) {
+      symCache = {
+        candles1m: [],
+        candles5m: [],
+        initialized5m: false,
+      };
+      candleCache.set(t.symbol, symCache);
+    }
+
+    // 5m 仅在未初始化时请求一次（拉取 100 根），之后完全不发 5m 请求
+    let fetch5mPromise: Promise<Candle[]> | null = null;
+    if (!symCache.initialized5m) {
+      fetch5mPromise = fetch5mCandles(t.symbol, KLINE_LIMIT).catch(() => [] as Candle[]);
+    }
+
+    const [candles1mRes, candles5mInit, weekOpen] = await Promise.all([
+      fetch1mCandles(t.symbol, KLINE_LIMIT).catch(() => [] as Candle[]),
+      fetch5mPromise ? fetch5mPromise : Promise.resolve([] as Candle[]),
       fetchWeeklyOpen(t.symbol),
     ]);
+
+    // 1m 保存：每次更新保存，若偶发网络异常则回退使用已保存的 1m 序列
+    if (candles1mRes.length > 0) {
+      symCache.candles1m = candles1mRes;
+    }
+    const candles = symCache.candles1m;
+
+    // 5m 初始化设置
+    if (!symCache.initialized5m && candles5mInit.length > 0) {
+      symCache.candles5m = candles5mInit;
+      symCache.initialized5m = true;
+    }
+
+    // 自行用 1m 计算/更新 5m K 线
+    if (candles.length > 0) {
+      symCache.candles5m = update5mFrom1m(symCache.candles5m, candles, KLINE_LIMIT);
+    }
+    const candles5m = symCache.candles5m;
+
     const sig = analyzeMacd(candles.map((c) => c.close), {
       highRatio: HIGH_RATIO,
       highWindow: HIGH_WINDOW,
     });
+    const diff1mSig = analyzeDiff(candles.map((c) => c.close), {
+      highRatio: HIGH_RATIO,
+      highWindow: HIGH_WINDOW,
+    });
+    const diff5mSig =
+      candles5m.length >= 35
+        ? analyzeDiff(candles5m.map((c) => c.close), {
+            highRatio: HIGH_RATIO,
+            highWindow: HIGH_WINDOW,
+          })
+        : null;
     const streak = consecutiveStreak(candles);
     const supportMa = calculateSupportMa(candles);
     const deaLevel =
@@ -73,6 +147,12 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       high: sig ? sig.highPosition : null,
       dea: sig?.dea ?? null,
       deaLevel,
+      diff1m: diff1mSig?.dif ?? null,
+      diff1mLevel: diff1mSig?.level ?? null,
+      diff5m: diff5mSig?.dif ?? null,
+      diff5mLevel: diff5mSig?.level ?? null,
+      diff15m: diff5mSig?.dif ?? null,
+      diff15mLevel: diff5mSig?.level ?? null,
       weekChangePercent,
       supportMa,
       streakCount: streak.count,
@@ -90,6 +170,12 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       high: null,
       dea: null,
       deaLevel: null,
+      diff1m: null,
+      diff1mLevel: null,
+      diff5m: null,
+      diff5mLevel: null,
+      diff15m: null,
+      diff15mLevel: null,
       weekChangePercent: null,
       supportMa: null,
       streakCount: 0,
@@ -149,7 +235,8 @@ async function buildBoards(
       const row = await fetchRowData(item);
       resultMap.set(item.symbol, row);
       if (queue.length > 0) {
-        await new Promise((r) => setTimeout(r, 60));
+        const delay = getBackoffStatus().usedWeight1m >= 1200 ? 150 : 60;
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
   });

@@ -249,3 +249,131 @@ export function analyzeMacd(closes: number[], opts: AnalyzeOptions = {}): MacdSi
     alert,
   };
 }
+
+export type DiffLevel = "high" | "mid" | "low";
+
+/**
+ * 判定 DIFF 档位：
+ * 过去 N 根 diff 峰值的百分之 x 且大于 0 算高，大于 0 算中，小于 0 算低。
+ */
+export function diffLevel(
+  diff: number,
+  peakDiff: number,
+  highRatio = 0.8,
+): DiffLevel {
+  return diff > 0 && diff >= highRatio * peakDiff ? "high" : diff >= 0 ? "mid" : "low";
+}
+
+export interface DiffAnalysisOptions {
+  /** "High position" = current DIF is at/above this fraction of the highest DIF observed in the window. Default 0.8. */
+  highRatio?: number;
+  /** How many recent DIF values define the observation window (defaults to all settled values). */
+  highWindow?: number;
+}
+
+export interface DiffSignal {
+  dif: number;
+  level: DiffLevel;
+  peakDif: number;
+}
+
+/**
+ * Analyze DIFF level on a series of closes.
+ * Returns null if there isn't enough history to compute a stable MACD.
+ */
+export function analyzeDiff(
+  closes: number[],
+  opts: DiffAnalysisOptions = {},
+): DiffSignal | null {
+  if (closes.length < 35) return null;
+  const { dif } = computeMacd(closes);
+  const n = dif.length;
+  const curDif = dif[n - 1];
+
+  const warmup = 35;
+  const highRatio = opts.highRatio ?? 0.8;
+  const window = opts.highWindow ?? Math.max(0, n - warmup);
+  const start = Math.max(warmup, n - window);
+  let maxDif = -Infinity;
+  for (let i = start; i < n; i++) {
+    if (dif[i] > maxDif) maxDif = dif[i];
+  }
+
+  const level = diffLevel(curDif, maxDif, highRatio);
+  return {
+    dif: curDif,
+    level,
+    peakDif: maxDif,
+  };
+}
+
+export const FIVE_MIN_MS = 5 * 60 * 1000;
+
+/**
+ * 将 1m K 线聚合为 5m K 线。
+ * 按整 5 分钟时间戳（time % 300,000 === 0）分组计算 open, high, low, close, volume。
+ */
+export function aggregate1mTo5m(candles1m: Candle[]): Candle[] {
+  if (candles1m.length === 0) return [];
+  const groups = new Map<number, Candle[]>();
+  for (const c of candles1m) {
+    const bucketTime = Math.floor(c.time / FIVE_MIN_MS) * FIVE_MIN_MS;
+    let list = groups.get(bucketTime);
+    if (!list) {
+      list = [];
+      groups.set(bucketTime, list);
+    }
+    list.push(c);
+  }
+
+  const result: Candle[] = [];
+  for (const [time, bars] of groups.entries()) {
+    bars.sort((a, b) => a.time - b.time);
+    const open = bars[0].open;
+    const close = bars[bars.length - 1].close;
+    let high = -Infinity;
+    let low = Infinity;
+    let volume = 0;
+    for (const b of bars) {
+      if (b.high > high) high = b.high;
+      if (b.low < low) low = b.low;
+      volume += b.volume;
+    }
+    result.push({ time, open, high, low, close, volume });
+  }
+
+  result.sort((a, b) => a.time - b.time);
+  return result;
+}
+
+/**
+ * 用 1m K 线增量计算/更新 5m K 线序列：
+ * 保留历史已有的 5m 完整根数，对于 1m K 线覆盖的时间段（含正在形成的 5m K 线）进行动态合成与更新。
+ */
+export function update5mFrom1m(cached5m: Candle[], candles1m: Candle[], maxBars = 100): Candle[] {
+  if (candles1m.length === 0) return cached5m;
+  if (cached5m.length === 0) return aggregate1mTo5m(candles1m).slice(-maxBars);
+
+  const first1mTime = candles1m[0].time;
+  const firstBucketTime = Math.floor(first1mTime / FIVE_MIN_MS) * FIVE_MIN_MS;
+  const isFirstBucketComplete = first1mTime === firstBucketTime;
+
+  const aggregated5m = aggregate1mTo5m(candles1m);
+  const map = new Map<number, Candle>();
+  for (const c of cached5m) {
+    map.set(c.time, c);
+  }
+
+  for (const bar of aggregated5m) {
+    // 若 1m 序列首根不是在 5m 边界（首桶不完整），且缓存中已有完整的该桶，则不被残缺数据覆盖
+    if (bar.time === firstBucketTime && !isFirstBucketComplete && map.has(bar.time)) {
+      continue;
+    }
+    map.set(bar.time, bar);
+  }
+
+  const result = Array.from(map.values()).sort((a, b) => a.time - b.time);
+  return result.length > maxBars ? result.slice(-maxBars) : result;
+}
+
+

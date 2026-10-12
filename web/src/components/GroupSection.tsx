@@ -14,7 +14,7 @@ interface GroupSectionProps {
 // Sortable columns. Each header maps to a key whose value is extracted from a
 // row via sortValue below. The change column's value depends on the group's
 // changeKey (priceChangePercent for gainers/losers, quoteVolume for volume).
-type SortKey = "rank" | "shift" | "symbol" | "change" | "support" | "lastPrice" | "streak" | "high" | "bullish";
+type SortKey = "rank" | "shift" | "symbol" | "change" | "support" | "lastPrice" | "streak" | "diff1m" | "diff5m";
 type SortDir = "asc" | "desc";
 
 export function GroupSection({
@@ -41,8 +41,8 @@ export function GroupSection({
     { key: "change", label: changeHeader },
     { key: "support", label: "支撑" },
     { key: "streak", label: "连续" },
-    { key: "high", label: "DEA" },
-    { key: "bullish", label: "DIFF" },
+    { key: "diff1m", label: "1m" },
+    { key: "diff5m", label: "5m" },
   ];
 
   // Clicking a header: same key → toggle direction; new key → sensible default
@@ -82,17 +82,18 @@ export function GroupSection({
         return r.lastPrice;
       case "streak":
         return r.streakCount > 0 ? r.streakCount : null;
-      case "high": {
-        const isHigh = r.deaLevel === "high" || (r.deaLevel == null && r.high === true);
-        const isMid = r.deaLevel === "mid" || (r.deaLevel == null && !r.high && r.dea != null && r.dea >= 0);
-        const isLow = r.deaLevel === "low" || (r.deaLevel == null && !r.high && r.dea != null && r.dea < 0);
-        if (isHigh) return 2;
-        if (isMid) return 1;
-        if (isLow) return 0;
-        return r.high == null ? null : r.high ? 2 : 0;
+      case "diff1m": {
+        if (r.diff1mLevel === "high") return 2;
+        if (r.diff1mLevel === "mid") return 1;
+        if (r.diff1mLevel === "low") return 0;
+        return null;
       }
-      case "bullish":
-        return r.bullish == null ? null : r.bullish ? 1 : 0;
+      case "diff5m": {
+        if (r.diff5mLevel === "high") return 2;
+        if (r.diff5mLevel === "mid") return 1;
+        if (r.diff5mLevel === "low") return 0;
+        return null;
+      }
     }
   };
 
