@@ -59,8 +59,8 @@ function row(
   arg7?: any,
 ): Row {
   let symbol: string;
-  let streakCount = 0;
-  let streakDir: "up" | "down" | null = null;
+  let streakCount = 2;
+  let streakDir: "up" | "down" | null = "up";
   let diff1mLevel: "high" | "mid" | "low" | null = "mid";
   let diff5mLevel: "high" | "mid" | "low" | null = "mid";
   let supportMa: string | null = null;
@@ -68,14 +68,16 @@ function row(
   if (typeof arg1 === "boolean" || (arg1 === null && typeof arg2 === "boolean")) {
     // legacy call: row(high, bullish, symbol, streakCount, streakDir, weekChange, supportMa)
     symbol = typeof arg3 === "string" ? arg3 : `SYM${++n}`;
-    streakCount = typeof arg4 === "number" ? arg4 : 0;
-    streakDir = arg5 ?? null;
+    streakCount = typeof arg4 === "number" ? arg4 : 2;
+    streakDir = arg5 ?? "up";
+    diff1mLevel = streakDir === "down" ? "low" : "mid";
+    diff5mLevel = "mid";
     supportMa = arg7 !== undefined ? arg7 : null;
   } else if (typeof arg1 === "string") {
     symbol = arg1;
-    streakCount = typeof arg2 === "number" ? arg2 : 0;
-    streakDir = arg3 ?? null;
-    diff1mLevel = arg4 !== undefined ? arg4 : "mid";
+    streakCount = typeof arg2 === "number" ? arg2 : 2;
+    streakDir = arg3 ?? "up";
+    diff1mLevel = arg4 !== undefined ? arg4 : (streakDir === "down" ? "low" : "mid");
     diff5mLevel = arg5 !== undefined ? arg5 : "mid";
     supportMa = arg6 !== undefined ? arg6 : null;
   } else {
@@ -114,26 +116,28 @@ assert.equal(formatStreak(0, "up"), "");
 assert.equal(formatStreak(3, null), "");
 console.log("0. formatStreak 阳阴连数文案 (≥2 才展示) ✓");
 
-// --- 1. pickHighBull: filter !supportMa && (1m=mid/low && 5m=mid) ------------
+// --- 1. pickHighBull: filter !supportMa && ((1m=mid && streak=up) || (1m=low && streak=down)) && 5m=mid
 const testList = [
-  row("MATCH_MID_MID", 4, "up", "mid", "mid", null),   // match: no support, 1m mid, 5m mid
-  row("MATCH_LOW_MID", 2, "down", "low", "mid", null), // match: no support, 1m low, 5m mid
-  row("HAS_MA", 0, null, "mid", "mid", "ma10"),        // no: has support
-  row("DIFF1M_HIGH", 0, null, "high", "mid", null),    // no: 1m is high
-  row("DIFF1M_NULL", 0, null, null, "mid", null),      // no: 1m is null
-  row("DIFF5M_HIGH", 0, null, "mid", "high", null),    // no: 5m is high
-  row("DIFF5M_LOW", 0, null, "mid", "low", null),      // no: 5m is low
-  row("DIFF5M_NULL", 0, null, "mid", null, null),      // no: 5m is null
-  row("MATCH_MID_MID", 4, "up", "mid", "mid", null),   // dupe
+  row("MATCH_MID_UP", 4, "up", "mid", "mid", null),     // match: no support, 1m mid, 5m mid, 4连阳
+  row("MATCH_LOW_DOWN", 2, "down", "low", "mid", null), // match: no support, 1m low, 5m mid, 2连阴
+  row("MISMATCH_MID_DOWN", 3, "down", "mid", "mid", null), // no: 1m mid but 连阴
+  row("MISMATCH_LOW_UP", 3, "up", "low", "mid", null),     // no: 1m low but 连阳
+  row("STREAK_ONE_UP", 1, "up", "mid", "mid", null),       // no: 只有1根阳线，不算连
+  row("STREAK_ONE_DOWN", 1, "down", "low", "mid", null),   // no: 只有1根阴线，不算连
+  row("HAS_MA", 2, "up", "mid", "mid", "ma10"),            // no: has support
+  row("DIFF1M_HIGH", 2, "up", "high", "mid", null),        // no: 1m is high
+  row("DIFF5M_HIGH", 2, "up", "mid", "high", null),        // no: 5m is high
+  row("DIFF5M_LOW", 2, "up", "mid", "low", null),          // no: 5m is low
+  row("MATCH_MID_UP", 4, "up", "mid", "mid", null),        // dupe
 ];
-assert.deepEqual(pickHighBull(testList), ["MATCH_MID_MID", "MATCH_LOW_MID"]);
+assert.deepEqual(pickHighBull(testList), ["MATCH_MID_UP", "MATCH_LOW_DOWN"]);
 const items = pickHighBullItems(testList);
 assert.equal(items.length, 2);
-assert.equal(items[0].symbol, "MATCH_MID_MID");
+assert.equal(items[0].symbol, "MATCH_MID_UP");
 assert.equal(items[0].streakCount, 4);
 assert.equal(items[0].streakDir, "up");
-assert.equal(items[1].symbol, "MATCH_LOW_MID");
-console.log("1. pickHighBull + pickHighBullItems filter (无支撑 + 5m中 + 1m中/低) + dedupe ✓");
+assert.equal(items[1].symbol, "MATCH_LOW_DOWN");
+console.log("1. pickHighBull + pickHighBullItems filter (无支撑+1m中+5m中+连阳 或 无支撑+1m低+5m中+连阴) + dedupe ✓");
 
 // --- 2. below threshold on both boards (< 3) → no alert ---------------------
 const a = new TelegramAlerter();
@@ -151,7 +155,7 @@ const res2 = await a.check({
   gainers: [
     row(true, true, "BTCUSDT", 3, "up"),
     row(true, true, "ETHUSDT", 5, "down"),
-    row(true, true, "SOLUSDT", 1, "up"),
+    row(true, true, "SOLUSDT", 2, "up"),
   ],
   losers: [],
 });
@@ -166,7 +170,7 @@ assert.doesNotMatch(received[0].text, /24h 成交额榜/);
 assert.match(received[0].text, /置顶标的/);
 assert.match(received[0].text, /BTCUSDT<\/b><\/a> \(3连阳\)/);
 assert.match(received[0].text, /ETHUSDT<\/b><\/a> \(5连阴\)/);
-assert.doesNotMatch(received[0].text, /SOLUSDT.*\(1连阳\)/); // 1根不算连，绝不展示 (1连阳)
+assert.match(received[0].text, /SOLUSDT<\/b><\/a> \(2连阳\)/);
 assert.match(received[0].auth, /TESTTOKEN/);
 console.log("3. gainers reaches 3 → alert sent only for gainers (未达标榜单不播报) with 置顶标的及阳阴连数 ✓");
 

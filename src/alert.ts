@@ -1,8 +1,8 @@
-// "无支撑 + 1m DIFF中 + 5m DIFF中" 或 "无支撑 + 1m DIFF低 + 5m DIFF中" 监控告警
+// "无支撑 + 1m DIFF中 + 5m DIFF中 + 连阳" 或 "无支撑 + 1m DIFF低 + 5m DIFF中 + 连阴" 监控告警
 //
 // 判定规则（满足以下任意一组即命中）：
-//   1. 无支撑 (!row.supportMa) 且 1m DIFF为中 (diff1mLevel === 'mid') 且 5m DIFF为中 (diff5mLevel === 'mid')
-//   2. 无支撑 (!row.supportMa) 且 1m DIFF为低 (diff1mLevel === 'low') 且 5m DIFF为中 (diff5mLevel === 'mid')
+//   1. 无支撑 (!row.supportMa) 且 1m DIFF为中 (diff1mLevel === 'mid') 且 5m DIFF为中 (diff5mLevel === 'mid') 且 连阳 (streakDir === 'up' && streakCount >= 2)
+//   2. 无支撑 (!row.supportMa) 且 1m DIFF为低 (diff1mLevel === 'low') 且 5m DIFF为中 (diff5mLevel === 'mid') 且 连阴 (streakDir === 'down' && streakCount >= 2)
 //
 // 告警逻辑：
 //   - 两个榜（24h涨幅榜、跌幅榜），任意榜出现 ≥ TG_ALERT_MIN (默认 3) 个满足条件的币种时进入关注。
@@ -37,17 +37,23 @@ export function formatStreak(count: number, dir: "up" | "down" | null): string {
 
 /**
  * 判断单行是否满足告警条件：
- * 无支撑 且 5m DIFF为中 且 (1m DIFF为中 或 1m DIFF为低)
+ * 1. 无支撑 且 5m DIFF为中 且 1m DIFF为中 且 连阳(≥2根阳线)
+ * 2. 无支撑 且 5m DIFF为中 且 1m DIFF为低 且 连阴(≥2根阴线)
  */
 export function isAlertMatch(r: Row): boolean {
   if (r.supportMa) return false;
   const l1m = r.diff1mLevel;
   const l5m = r.diff5mLevel ?? r.diff15mLevel;
   if (l5m !== "mid") return false;
-  return l1m === "mid" || l1m === "low";
+  const isUpStreak = r.streakDir === "up" && (r.streakCount ?? 0) >= 2;
+  const isDownStreak = r.streakDir === "down" && (r.streakCount ?? 0) >= 2;
+
+  if (l1m === "mid" && isUpStreak) return true;
+  if (l1m === "low" && isDownStreak) return true;
+  return false;
 }
 
-/** 筛选满足「无支撑+1mDIFF中+5mDIFF中 或 无支撑+1mDIFF低+5mDIFF中」的币种及连数详情（保留原榜单顺序并去重） */
+/** 筛选满足「无支撑+1mDIFF中+5mDIFF中+连阳 或 无支撑+1mDIFF低+5mDIFF中+连阴」的币种及连数详情（保留原榜单顺序并去重） */
 export function pickHighBullItems(rows: Row[]): AlertSymbolItem[] {
   const hit = new Set<string>();
   const items: AlertSymbolItem[] = [];
@@ -105,7 +111,7 @@ export function formatAlertMessage(params: {
 }): string {
   const { min, boards, pinned } = params;
 
-  const header = `🚨 <b>无支撑 + 5m DIFF中 + (1m DIFF中/低) 告警</b>（触发阈值 ≥ ${min}）`;
+  const header = `🚨 <b>无支撑 + 5m DIFF中 + (1m中+连阳 / 1m低+连阴) 告警</b>（触发阈值 ≥ ${min}）`;
   const dashboardUrl = getDashboardUrl();
 
   let pinnedBlock = "";

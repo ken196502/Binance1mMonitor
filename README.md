@@ -43,14 +43,14 @@ npm run research -- gainers --data data/research/hourly-initial --end 2026-10-11
 >
 > 页面表头与告警中展示的 `1m DIFF`、`5m DIFF` **全部严格指代红绿柱（两个 F）**，绝不可与快线 DIF 混淆！
 
-## Telegram 计数告警（无支撑 + 5m DIFF中 + [1m DIFF中 或 低]）
+## Telegram 计数告警（无支撑 + 5m DIFF中 + [1m中+连阳 或 1m低+连阴]）
 
 在面板高亮之外，后端进行**榜单实时告警判定**：
 
 当 **24h 涨幅榜、跌幅榜** 两个榜单中，**任意一个榜单**出现 **≥ `TG_ALERT_MIN`（默认 3）个**满足以下任意一组条件的币种时：
 
-1. **无支撑**（`supportMa` 为 N/A） + **1m DIFF 中** + **5m DIFF 中**
-2. **无支撑**（`supportMa` 为 N/A） + **1m DIFF 低** + **5m DIFF 中**
+1. **无支撑**（`supportMa` 为 N/A） + **1m DIFF 中** + **5m DIFF 中** + **连阳**（1m K 线连续阳线 ≥ 2 根）
+2. **无支撑**（`supportMa` 为 N/A） + **1m DIFF 低** + **5m DIFF 中** + **连阴**（1m K 线连续阴线 ≥ 2 根）
 
 发出 Telegram 通知：
 
