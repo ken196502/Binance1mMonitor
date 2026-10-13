@@ -1,3 +1,21 @@
+@font-face {
+  font-family: "D-DIN Exp";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/D-DINExp.woff") format("woff"),
+       url("https://fonts.cdnfonts.com/s/23112/D-DINExp.woff") format("woff");
+}
+
+@font-face {
+  font-family: "D-DIN Exp";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/D-DINExp-Bold.woff") format("woff"),
+       url("https://fonts.cdnfonts.com/s/23112/D-DINExp-Bold.woff") format("woff");
+}
+
 :root {
   color-scheme: dark;
   --bg: #0b0e14;
@@ -24,7 +42,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font: 13px/1.5 "D-DIN Exp", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   padding: 12px;
   width: 100%;
   overflow-x: hidden;
@@ -129,6 +147,21 @@ th.col-shift .sort-th {
 }
 th.col-shift .sort-th .arrow {
   font-size: 8px;
+}
+th.col-60d, td.col-60d {
+  width: 1%;
+  min-width: 30px;
+  text-align: center;
+  white-space: nowrap;
+}
+th.col-60d .sort-th {
+  justify-content: center;
+}
+.arrow-60d {
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-block;
+  line-height: 1;
 }
 th.col-symbol, td.col-symbol {
   text-align: left;

@@ -3,6 +3,7 @@ import { summarize } from './backtest.ts';
 import { MINUTE, type GainersParameters, type MinuteDataset, type MinuteSignal } from './gainers-types.ts';
 import type { Metrics } from './types.ts';
 import { deaLevel, matchesFifteen, type MiningParameters } from './fifteen.ts';
+import { matchesBtcFive } from './btc-five.ts';
 
 /** Fixed-size isolated USDT margin. All values are explicit simulation inputs. */
 export interface AccountOptions {
@@ -30,6 +31,9 @@ export interface AccountTrade {
   fifteenStreakCount?: number; fifteenStreakDirection?: string | null;
   fifteenClosedAt?: number | null; fifteenDea?: number | null; fifteenDif?: number | null;
   fifteenDeaLevel?: string | null; fifteenDirection?: string | null; fifteenSupportMa?: string | null;
+  btcFiveSymbol?: string; btcFiveClosedAt?: number | null; btcFiveDea?: number | null; btcFiveDif?: number | null;
+  btcFiveDeaLevel?: string | null; btcFiveDirection?: string | null; btcFiveSupportMa?: string | null;
+  btcFiveStreakCount?: number; btcFiveStreakDirection?: string | null;
 }
 export interface EquityPoint { time: number; phase: 'settled' | 'entry'; freeUSDT: number; lockedMarginUSDT: number; unrealizedPnlUSDT: number; equityUSDT: number; positions: number }
 export interface AccountMetrics extends Metrics {
@@ -108,6 +112,13 @@ function planExit(data: MinuteDataset, signal: MinuteSignal, p: MiningParameters
       fifteenDea: signal.fifteen?.dea ?? null, fifteenDif: signal.fifteen?.dif ?? null,
       fifteenDeaLevel: signal.fifteen ? deaLevel(signal.fifteen.dea, signal.fifteen.peakDea, p.fifteenHighRatio) : null, fifteenDirection: signal.fifteen?.direction ?? null,
       fifteenSupportMa: signal.fifteen?.supportMa ?? null }),
+    ...(signal.btcFive === undefined ? {} : { minuteDea: signal.dea, minuteDif: signal.dif,
+      minuteDeaLevel: deaLevel(signal.dea, signal.peakDea, p.highRatio), minuteDirection: signal.dif >= signal.dea ? 'bull' : 'bear',
+      btcFiveSymbol: signal.btcFive?.symbol, btcFiveClosedAt: signal.btcFive?.closedAt ?? null,
+      btcFiveDea: signal.btcFive?.dea ?? null, btcFiveDif: signal.btcFive?.dif ?? null,
+      btcFiveDeaLevel: signal.btcFive ? deaLevel(signal.btcFive.dea, signal.btcFive.peakDea, p.btcFiveHighRatio) : null,
+      btcFiveDirection: signal.btcFive?.direction ?? null, btcFiveSupportMa: signal.btcFive?.supportMa ?? null,
+      btcFiveStreakCount: signal.btcFive?.streak?.count, btcFiveStreakDirection: signal.btcFive?.streak?.direction }),
     leverage: o.leverage, marginUSDT: margin, notionalUSDT: notional, quantity, liquidationPrice,
     grossPnlUSDT, entryCostUSDT, exitCostUSDT, liquidationFeeUSDT, insuranceShortfallUSDT, netPnlUSDT,
     netPercent: netPnlUSDT / notional * 100, marginReturnPercent: netPnlUSDT / margin * 100 };
@@ -120,7 +131,7 @@ export function backtestAccount(data: MinuteDataset, signals: MinuteSignal[], p:
   if (offsets && (offsets.length !== signals.length || offsets.some((v) => !Number.isInteger(v) || v < -1 || v >= p.holdMinutes))) throw new Error('账户GPU退出位置不匹配');
   if (start >= end || start % MINUTE || end % MINUTE) throw new Error('账户区间必须按分钟对齐');
   const arrivals = new Map<number, { signal: MinuteSignal; index: number }[]>();
-  signals.forEach((s, index) => { if (s.time >= start && s.time < end && matchesMinuteEntry(s, p.highRatio, p) && matchesFifteen(s, p)) { const list = arrivals.get(s.time) ?? []; list.push({ signal: s, index }); arrivals.set(s.time, list); } });
+  signals.forEach((s, index) => { if (s.time >= start && s.time < end && matchesMinuteEntry(s, p.highRatio, p) && matchesFifteen(s, p) && matchesBtcFive(s, p)) { const list = arrivals.get(s.time) ?? []; list.push({ signal: s, index }); arrivals.set(s.time, list); } });
   const active = new Map<string, { trade: AccountTrade; signal: MinuteSignal }>();
   const trades: AccountTrade[] = [], equity: EquityPoint[] = [];
   let free = o.initialBalanceUSDT, missing = 0, purged = 0, skippedFunds = 0, skippedPositionLimit = 0;
@@ -152,7 +163,7 @@ export function backtestAccount(data: MinuteDataset, signals: MinuteSignal[], p:
     // Same-minute capacity conflicts are decided by symbol code, not future PnL.
     const entries = (arrivals.get(time) ?? []).sort((a, b) => a.signal.symbol.localeCompare(b.signal.symbol));
     for (const { signal: s, index } of entries) {
-      if (!matchesMinuteEntry(s, p.highRatio, p) || !matchesFifteen(s, p) || active.has(s.symbol)) continue;
+      if (!matchesMinuteEntry(s, p.highRatio, p) || !matchesFifteen(s, p) || !matchesBtcFive(s, p) || active.has(s.symbol)) continue;
       if (s.time + p.holdMinutes * MINUTE > end) { purged++; continue; }
       if (active.size >= o.maxPositions) { skippedPositionLimit++; continue; }
       const required = o.marginPerTradeUSDT * (1 + o.leverage * o.costBps / 10000);

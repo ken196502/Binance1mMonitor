@@ -1,7 +1,7 @@
 import type { Streak } from '../src/macd.ts';
 
 export interface StreakParameters { minuteStreak?: number; fifteenStreak?: number }
-export const STREAK_AXES = ['minuteStreak', 'fifteenStreak'] as const;
+export const STREAK_AXES = ['minuteStreak', 'fifteenStreak', 'btcFiveStreak'] as const;
 
 /** Signed minimum length: +N at least N up bars, -N down bars, 0 unrestricted. */
 export function matchesStreak(streak: Streak | undefined, minimum = 0): boolean {

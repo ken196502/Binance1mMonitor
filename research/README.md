@@ -141,6 +141,24 @@ npm run build
 
 测试覆盖历史排名轮换、跨榜同币保留、未来数据隔离、24h 成交额、缺失数据、费用、止损跳空、时间边界剔除、多轮搜索可复现、测试区间不参与选参、全市场分页获取与离线回测。测试只使用本地模拟行情和模拟 Telegram 服务。
 
+## 新增独立研究：涨幅榜 1m + BTC 5m
+
+`npm run mine:btc5m`（等价于 `npm run mine -- --study btc5m`）对历史涨幅前十币种的1m信号叠加 **BTCUSDT原生5m** 状态。所有榜内币种在同一时刻使用同一个BTC状态，不要求BTC进入涨幅榜，交易及盈亏仍属于榜内币种。
+
+沿用下文GPU逐仓账户模型与训练/验证/留出流程。两个周期分别搜索DEA高/中/低、DIFF多/空、高位比例及连阳/连阴条件，均要求无MA支撑。默认网格 `research/miner-grid-btc5m.json` 使用 `minuteDea/minuteDif/highRatio/minuteStreak` 与 `btcFiveDea/btcFiveDif/btcFiveHighRatio/btcFiveStreak` 独立组合；参数范围与现有1m+15m研究相同。仍为36种状态、121种连续条件、58,063,544组有效参数，默认预先分层抽样400,000组。15m与BTC5m网格分别运行。
+
+```bash
+# 首次补取BTC 5m并运行；本地保存结果，不发送Telegram
+npm run mine:btc5m -- --fetch-btc-five --batch 128 --no-telegram
+
+# 按相同参数继续尚未完成的研究
+npm run mine:btc5m -- --resume --batch 128 --no-telegram
+```
+
+共用已有小时榜单池与币种1m缓存，BTC缓存独立保存在 `data/research/btc-5m-1day/`，可用 `--btc-five-data` 指定新目录。下载BTC原生5m，含300根（25小时）预热；以最近100根DEA峰值判断高位。入场t只关联 `floor(t/5m)*5m` 时收盘的BTC线，例如10:04用10:00收盘线、10:05用10:05收盘线。缺失、未收盘、预热不足均不可入场，缺口后重新预热。缓存校验区间、周期、币种、数量与SHA256。
+
+独立输出目录为 `reports/research/gainers-gpu-margin-no-ma-btc5m/`，可用 `--out` 修改。报告包含BTC覆盖率和两组条件的训练比较；`trials.csv` 保存BTC搜索参数；`test-trades.csv` 额外记录 `btcFiveSymbol`、BTC收盘时间、DEA/DIFF、档位、方向、MA支撑和连续根数。断点指纹包含BTC规则和数据哈希，不与原研究混用。升级代码后，旧指纹断点需使用对应旧代码复现，或在新目录重跑。
+
 ## M1 Pro GPU 超短线挖掘与 Telegram 成果播报
 
 新增独立入口 `npm run mine`，以 `reports/research/gainers-high-bull-1day/gainers/report.md` 为基线，复用原有历史榜单、1m MACD 和成交模型，将1m与15m各自的DEA高/中/低、DIFF多/空交叉为36种组合；两个周期均强制无MA支撑，并独立设置高位阈值、连阳/连阴方向与最少根数。需要 Apple Silicon、支持 Metal 的 macOS、原生 arm64 Python 3.12 和 `uv`。PyTorch **MPS** 在 GPU 上批量计算参数×信号×持仓分钟的首次退出（包括强平）；GPU 不可用时明确报错。`--device cpu` 只供排错，报告会显示真实设备。

@@ -69,6 +69,15 @@ export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
         </a>
       </td>
       <td className={colClass(changeLabel)}>{isPercentage ? pct(changeLabel) : fmt(changeLabel, 2)}</td>
+      <td className="col-60d">
+        {row.change60d === "up" ? (
+          <span className="pos arrow-60d" title="60日趋势：上涨">▲</span>
+        ) : row.change60d === "down" ? (
+          <span className="neg arrow-60d" title="60日趋势：下跌">▼</span>
+        ) : (
+          <span className="muted">-</span>
+        )}
+      </td>
       {row.supportMa ? (
         <td>{row.supportMa}</td>
       ) : (

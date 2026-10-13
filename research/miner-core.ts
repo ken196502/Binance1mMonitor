@@ -4,28 +4,34 @@ import type { GainersGrid, GainersParameters, MinuteTrial } from './gainers-type
 import type { Metrics } from './types.ts';
 import { STREAK_AXES } from './streak.ts';
 import { FIFTEEN_AXES, type MiningParameters } from './fifteen.ts';
+import { BTC_FIVE_AXES } from './btc-five.ts';
 
-export type MiningGrid = GainersGrid & { [K in keyof typeof FIFTEEN_AXES]?: NonNullable<MiningParameters[K]>[] } & { minuteStreak?: number[]; fifteenStreak?: number[]; fifteenHighRatio?: number[] };
+const STATE_AXES = { ...FIFTEEN_AXES, ...BTC_FIVE_AXES };
+const RATIO_AXES = ['fifteenHighRatio', 'btcFiveHighRatio'] as const;
+
+export type MiningGrid = GainersGrid & { [K in keyof typeof STATE_AXES]?: NonNullable<MiningParameters[K]>[] } & { minuteStreak?: number[]; fifteenStreak?: number[]; fifteenHighRatio?: number[]; btcFiveHighRatio?: number[]; btcFiveStreak?: number[] };
 export function validateMiningGrid(input: unknown): MiningGrid {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('挖掘网格必须是对象');
   const base = { ...input } as Record<string, unknown>;
   const extra: Record<string, string[]> = {};
-  for (const [key, allowed] of Object.entries(FIFTEEN_AXES)) {
+  for (const [key, allowed] of Object.entries(STATE_AXES)) {
     if (key in base) {
       const values = base[key];
       if (!Array.isArray(values) || !values.length || new Set(values).size !== values.length || values.some((v) => !allowed.includes(v))) throw new Error(`${key} 候选值无效`);
       extra[key] = values; delete base[key];
     }
   }
-  const numeric: Pick<MiningGrid, 'minuteStreak' | 'fifteenStreak' | 'fifteenHighRatio'> = {};
-  for (const key of [...STREAK_AXES, 'fifteenHighRatio'] as const) if (key in base) {
+  const numeric: Pick<MiningGrid, typeof STREAK_AXES[number] | typeof RATIO_AXES[number]> = {};
+  for (const key of [...STREAK_AXES, ...RATIO_AXES] as const) if (key in base) {
     const values = base[key];
     if (!Array.isArray(values) || !values.length || values.length > 100 || new Set(values).size !== values.length
-        || values.some((v) => typeof v !== 'number' || !Number.isFinite(v) || (key === 'fifteenHighRatio' ? v <= 0 || v > 1 : !Number.isInteger(v) || Math.abs(v) > 100))) throw new Error(`${key} 候选值无效`);
+        || values.some((v) => typeof v !== 'number' || !Number.isFinite(v) || (key === 'fifteenHighRatio' || key === 'btcFiveHighRatio' ? v <= 0 || v > 1 : !Number.isInteger(v) || Math.abs(v) > 100))) throw new Error(`${key} 候选值无效`);
     numeric[key] = values; delete base[key];
   }
   const g = validateGainersGrid(base);
   if (extra.fifteenDea || extra.fifteenDif || numeric.fifteenStreak || numeric.fifteenHighRatio) { extra.fifteenDea ??= ['any']; extra.fifteenDif ??= ['any']; }
+  if (extra.btcFiveDea || extra.btcFiveDif || numeric.btcFiveStreak || numeric.btcFiveHighRatio) { extra.btcFiveDea ??= ['any']; extra.btcFiveDif ??= ['any']; }
+  if (extra.fifteenDea && extra.btcFiveDea) throw new Error('15m 与 BTC 5m 是独立研究，请使用各自网格');
   if (extra.minuteDea || extra.minuteDif) { extra.minuteDea ??= ['any']; extra.minuteDif ??= ['any']; }
   return { ...g, ...extra, ...numeric };
 }
@@ -43,6 +49,10 @@ export interface MiningSearch {
 export function miningSearch(input: unknown, cost: number, minNetRR: number, seed: number, maxTrials = 400_000): MiningSearch {
   if (!Number.isInteger(maxTrials) || maxTrials < 1 || maxTrials > 400_000) throw new Error('max-trials 必须为1..400000的整数');
   const g = validateMiningGrid(input);
+  const deaKey = g.btcFiveDea ? 'btcFiveDea' : 'fifteenDea';
+  const difKey = g.btcFiveDea ? 'btcFiveDif' : 'fifteenDif';
+  const ratioKey = g.btcFiveDea ? 'btcFiveHighRatio' : 'fifteenHighRatio';
+  const streakKey = g.btcFiveDea ? 'btcFiveStreak' : 'fifteenStreak';
   const rawBase = Object.entries(g).filter(([k]) => !STREAK_AXES.includes(k as typeof STREAK_AXES[number])).reduce((n, [, a]) => n * a!.length, 1);
   if (rawBase > 2_000_000) throw new Error('不含连阳/连阴的原始网格最多允许200万个组合，请缩小网格');
   if (g.holdMinutes.some((v) => v > 60)) throw new Error('超短线挖掘最长持有期不得超过 60 分钟');
@@ -53,20 +63,20 @@ export function miningSearch(input: unknown, cost: number, minNetRR: number, see
       const rr = rewardRisk(p, cost);
       if (rr.nominal >= 3 - 1e-12 && rr.net >= minNetRR - 1e-12) {
         for (const minuteDea of g.minuteDea ?? [undefined]) for (const minuteDif of g.minuteDif ?? [undefined])
-          for (const fifteenDea of g.fifteenDea ?? [undefined]) for (const fifteenDif of g.fifteenDif ?? [undefined])
-            for (const fifteenHighRatio of g.fifteenHighRatio ?? [undefined]) {
+          for (const fifteenDea of g[deaKey] ?? [undefined]) for (const fifteenDif of g[difKey] ?? [undefined])
+            for (const fifteenHighRatio of g[ratioKey] ?? [undefined]) {
               // Each timeframe's negative/any DEA ignores only its OWN high threshold.
               if ((minuteDea === 'low' || minuteDea === 'any') && highRatio !== g.highRatio[0]) continue;
-              if ((fifteenDea === 'low' || fifteenDea === 'any') && fifteenHighRatio !== g.fifteenHighRatio?.[0]) continue;
+              if ((fifteenDea === 'low' || fifteenDea === 'any') && fifteenHighRatio !== g[ratioKey]?.[0]) continue;
               bases.push({ ...p, ...(minuteDea === undefined ? {} : { minuteDea, minuteDif }),
-                ...(fifteenDea === undefined ? {} : { fifteenDea, fifteenDif }),
-                ...(fifteenHighRatio === undefined ? {} : { fifteenHighRatio }) });
+                ...(fifteenDea === undefined ? {} : { [deaKey]: fifteenDea, [difKey]: fifteenDif }),
+                ...(fifteenHighRatio === undefined ? {} : { [ratioKey]: fifteenHighRatio }) });
             }
       }
     }
   if (!bases.length) throw new Error('没有同时满足名义 ≥3R 和扣费后盈亏比门槛的参数');
   if (bases.length > 600_000) throw new Error('不含连阳/连阴的有效网格最多允许600000组');
-  const minuteValues = g.minuteStreak ?? [undefined], fifteenValues = g.fifteenStreak ?? [undefined];
+  const minuteValues = g.minuteStreak ?? [undefined], fifteenValues = g[streakKey] ?? [undefined];
   const possible = bases.length * minuteValues.length * fifteenValues.length;
   let state = seed;
   const random = () => { state = (Math.imul(1664525, state) + 1013904223) >>> 0; return state / 4294967296; };
@@ -75,10 +85,10 @@ export function miningSearch(input: unknown, cost: number, minNetRR: number, see
   };
   const result: MiningParameters[] = [];
   const withStreak = (p: MiningParameters, minuteStreak: number | undefined, fifteenStreak: number | undefined) => ({ ...p,
-    ...(minuteStreak === undefined ? {} : { minuteStreak }), ...(fifteenStreak === undefined ? {} : { fifteenStreak }) });
+    ...(minuteStreak === undefined ? {} : { minuteStreak }), ...(fifteenStreak === undefined ? {} : { [streakKey]: fifteenStreak }) });
   const families = new Map<string, MiningParameters[]>();
   for (const p of bases) {
-    const key = JSON.stringify([p.minuteDea, p.minuteDif, p.fifteenDea, p.fifteenDif]);
+    const key = JSON.stringify([p.minuteDea, p.minuteDif, p[deaKey], p[difKey]]);
     const group = families.get(key) ?? []; group.push(p); families.set(key, group);
   }
   const strata = families.size * minuteValues.length * fifteenValues.length;

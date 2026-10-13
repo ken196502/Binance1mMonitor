@@ -8,9 +8,8 @@ import {
   fetch24hTickers,
   pickTops,
   fetch1mCandles,
-  fetch5mCandles,
-  fetch15mCandles,
   fetchWeeklyOpen,
+  fetch60dTrend,
   getBackoffStatus,
   type Ticker24h,
   type TickerTops,
@@ -26,6 +25,7 @@ import {
 import { TelegramAlerter } from "./alert.ts";
 import { telegramConfigured } from "./telegram.ts";
 import { enrichRankChanges, type BoardSnapshot } from "./rank.ts";
+import { wsManager, applyTradeToCandles } from "./ws.ts";
 import type { Row, Status } from "./types.ts";
 
 // Directory the built React frontend is emitted to (web/dist). In dev you run
@@ -37,6 +37,7 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 4111;
 const TOP_N = Number(process.env.TOP_N ?? 10);
 const REFRESH_TTL_MS = Number(process.env.REFRESH_TTL_MS ?? 60_000); // 默认 60s 刷新一次，对齐 1m K 线收盘周期并防止 API 超频
 const KLINE_LIMIT = Number(process.env.KLINE_LIMIT ?? 100);
+const KLINE_INIT_LIMIT = Number(process.env.KLINE_INIT_LIMIT ?? 500);
 // "High position" = current DEA/DIFF is at/near the highest value in the window.
 const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
 const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in bars
@@ -50,10 +51,19 @@ let cache: { at: number; promise: Promise<Status> } | null = null;
 export interface SymbolCandleCache {
   candles1m: Candle[];
   candles5m: Candle[];
-  initialized5m: boolean;
+  initialized: boolean;
 }
 
 const candleCache = new Map<string, SymbolCandleCache>();
+
+// 监听 WebSocket 成交流，实时推进并合成当前分钟 K 线及 5m K 线
+wsManager.onTrade((tick) => {
+  const symCache = candleCache.get(tick.symbol);
+  if (symCache && symCache.initialized && symCache.candles1m.length > 0) {
+    symCache.candles1m = applyTradeToCandles(symCache.candles1m, tick, KLINE_LIMIT);
+    symCache.candles5m = update5mFrom1m(symCache.candles5m, symCache.candles1m, KLINE_LIMIT);
+  }
+});
 
 export function getCandleCacheForTest(): Map<string, SymbolCandleCache> {
   return candleCache;
@@ -65,8 +75,9 @@ export function resetCandleCacheForTest(): void {
 
 /**
  * 并发拉取单币种指标：
- * 1. 1m K 线拉取后在本地保存；
- * 2. 5m K 线仅在首次遇到标的时向币安请求 100 根完成初始化，后续不再请求 5m 接口，自行利用 1m K 线在本地实时计算合成（节省 50% 请求，防 429）。
+ * 1. 首次遇到标的时拉取 500 根 1m K 线并在本地聚合出 5m 历史 K 线完成冷启动；
+ * 2. 完成初始化后，后续优先依赖 WebSocket 实时成交流就地更新 K 线，无需每次发起 REST 请求（大幅减少 90%+ 的 HTTP 权重）；
+ * 3. 仅当缓存严重缺失或初次遇到时才发起 REST 同步。
  */
 async function fetchRowData(t: Ticker24h): Promise<Row> {
   try {
@@ -75,24 +86,22 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       symCache = {
         candles1m: [],
         candles5m: [],
-        initialized5m: false,
+        initialized: false,
       };
       candleCache.set(t.symbol, symCache);
     }
 
-    // 5m 仅在未初始化时请求一次（拉取 100 根），之后完全不发 5m 请求
-    let fetch5mPromise: Promise<Candle[]> | null = null;
-    if (!symCache.initialized5m) {
-      fetch5mPromise = fetch5mCandles(t.symbol, KLINE_LIMIT).catch((err) => {
-        console.warn(`[kline-5m] ${t.symbol} 初始化 5m K 线失败: ${err?.message ?? err}，将在下轮重试`);
-        return [] as Candle[];
-      });
-    }
+    const isFirstRun = !symCache.initialized;
+    // 如果已经完成冷启动且本地 K 线充足，跳过 REST K 线请求，优先使用 WS 实时维持的 K 线
+    const needRestKline = isFirstRun || symCache.candles1m.length < 35;
+    const fetchLimit = isFirstRun ? KLINE_INIT_LIMIT : KLINE_LIMIT;
 
-    const [candles1mRes, candles5mInit, weekOpen] = await Promise.all([
-      fetch1mCandles(t.symbol, KLINE_LIMIT).catch(() => [] as Candle[]),
-      fetch5mPromise ? fetch5mPromise : Promise.resolve([] as Candle[]),
+    const [candles1mRes, weekOpen, change60d] = await Promise.all([
+      needRestKline
+        ? fetch1mCandles(t.symbol, fetchLimit).catch(() => [] as Candle[])
+        : Promise.resolve([] as Candle[]),
       fetchWeeklyOpen(t.symbol),
+      fetch60dTrend(t.symbol),
     ]);
 
     // 1m 保存：每次更新保存，若偶发网络异常则回退使用已保存的 1m 序列
@@ -101,15 +110,13 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
     }
     const candles = symCache.candles1m;
 
-    // 5m 初始化设置：首次必须成功拉取到足够的 5m 历史 K 线才标记为 initialized5m
-    if (!symCache.initialized5m && candles5mInit.length >= 35) {
-      symCache.candles5m = candles5mInit;
-      symCache.initialized5m = true;
-      console.log(`[kline-5m] ${t.symbol} 成功同步 ${candles5mInit.length} 根 5m K 线`);
-    }
-
-    // 自行用 1m 计算/更新 5m K 线：前提是已成功完成 5m 初始化
-    if (symCache.initialized5m && candles.length > 0) {
+    // 首次拉取成功（获得足够 K 线）时完成初始化并由 500 根 1m 直接合成 5m
+    if (isFirstRun && candles.length >= 35) {
+      symCache.candles5m = update5mFrom1m([], candles, KLINE_LIMIT);
+      symCache.initialized = true;
+      console.log(`[kline] ${t.symbol} 首次启动成功同步 ${candles.length} 根 1m K 线，合成 ${symCache.candles5m.length} 根 5m K 线`);
+    } else if (symCache.initialized && candles.length > 0) {
+      // 后续轮询用增量的 1m 更新 5m
       symCache.candles5m = update5mFrom1m(symCache.candles5m, candles, KLINE_LIMIT);
     }
     const candles5m = symCache.candles5m;
@@ -158,6 +165,7 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       diff15m: diff5mSig?.dif ?? null,
       diff15mLevel: diff5mSig?.level ?? null,
       weekChangePercent,
+      change60d,
       supportMa,
       streakCount: streak.count,
       streakDir: streak.direction,
@@ -181,6 +189,7 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       diff15m: null,
       diff15mLevel: null,
       weekChangePercent: null,
+      change60d: null,
       supportMa: null,
       streakCount: 0,
       streakDir: null,
@@ -215,47 +224,95 @@ async function buildBoards(
   droppedGainers: Row[];
   droppedLosers: Row[];
 }> {
-  // 收集置顶币种与所有榜单的唯一币种并保留最新行情
+  // 优先级队列设计：
+  // 1. 置顶标的 (BTC/SOL) 最高优
+  // 2. 24h 涨幅榜标的 (Gainers) 其次（优先保证涨幅榜数据完整与展示）
+  // 3. 24h 跌幅榜标的 (Losers)
+  // 4. 掉出榜单标的 (Dropped) 最低优
   const uniqueTickers = new Map<string, Ticker24h>();
-  for (const t of [
-    ...pinnedTickers,
-    ...tops.gainers,
-    ...tops.losers,
-    ...droppedGainerTickers,
-    ...droppedLoserTickers,
-  ]) {
-    if (!uniqueTickers.has(t.symbol)) {
-      uniqueTickers.set(t.symbol, t);
+  const addTickers = (list: Ticker24h[]) => {
+    for (const t of list) {
+      if (!uniqueTickers.has(t.symbol)) {
+        uniqueTickers.set(t.symbol, t);
+      }
     }
-  }
+  };
+
+  addTickers(pinnedTickers);
+  addTickers(tops.gainers);
+  addTickers(tops.losers);
+  addTickers(droppedGainerTickers);
+  addTickers(droppedLoserTickers);
+
+  const gainerSymbolSet = new Set([
+    ...pinnedTickers.map((t) => t.symbol),
+    ...tops.gainers.map((t) => t.symbol),
+  ]);
 
   const queue = Array.from(uniqueTickers.values());
   const resultMap = new Map<string, Row>();
-  // 限制 2 个并发 worker，并在批次间增加平滑微小间隔（60ms），平缓打散请求，避免突发瞬时尖峰引发 418/429
-  const workers = Array.from({ length: 2 }, async () => {
-    while (queue.length) {
-      if (getBackoffStatus().active) break;
-      const item = queue.shift()!;
-      const row = await fetchRowData(item);
-      resultMap.set(item.symbol, row);
-      if (queue.length > 0) {
-        const delay = getBackoffStatus().usedWeight1m >= 1200 ? 150 : 60;
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-  });
-  await Promise.all(workers);
 
-  if (getBackoffStatus().active) {
+  // 严格串行单队列处理 + 动态平滑延时（防 WAF 瞬时频控 418）
+  // 优先保证涨幅榜：如果涨幅榜已经完成，而当前已用权重已偏高（>=1500），主动跳过跌幅榜/掉榜币，避免冲刺被 418/429 封禁
+  while (queue.length) {
+    if (getBackoffStatus().active) break;
+    const item = queue.shift()!;
+
+    // 优先策略：如果不是置顶或涨幅榜标的，且权重已接近警戒线（>= 1500），柔性放弃拉取低优标的以保全涨幅榜
+    if (!gainerSymbolSet.has(item.symbol) && getBackoffStatus().usedWeight1m >= 1500) {
+      console.warn(`[binance] ⚠️ 当前权重(${getBackoffStatus().usedWeight1m}/2400)偏高，跳过低优标的 ${item.symbol}，优先保全涨幅榜`);
+      continue;
+    }
+
+    const row = await fetchRowData(item);
+    resultMap.set(item.symbol, row);
+
+    if (queue.length > 0) {
+      // 根据当前权重动态控制请求间隔：平缓打散请求，彻底消除瞬时并发突发导致的 418
+      const used = getBackoffStatus().usedWeight1m;
+      const delay = used >= 1600 ? 300 : used >= 1000 ? 150 : 80;
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+
+  // 若处于避让期但涨幅榜已成功拉取，允许展示已有涨幅榜，不直接整页抛错崩溃
+  const hasGainers = tops.gainers.some((t) => resultMap.has(t.symbol));
+  if (getBackoffStatus().active && !hasGainers) {
     throw new Error(getBackoffStatus().reason || "Binance 触发限频/封禁");
   }
 
+  // 对于未拉取到的标的，使用 fallback 默认空行填充，确保前端不报错且涨幅榜正常展示
+  const getRowOrFallback = (t: Ticker24h): Row => {
+    return (
+      resultMap.get(t.symbol) ?? {
+        ...t,
+        state: "n/a",
+        alert: false,
+        bullish: null,
+        high: null,
+        dea: null,
+        deaLevel: null,
+        diff1m: null,
+        diff1mLevel: null,
+        diff5m: null,
+        diff5mLevel: null,
+        diff15m: null,
+        diff15mLevel: null,
+        weekChangePercent: null,
+        change60d: null,
+        supportMa: null,
+        streakCount: 0,
+        streakDir: null,
+      }
+    );
+  };
+
   return {
-    pinned: pinnedTickers.map((t) => resultMap.get(t.symbol)!).filter(Boolean),
-    gainers: tops.gainers.map((t) => resultMap.get(t.symbol)!).filter(Boolean),
-    losers: tops.losers.map((t) => resultMap.get(t.symbol)!).filter(Boolean),
-    droppedGainers: droppedGainerTickers.map((t) => resultMap.get(t.symbol)!).filter(Boolean),
-    droppedLosers: droppedLoserTickers.map((t) => resultMap.get(t.symbol)!).filter(Boolean),
+    pinned: pinnedTickers.map(getRowOrFallback),
+    gainers: tops.gainers.map(getRowOrFallback),
+    losers: tops.losers.map(getRowOrFallback),
+    droppedGainers: droppedGainerTickers.map(getRowOrFallback),
+    droppedLosers: droppedLoserTickers.map(getRowOrFallback),
   };
 }
 
@@ -299,6 +356,14 @@ async function refresh(): Promise<Status> {
     droppedLoserTickers,
   );
 
+  // 动态同步 WebSocket 订阅列表：确保置顶与各榜单币种全部在 WS 监听中，享受实时成交更新
+  const allSymbols = [
+    ...pinned.map((r) => r.symbol),
+    ...gainers.map((r) => r.symbol),
+    ...losers.map((r) => r.symbol),
+  ];
+  wsManager.setSymbols(allSymbols);
+
   // 计算排名对比与位移标记
   const rankedGainers = enrichRankChanges(gainers, droppedGainers, prevGainers);
   const rankedLosers = enrichRankChanges(losers, droppedLosers, prevLosers);
@@ -323,10 +388,10 @@ async function refresh(): Promise<Status> {
     losers: tops.losers.map((t) => t.symbol),
   };
 
-  // Telegram alert runs only on fresh snapshots (not cached polls)，每条播报固定包含置顶标的
+  // Telegram alert runs only on fresh snapshots (not cached polls)，每条播报固定包含置顶标的，涨跌幅榜不计入置顶标的
   const { summary: highBull } = await alerter.check({
-    gainers: fullGainers,
-    losers: fullLosers,
+    gainers: [...rankedGainers.rankedTop, ...rankedGainers.rankedDropped],
+    losers: [...rankedLosers.rankedTop, ...rankedLosers.rankedDropped],
     pinned: markedPinned,
   });
   if (highBull.triggered) {

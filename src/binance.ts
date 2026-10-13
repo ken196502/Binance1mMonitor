@@ -23,7 +23,7 @@ import type { Candle } from "./macd.ts";
 import { sendTelegramMessage, telegramConfigured } from "./telegram.ts";
 
 // Proxy routing for Binance requests:
-const PROXY =
+export const PROXY =
   process.env.PROXY ??
   process.env.BINANCE_PROXY ??
   process.env.HTTPS_PROXY ??
@@ -101,6 +101,14 @@ export function getStatusAlertedForTest(): Map<number, boolean> {
 
 export function resetStatusAlertedForTest(): void {
   statusAlerted.clear();
+}
+
+export function clearStatusAlerted(): void {
+  statusAlerted.clear();
+}
+
+export function setBackoffUntilForTest(ts: number): void {
+  backoffUntil = ts;
 }
 
 /** 触发 451 或 418 异常时做一次 TG 告警（已告警则不重复告警） */
@@ -247,15 +255,78 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
     throw new Error(`Binance 触发限频/封禁/受限 (${backoffReason})，避让等待 ${actualWaitSec} 秒后重试`);
   }
 
+  // 3. 正常响应时（r.ok）：若此前曾记录过 418 / 451 异常告警状态，说明已解封恢复，清空告警状态
+  if (r.ok && statusAlerted.size > 0) {
+    console.info(`[binance] 接口已解封恢复正常 (HTTP ${r.status})，清空 418/451 告警标记`);
+    statusAlerted.clear();
+  }
+
   return r;
 }
 
+let cachedCryptoSymbols: Set<string> | null = null;
+let cryptoSymbolsExpiresAt = 0;
+
+/**
+ * 获取币安纯 Crypto 永续合约标的集合（每小时刷新一次 exchangeInfo）。
+ * 过滤掉美股 ETF、股票期货等 TRADIFI_PERPETUAL / EQUITY / COMMODITY / FX 标的。
+ */
+export async function getCryptoPerpSymbols(): Promise<Set<string>> {
+  const now = Date.now();
+  if (cachedCryptoSymbols && now < cryptoSymbolsExpiresAt) {
+    return cachedCryptoSymbols;
+  }
+  try {
+    const r = await binanceFetch(`/fapi/v1/exchangeInfo`);
+    if (r.ok) {
+      const data = (await r.json()) as any;
+      if (Array.isArray(data?.symbols)) {
+        const set = new Set<string>();
+        for (const s of data.symbols) {
+          // 只保留属于加密货币（COIN 或 INDEX）的标准 PERPETUAL 合约，且为 TRADING 状态
+          const isPerp = s.contractType === "PERPETUAL";
+          const isCrypto = s.underlyingType === "COIN" || s.underlyingType === "INDEX";
+          const isTrading = s.status === "TRADING";
+          if (isPerp && isCrypto && isTrading && s.symbol.endsWith("USDT") && !s.symbol.includes("_")) {
+            set.add(s.symbol);
+          }
+        }
+        if (set.size > 0) {
+          cachedCryptoSymbols = set;
+          cryptoSymbolsExpiresAt = now + 60 * 60 * 1000; // 缓存 1 小时
+          console.log(`[binance] 成功更新纯 Crypto 永续合约白名单，共 ${set.size} 个标的（已排除美股/ETF等 TradFi 合约）`);
+          return set;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`[binance] 获取 exchangeInfo 失败，回退使用已有缓存或基础过滤:`, (e as any)?.message ?? e);
+  }
+
+  return cachedCryptoSymbols ?? new Set<string>();
+}
+
+export function setCachedCryptoSymbolsForTest(symbols: Set<string> | null): void {
+  cachedCryptoSymbols = symbols;
+  cryptoSymbolsExpiresAt = symbols ? Date.now() + 3600000 : 0;
+}
+
 export async function fetch24hTickers(): Promise<Ticker24h[]> {
-  const r = await binanceFetch(`/fapi/v1/ticker/24hr`);
+  const [r, cryptoSymbols] = await Promise.all([
+    binanceFetch(`/fapi/v1/ticker/24hr`),
+    getCryptoPerpSymbols(),
+  ]);
   if (!r.ok) throw new Error(`24hr ticker failed: HTTP ${r.status}`);
   const data = (await r.json()) as any[];
   return data
-    .filter((d) => isUsdtPerp(d.symbol))
+    .filter((d) => {
+      if (!isUsdtPerp(d.symbol)) return false;
+      // 若白名单已加载，则严格只保留纯 Crypto 标的
+      if (cryptoSymbols.size > 0) {
+        return cryptoSymbols.has(d.symbol);
+      }
+      return true;
+    })
     .map((d) => ({
       symbol: d.symbol,
       lastPrice: parseFloat(d.lastPrice),
@@ -323,3 +394,73 @@ export async function fetchWeeklyOpen(symbol: string): Promise<number | null> {
     return cached ? cached.open : null;
   }
 }
+
+interface Trend60dCache {
+  trend: "up" | "down" | null;
+  nextUtcMidnight: number;
+}
+
+const trend60dCache = new Map<string, Trend60dCache>();
+
+export function getNextUtcMidnight(nowMs: number = Date.now()): number {
+  const now = new Date(nowMs);
+  return Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + 1,
+    0,
+    0,
+    0,
+    0,
+  );
+}
+
+/**
+ * 拉取已收盘61日K线（每日UTC 0点同步刷新缓存），计算60日涨跌趋势。
+ * 1d K线周期从 UTC 00:00 到 23:59:59。当前正在形成的日K尚未收盘，
+ * 因此请求 limit=62 根，去掉最后一根未收盘日K后，取已收盘的61根日K：
+ * 对比最新收盘日K close 与 60天前的那根已收盘日K close (第0根与第60根)。
+ * 若 close > oldClose 则为 "up"，若 close < oldClose 则为 "down"。
+ */
+export async function fetch60dTrend(symbol: string): Promise<"up" | "down" | null> {
+  const now = Date.now();
+  const cached = trend60dCache.get(symbol);
+  if (cached && now < cached.nextUtcMidnight) {
+    return cached.trend;
+  }
+
+  try {
+    // 请求 62 根日K：包含当前未收盘日K和前 61 根已收盘日K
+    const r = await binanceFetch(`/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=62`);
+    if (!r.ok) return cached ? cached.trend : null;
+    const data = (await r.json()) as any[];
+    if (!data || !Array.isArray(data) || data.length === 0) return cached ? cached.trend : null;
+
+    // 过滤掉当前尚未收盘的日K
+    const closedBars = data.filter((bar) => Number(bar[6]) <= now);
+    if (closedBars.length < 2) return cached ? cached.trend : null;
+
+    // 最新收盘日K (昨天)
+    const latestClosed = closedBars[closedBars.length - 1];
+    const latestClose = parseFloat(latestClosed[4]);
+
+    // 60天前的日K（若历史数据不足61根已收盘日K，则与最早可用的一根对比）
+    const startIndex = Math.max(0, closedBars.length - 1 - 60);
+    const baseClosed = closedBars[startIndex];
+    const baseClose = parseFloat(baseClosed[4]);
+
+    let trend: "up" | "down" | null = null;
+    if (latestClose > baseClose) {
+      trend = "up";
+    } else if (latestClose < baseClose) {
+      trend = "down";
+    }
+
+    const nextUtcMidnight = getNextUtcMidnight(now);
+    trend60dCache.set(symbol, { trend, nextUtcMidnight });
+    return trend;
+  } catch {
+    return cached ? cached.trend : null;
+  }
+}
+

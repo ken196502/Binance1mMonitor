@@ -15,6 +15,8 @@ import { sendTelegramMessage, telegramConfigured, type TelegramSendResult } from
 
 export type BoardKey = "gainers" | "losers";
 
+export const PINNED_SYMBOLS = ["BTCUSDT", "SOLUSDT"];
+
 export interface BoardCounts {
   gainers: number;
   losers: number;
@@ -36,12 +38,14 @@ export function formatStreak(count: number, dir: "up" | "down" | null): string {
 }
 
 /**
- * 判断单行是否满足告警条件：
+ * 判断单行是否满足告警条件（非置顶币种需满足 60D 涨幅 > 0）：
  * 1. 无支撑 且 5m DIFF为中 且 1m DIFF为中 且 连阳(≥2根阳线)
  * 2. 无支撑 且 5m DIFF为中 且 1m DIFF为低 且 连阴(≥2根阴线)
  */
-export function isAlertMatch(r: Row): boolean {
+export function isAlertMatch(r: Row, isPinned: boolean = false): boolean {
   if (r.supportMa) return false;
+  // 非置顶币种必须 60D 涨幅 > 0（change60d === "up"）
+  if (!isPinned && r.change60d !== "up") return false;
   const l1m = r.diff1mLevel;
   const l5m = r.diff5mLevel ?? r.diff15mLevel;
   if (l5m !== "mid") return false;
@@ -53,12 +57,13 @@ export function isAlertMatch(r: Row): boolean {
   return false;
 }
 
-/** 筛选满足「无支撑+1mDIFF中+5mDIFF中+连阳 或 无支撑+1mDIFF低+5mDIFF中+连阴」的币种及连数详情（保留原榜单顺序并去重） */
-export function pickHighBullItems(rows: Row[]): AlertSymbolItem[] {
+/** 筛选满足「无支撑+1mDIFF中+5mDIFF中+连阳 或 无支撑+1mDIFF低+5mDIFF中+连阴」的币种及连数详情（保留原榜单顺序并去重，非置顶需 60D 涨幅 > 0） */
+export function pickHighBullItems(rows: Row[], pinnedSymbols: Set<string> = new Set()): AlertSymbolItem[] {
   const hit = new Set<string>();
   const items: AlertSymbolItem[] = [];
   for (const r of rows) {
-    if (isAlertMatch(r) && !hit.has(r.symbol)) {
+    const isPinned = pinnedSymbols.has(r.symbol);
+    if (isAlertMatch(r, isPinned) && !hit.has(r.symbol)) {
       hit.add(r.symbol);
       items.push({
         symbol: r.symbol,
@@ -79,12 +84,12 @@ export function pickHighBull(rows: Row[]): string[] {
   return pickHighBullItems(rows).map((i) => i.symbol);
 }
 
-// 兼容老方法签名
+// 兼容老方法签名（不支持 60D 涨幅过滤，默认为非置顶币种）
 export function pickHighBear(groups: Row[][]): string[] {
   const hit = new Set<string>();
   for (const rows of groups) {
     for (const r of rows) {
-      if (isAlertMatch(r)) {
+      if (isAlertMatch(r, false)) {
         hit.add(r.symbol);
       }
     }
@@ -127,7 +132,6 @@ export function formatAlertMessage(params: {
   }
 
   const formatBoard = (b: BoardAlertInfo, icon: string) => {
-    let line = `${icon} <b>${b.name}</b>：<b>${b.count}</b> 个`;
     const items: AlertSymbolItem[] =
       b.items && b.items.length > 0
         ? b.items
@@ -145,6 +149,9 @@ export function formatAlertMessage(params: {
     const unpinnedItems = pinned && pinned.length > 0
       ? items.filter((item) => !pinned.some((p) => p.symbol === item.symbol))
       : items;
+
+    const count = unpinnedItems.length;
+    let line = `${icon} <b>${b.name}</b>：<b>${count}</b> 个`;
 
     if (unpinnedItems.length > 0) {
       const symList = unpinnedItems
@@ -243,8 +250,18 @@ export class TelegramAlerter {
       streakDir: r.streakDir ?? null,
     }));
 
-    const gainersItems = pickHighBullItems(gainersRows);
-    const losersItems = pickHighBullItems(losersRows);
+    // 涨幅榜和跌幅榜排除置顶标的，确保不把置顶标的算进涨跌榜的播报和计数中
+    const pinnedSymbols = new Set(PINNED_SYMBOLS);
+    for (const r of pinnedRows) {
+      pinnedSymbols.add(r.symbol);
+    }
+    const isPinned = (r: Row) => Boolean(r.isPinned) || pinnedSymbols.has(r.symbol);
+
+    const cleanGainersRows = gainersRows.filter((r) => !isPinned(r));
+    const cleanLosersRows = losersRows.filter((r) => !isPinned(r));
+
+    const gainersItems = pickHighBullItems(cleanGainersRows, pinnedSymbols);
+    const losersItems = pickHighBullItems(cleanLosersRows, pinnedSymbols);
 
     const boards: { key: BoardKey; info: BoardAlertInfo; icon: string }[] = [
       {

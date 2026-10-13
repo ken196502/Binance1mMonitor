@@ -3,6 +3,7 @@ import { matchesStreak, streakText, type StreakParameters } from './streak.ts';
 import { validateBars } from './data.ts';
 import { MINUTE, type GainersParameters, type MinuteSignal } from './gainers-types.ts';
 import type { Bar } from './types.ts';
+import type { BtcFiveParameters } from './btc-five.ts';
 
 export const FIFTEEN = 15 * MINUTE;
 export const FIFTEEN_RULE = { interval: '15m', warmupBars: 300, highWindow: 100, highRatio: 0.8 } as const;
@@ -19,7 +20,7 @@ export interface FifteenParameters extends StreakParameters {
   fifteenDea?: typeof FIFTEEN_AXES.fifteenDea[number];
   fifteenDif?: typeof FIFTEEN_AXES.fifteenDif[number];
 }
-export type MiningParameters = GainersParameters & FifteenParameters;
+export type MiningParameters = GainersParameters & FifteenParameters & BtcFiveParameters;
 export interface FifteenFeature {
   closedAt: number; dif: number; dea: number; peakDea: number;
   deaLevel: 'high' | 'mid' | 'low'; direction: 'bull' | 'bear'; supportMa: string | null;
@@ -33,14 +34,19 @@ export function deaLevel(dea: number, peak: number, highRatio: number = FIFTEEN_
 
 /** One snapshot per CLOSED quarter-hour. Gaps restart both EMA and MA warmup. */
 export function buildFifteenFeatures(bars: Bar[]): Map<number, FifteenFeature> {
-  validateBars(bars, FIFTEEN);
+  return buildClosedFeatures(bars, FIFTEEN);
+}
+
+/** Native closed bars only; each gap restarts the full 300-bar warmup. */
+export function buildClosedFeatures(bars: Bar[], interval: number): Map<number, FifteenFeature> {
+  validateBars(bars, interval);
   const result = new Map<number, FifteenFeature>();
   const support = bars.map((b) => ({ time: b[0], open: b[1], close: b[4], low: b[3] }));
   let fast = 0, slow = 0, dea = 0, segment = 0;
   const deas: number[] = [];
   for (let i = 0; i < bars.length; i++) {
     const b = bars[i];
-    if (i === 0 || b[0] !== bars[i - 1][0] + FIFTEEN) {
+    if (i === 0 || b[0] !== bars[i - 1][0] + interval) {
       fast = slow = b[4]; dea = 0; segment = i;
     } else {
       fast += 2 / 13 * (b[4] - fast);
@@ -50,10 +56,10 @@ export function buildFifteenFeatures(bars: Bar[]): Map<number, FifteenFeature> {
     deas.push(dea);
     if (i - segment + 1 < FIFTEEN_RULE.warmupBars) continue;
     const peakDea = Math.max(...deas.slice(i - FIFTEEN_RULE.highWindow + 1, i + 1));
-    const dif = fast - slow, closedAt = b[0] + FIFTEEN;
+    const dif = fast - slow, closedAt = b[0] + interval;
     result.set(closedAt, { closedAt, dif, dea, peakDea, deaLevel: deaLevel(dea, peakDea),
       direction: dif >= dea ? 'bull' : 'bear', supportMa: calculateSupportMaAt(support, i),
-      streak: consecutiveStreakAt(support, i, FIFTEEN) });
+      streak: consecutiveStreakAt(support, i, interval) });
   }
   return result;
 }

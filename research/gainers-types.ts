@@ -1,5 +1,6 @@
 import type { Bar, Manifest, Metrics } from "./types.ts";
 import type { FifteenFeature } from './fifteen.ts';
+import type { BtcFiveFeature } from './btc-five.ts';
 import type { Streak } from '../src/macd.ts';
 
 export const MINUTE = 60_000;
@@ -59,6 +60,7 @@ export interface MinuteSignal {
   deaPeakRatio: number;
   supportMa: string | null; // null only after evaluating all configured MAs on the signal bar.
   fifteen?: FifteenFeature | null; // null: missing, stale or still warming up; undefined: legacy 1m research.
+  btcFive?: BtcFiveFeature | null; // BTCUSDT context shared by all ranked symbols; never a traded-symbol 5m snapshot.
   streak?: Streak;
 }
 export interface MinuteTrade {

@@ -150,17 +150,40 @@ assert.equal(res1.sent, undefined);
 assert.equal(received.length, 0);
 console.log("2. all boards below threshold (< 3) → no alert sent ✓");
 
-// --- 3. one board reaches 3 (gainers: 3) → alert sent with streak! -----------
+// --- 2b. pinned symbols in gainers do NOT count towards board threshold ------
+const resPinnedOnly = await a.check({
+  gainers: [
+    row(true, true, "BTCUSDT", 3, "up"),
+    row(true, true, "SOLUSDT", 2, "up"),
+    row(true, true, "ETHUSDT", 5, "down"),
+  ],
+  losers: [],
+});
+// 即使总行数有3且均满足指标，置顶标的(BTC, SOL)被排除，涨幅榜自然币种仅1个(< 3)，不触发告警
+assert.equal(resPinnedOnly.summary.gainers.count, 1);
+assert.equal(resPinnedOnly.summary.triggered, false);
+assert.equal(resPinnedOnly.sent, undefined);
+assert.equal(received.length, 0);
+console.log("2b. pinned symbols excluded from leaderboard count (< 3) → no alert sent ✓");
+
+// --- 3. one board reaches 3 (gainers: 3 unpinned) → alert sent with streak! --
 const res2 = await a.check({
   gainers: [
     row(true, true, "BTCUSDT", 3, "up"),
+    row(true, true, "SOLUSDT", 2, "up"),
     row(true, true, "ETHUSDT", 5, "down"),
+    row(true, true, "ADAUSDT", 2, "up"),
+    row(true, true, "DOTUSDT", 3, "up"),
+  ],
+  pinned: [
+    row(true, true, "BTCUSDT", 3, "up"),
     row(true, true, "SOLUSDT", 2, "up"),
   ],
   losers: [],
 });
 assert.equal(res2.summary.triggered, true);
 assert.equal(res2.summary.gainers.count, 3);
+assert.deepEqual(res2.summary.gainers.symbols, ["ETHUSDT", "ADAUSDT", "DOTUSDT"]);
 assert.equal(countOf(res2.sent), 1);
 assert.equal(received.length, 1);
 assert.match(received[0].text, /告警/);
@@ -169,14 +192,21 @@ assert.doesNotMatch(received[0].text, /24h 跌幅榜/);
 assert.doesNotMatch(received[0].text, /24h 成交额榜/);
 assert.match(received[0].text, /置顶标的/);
 assert.match(received[0].text, /BTCUSDT<\/b><\/a> \(3连阳\)/);
-assert.match(received[0].text, /ETHUSDT<\/b><\/a> \(5连阴\)/);
 assert.match(received[0].text, /SOLUSDT<\/b><\/a> \(2连阳\)/);
+assert.match(received[0].text, /ETHUSDT<\/b><\/a> \(5连阴\)/);
+assert.match(received[0].text, /ADAUSDT<\/b><\/a> \(2连阳\)/);
+assert.match(received[0].text, /DOTUSDT<\/b><\/a> \(3连阳\)/);
+// 验证涨幅榜区域不包含置顶标的
+const gainersPart = received[0].text.split("24h 涨幅榜")[1] ?? "";
+assert.doesNotMatch(gainersPart, /BTCUSDT/);
+assert.doesNotMatch(gainersPart, /SOLUSDT/);
 assert.match(received[0].auth, /TESTTOKEN/);
-console.log("3. gainers reaches 3 → alert sent only for gainers (未达标榜单不播报) with 置顶标的及阳阴连数 ✓");
+console.log("3. gainers reaches 3 (excluding pinned) → alert sent only for gainers with 置顶标的及阳阴连数 ✓");
 
-// --- 4. check again with EXACT SAME symbols (BTC, ETH, SOL) → no repeated notification -
+// --- 4. check again with EXACT SAME symbols (ETH, ADA, DOT) → no repeated notification -
 const res3 = await a.check({
-  gainers: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT"), row(true, true, "SOLUSDT")], // still BTC, ETH, SOL
+  gainers: [row(true, true, "ETHUSDT"), row(true, true, "ADAUSDT"), row(true, true, "DOTUSDT")],
+  pinned: [row(true, true, "BTCUSDT"), row(true, true, "SOLUSDT")],
   losers: [],
 });
 assert.equal(res3.summary.triggered, true);
@@ -186,7 +216,8 @@ console.log("4. count and symbols unchanged → no duplicate notification (防�
 
 // --- 4b. temporary dip below threshold (<3) then back to same coins → NO duplicate (榜币没变不重发)
 const resDip = await a.check({
-  gainers: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT")], // 2 (< 3)
+  gainers: [row(true, true, "ETHUSDT"), row(true, true, "ADAUSDT")], // 2 (< 3)
+  pinned: [row(true, true, "BTCUSDT"), row(true, true, "SOLUSDT")],
   losers: [],
   volume: [],
 });
@@ -195,10 +226,11 @@ assert.equal(resDip.sent, undefined);
 
 const resBack = await a.check({
   gainers: [
-    row(true, true, "BTCUSDT", 4, "up"),
     row(true, true, "ETHUSDT", 6, "down"),
-    row(true, true, "SOLUSDT", 2, "up"),
+    row(true, true, "ADAUSDT", 2, "up"),
+    row(true, true, "DOTUSDT", 4, "up"),
   ], // 3 coins, same as before!
+  pinned: [row(true, true, "BTCUSDT", 4, "up"), row(true, true, "SOLUSDT", 2, "up")],
   losers: [],
   volume: [],
 });
@@ -207,21 +239,23 @@ assert.equal(resBack.sent, undefined); // 榜币没变，绝不重复播报！
 assert.equal(received.length, 1);
 console.log("4b. temporary dip and back to exact same coins → NO duplicate notification (榜币没变) ✓");
 
-// --- 5. coins change in gainers (ADA, AVAX, DOT) → new notification sent! -----
+// --- 5. coins change in gainers (AVAX, LINK, NEAR) → new notification sent! ---
 const res4 = await a.check({
-  gainers: [row(true, true, "ADAUSDT"), row(true, true, "AVAXUSDT"), row(true, true, "DOTUSDT")],
+  gainers: [row(true, true, "AVAXUSDT"), row(true, true, "LINKUSDT"), row(true, true, "NEARUSDT")],
+  pinned: [row(true, true, "BTCUSDT"), row(true, true, "SOLUSDT")],
   losers: [],
   volume: [],
 });
 assert.equal(res4.summary.gainers.count, 3);
 assert.equal(countOf(res4.sent), 1);
 assert.equal(received.length, 2);
-assert.match(received[1].text, /ADAUSDT/);
+assert.match(received[1].text, /AVAXUSDT/);
 console.log("5. coins changed in gainers → new notification sent (榜币变了才发) ✓");
 
-// --- 6. same coins (ADA, AVAX, DOT) again → NO notification -------------------
+// --- 6. same coins (AVAX, LINK, NEAR) again → NO notification -----------------
 const res5 = await a.check({
-  gainers: [row(true, true, "ADAUSDT", 2, "up"), row(true, true, "AVAXUSDT", 1, "down"), row(true, true, "DOTUSDT", 3, "up")],
+  gainers: [row(true, true, "AVAXUSDT", 2, "up"), row(true, true, "LINKUSDT", 1, "down"), row(true, true, "NEARUSDT", 3, "up")],
+  pinned: [row(true, true, "BTCUSDT"), row(true, true, "SOLUSDT")],
   losers: [],
   volume: [],
 });
@@ -245,6 +279,7 @@ console.log("7. condition clears to 0 → state reset without recovery broadcast
 const res7 = await a.check({
   gainers: [],
   losers: [row(true, true, "PEPEUSDT"), row(true, true, "DOGEUSDT"), row(true, true, "SHIBUSDT")], // 3
+  pinned: [row(true, true, "BTCUSDT"), row(true, true, "SOLUSDT")],
   volume: [],
 });
 assert.equal(res7.summary.triggered, true);
@@ -257,16 +292,18 @@ console.log("8. re-trigger after recovery on losers → alert sent ✓");
 // --- 9. clear & re-trigger with send failure → retries on next check ----------
 a.resetState();
 failNext = true;
-// Trigger again with gainers: 3 (BTC, ETH, SOL)
+// Trigger again with gainers: 3
 const res8 = await a.check({
-  gainers: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT"), row(true, true, "SOLUSDT")], // 3
+  gainers: [row(true, true, "ETHUSDT"), row(true, true, "ADAUSDT"), row(true, true, "DOTUSDT")],
+  pinned: [row(true, true, "BTCUSDT"), row(true, true, "SOLUSDT")],
   losers: [],
 });
 assert.equal(res8.sent?.ok, false); // failed
 assert.equal(received.length, 3);   // not recorded in fake
 // Next check with gainers: 3 — must retry because previous send failed!
 const res9 = await a.check({
-  gainers: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT"), row(true, true, "SOLUSDT")], // 3
+  gainers: [row(true, true, "ETHUSDT"), row(true, true, "ADAUSDT"), row(true, true, "DOTUSDT")],
+  pinned: [row(true, true, "BTCUSDT"), row(true, true, "SOLUSDT")],
   losers: [],
 });
 assert.equal(res9.sent?.ok, true); // succeeded!
@@ -278,7 +315,8 @@ console.log("9. failed send retries on subsequent check until delivered ✓");
 a.resetState();
 delete process.env.TELEGRAM_BOT_TOKEN;
 const res10 = await a.check({
-  gainers: [row(true, true, "BTCUSDT"), row(true, true, "ETHUSDT"), row(true, true, "SOLUSDT")], // 3
+  gainers: [row(true, true, "ETHUSDT"), row(true, true, "ADAUSDT"), row(true, true, "DOTUSDT")],
+  pinned: [row(true, true, "BTCUSDT"), row(true, true, "SOLUSDT")],
   losers: [],
   volume: [],
 });

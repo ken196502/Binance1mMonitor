@@ -20,6 +20,7 @@ export interface Row extends Ticker24h {
   diff15m?: number | null;
   diff15mLevel?: "high" | "mid" | "low" | null;
   weekChangePercent?: number | null; // 周K涨跌幅度%（保留供告警过滤等使用）
+  change60d?: "up" | "down" | null; // 60日K涨跌（已收盘61日K对比）: "up" | "down" | null
   supportMa?: string | null; // 支撑MA，如 "ma10"，无支撑为 null
   streakCount: number;
   streakDir: "up" | "down" | null;

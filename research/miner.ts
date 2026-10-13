@@ -14,6 +14,8 @@ import { miningSearch, rewardRisk, validateMiningGrid, type MiningGrid } from '.
 import { hydrateMiningState, saveMiningState, type TrialShard } from './miner-state.ts';
 import { attachFifteen, FIFTEEN_RULE, fifteenText, minuteText, type MiningParameters } from './fifteen.ts';
 import { fetchFifteen, loadFifteen, planFifteen } from './fifteen-data.ts';
+import { attachBtcFive, BTC_FIVE_RULE, btcFiveText } from './btc-five.ts';
+import { fetchBtcFive, loadBtcFive, planBtcFive } from './btc-five-data.ts';
 import { streakText } from './streak.ts';
 import { createMiningSender, flushNotices, type MiningNotice } from './miner-notify.ts';
 
@@ -21,10 +23,15 @@ import { DEFAULT_ACCOUNT, validateAccount, backtestAccount, accountGpuParameters
 
 const HELP = `M1 Pro / Apple Metal 超短线做空挖掘
 npm run mine -- [选项]
+npm run mine:btc5m -- [选项]   独立研究：涨幅榜1m + BTC 5m
+--study gainers|btc5m  默认gainers沿用原研究；btc5m使用独立网格与输出目录
+--btc-five-data DIR   原生BTCUSDT 5m缓存（默认 data/research/btc-5m-1day）
+--fetch-btc-five      补取BTC 5m缓存，含300根预热；否则只读完整缓存
 --data DIR            全市场小时缓存（默认 data/research/hourly-initial）
 --minutes-data DIR    完整分钟缓存（默认 data/research/gainers-1m-archive-1day）
 --out DIR             状态/报告目录（默认 reports/research/gainers-gpu-margin-no-ma-streak）
---grid FILE           默认 research/miner-grid-streak.json：双周期独立DEA/DIFF/连阳连阴网格
+--grid FILE           默认 research/miner-grid-streak.json；btc5m使用 miner-grid-btc5m.json
+                     btc5m输出默认 reports/research/gainers-gpu-margin-no-ma-btc5m
 --max-trials N        预定搜索上限1..400000（默认400000）；超出时按状态和连阳/连阴分层抽样
 --fifteen-data DIR    原生15m缓存（默认 data/research/gainers-15m-1day）
 --fetch-fifteen       自动补取15m缓存，含300根预热；否则只读完整缓存
@@ -52,7 +59,7 @@ npm run mine -- [选项]
 每轮只用训练数据找新的账户正收益纪录并播报“训练阶段发现”。完成预定清单后
 固定训练前五，再验证选择一个，最终留出只测试一次；达标则播报成果。
 每轮状态与待发消息原子落盘，失败自动重试；Ctrl-C 后用 --resume 继续。
-入场：1m、15m各搜索DEA高/中/低与DIFF多/空；1m及15m均必须无MA支撑（MA5/7/10/20/25/30/60/99/120）。
+入场：1m搭配同币15m或BTC 5m，各搜索DEA高/中/低与DIFF多/空；两个周期均必须无MA支撑（MA5/7/10/20/25/30/60/99/120）。
 同币单仓、下一分钟入场、跳空开盘成交、同根不利退出优先。
 `;
 
@@ -66,7 +73,7 @@ interface State {
 }
 const iso = (n: number) => new Date(n).toISOString();
 const fmt = (n: number | null) => n == null ? '—' : n.toFixed(4);
-const parameterText = (p: MiningParameters, cost: number) => `${minuteText(p)}｜1m高位比 ${p.highRatio}｜持有≤${p.holdMinutes}分钟｜止损 ${p.stopLossPercent}%｜止盈 ${p.takeProfitPercent}%｜净目标盈亏比 ${rewardRisk(p, cost).net.toFixed(2)}:1${p.fifteenDea !== undefined ? `｜${fifteenText(p)}` : ''}`;
+const parameterText = (p: MiningParameters, cost: number) => `${minuteText(p)}｜1m高位比 ${p.highRatio}｜持有≤${p.holdMinutes}分钟｜止损 ${p.stopLossPercent}%｜止盈 ${p.takeProfitPercent}%｜净目标盈亏比 ${rewardRisk(p, cost).net.toFixed(2)}:1${p.fifteenDea !== undefined ? `｜${fifteenText(p)}` : ''}${p.btcFiveDea !== undefined ? `｜${btcFiveText(p)}` : ''}`;
 const metricText = (m: AccountMetrics) => `${m.trades}笔，账户净收益 ${fmt(m.netPnlUSDT)} USDT (${fmt(m.accountReturnPercent)}%)，账户期末 ${fmt(m.finalBalanceUSDT)} USDT，净值回撤 ${fmt(m.maxEquityDrawdownPercent)}%，强平 ${m.liquidations}，资金不足跳过 ${m.skippedFunds}`;
 const accountText = (o: AccountOptions) => `逐仓 ${o.leverage}倍｜每笔保证金 ${o.marginPerTradeUSDT} USDT｜名义仓位 ${o.marginPerTradeUSDT * o.leverage} USDT｜初始资金 ${o.initialBalanceUSDT} USDT`;
 function notice(state: State, id: string, text: string) {
@@ -96,13 +103,15 @@ export async function acquireMiningLock(directory: string) {
   throw new Error('无法取得挖掘锁');
 }
 
-function fifteenFamilyRows(s: State): string[] {
+function companionFamilyRows(s: State): string[] {
   const grid = s.config.grid as MiningGrid;
+  const deaKey = grid.btcFiveDea ? 'btcFiveDea' : 'fifteenDea';
+  const difKey = grid.btcFiveDea ? 'btcFiveDif' : 'fifteenDif';
   const rows: string[] = [];
   for (const minuteDea of grid.minuteDea ?? ['high']) for (const minuteDif of grid.minuteDif ?? ['bull'])
-    for (const dea of grid.fifteenDea ?? []) for (const dif of grid.fifteenDif ?? []) {
+    for (const dea of grid[deaKey] ?? []) for (const dif of grid[difKey] ?? []) {
       const trials = s.trials.filter((t) => (t.parameters.minuteDea ?? 'high') === minuteDea && (t.parameters.minuteDif ?? 'bull') === minuteDif
-        && t.parameters.fifteenDea === dea && t.parameters.fifteenDif === dif);
+        && t.parameters[deaKey] === dea && t.parameters[difKey] === dif);
       const eligible = trials.filter((t) => t.train.valid && t.train.trades >= Number(s.config.minTrades)).sort(accountTrainOrder);
       const best = eligible[0];
       rows.push(`|${minuteDea}|${minuteDif}|${dea}|${dif}|${trials.length}|${eligible.length}|${best?.train.trades ?? '—'}|${fmt(best?.train.accountReturnPercent ?? null)}|`);
@@ -112,9 +121,10 @@ function fifteenFamilyRows(s: State): string[] {
 
 function streakFamilyRows(s: State): string[] {
   const g = s.config.grid as MiningGrid;
+  const streakKey = g.btcFiveDea ? 'btcFiveStreak' : 'fifteenStreak';
   const groups = new Map<string, { count: number; eligible: number; best?: AccountTrial }>();
   for (const t of s.trials) {
-    const key = `${t.parameters.minuteStreak ?? 0}/${t.parameters.fifteenStreak ?? 0}`;
+    const key = `${t.parameters.minuteStreak ?? 0}/${t.parameters[streakKey] ?? 0}`;
     const group = groups.get(key) ?? { count: 0, eligible: 0 }; group.count++;
     if (t.train.valid && t.train.trades >= Number(s.config.minTrades)) {
       group.eligible++;
@@ -122,7 +132,7 @@ function streakFamilyRows(s: State): string[] {
     }
     groups.set(key, group);
   }
-  return (g.minuteStreak ?? [0]).flatMap((minute) => (g.fifteenStreak ?? [0]).map((fifteen) => {
+  return (g.minuteStreak ?? [0]).flatMap((minute) => (g[streakKey] ?? [0]).map((fifteen) => {
     const group = groups.get(`${minute}/${fifteen}`);
     return `|${streakText(minute)}|${streakText(fifteen)}|${group?.count ?? 0}|${group?.eligible ?? 0}|${fmt(group?.best?.train.accountReturnPercent ?? null)}|`;
   }));
@@ -130,13 +140,14 @@ function streakFamilyRows(s: State): string[] {
 
 async function writeReport(out: string, s: State, total: number) {
   const cost = Number(s.config.costBps), account = s.config.account as AccountOptions;
-  const lines = ['# M1 Pro GPU：逐仓合约账户挖掘', '',
+  const btc = !!s.config.btcFiveRule, companion = btc ? 'BTC 5m' : '15m';
+  const lines = [btc ? '# 涨幅榜 1m + BTC 5m：GPU 逐仓合约账户挖掘' : '# M1 Pro GPU：逐仓合约账户挖掘', '',
     `状态：${s.status}；进度 ${s.next}/${total}；设备 ${s.gpu?.device ?? '—'}；PyTorch ${s.gpu?.torch ?? '—'}。`,
     `研究 ID：${s.fingerprint}；创建 ${s.createdAt}。`, '',
     `搜索计划：${JSON.stringify(s.config.search ?? { exhaustive: true, possible: total })}。exhaustive=false 表示分层抽样，完成仅指预先固定的清单已跑完。`, '',
     accountText(account), '',
     '|搜索维度|候选值|', '|---|---|',
-    ...Object.entries(s.config.grid as MiningGrid).map(([key, values]) => `|${({ highRatio: 'DEA高位比例', holdMinutes: '持仓分钟', stopLossPercent: '止损%', takeProfitPercent: '止盈%', minuteDea: '1m DEA档位', minuteDif: '1m DIFF方向', fifteenDea: '15m DEA档位', fifteenDif: '15m DIFF方向', fifteenHighRatio: '15m高位比例', minuteStreak: '1m连续阈值', fifteenStreak: '15m连续阈值' } as Record<string, string>)[key]}|${values.join(' / ')}|`), '',
+    ...Object.entries(s.config.grid as MiningGrid).map(([key, values]) => `|${({ highRatio: 'DEA高位比例', holdMinutes: '持仓分钟', stopLossPercent: '止损%', takeProfitPercent: '止盈%', minuteDea: '1m DEA档位', minuteDif: '1m DIFF方向', fifteenDea: '15m DEA档位', fifteenDif: '15m DIFF方向', fifteenHighRatio: '15m高位比例', minuteStreak: '1m连续阈值', fifteenStreak: '15m连续阈值', btcFiveDea: 'BTC 5m DEA档位', btcFiveDif: 'BTC 5m DIFF方向', btcFiveHighRatio: 'BTC 5m高位比例', btcFiveStreak: 'BTC 5m连续阈值' } as Record<string, string>)[key]}|${values.join(' / ')}|`), '',
     `同时持仓上限 ${account.maxPositions}；开仓需有保证金及开仓成本，平仓后释放余额。每个训练/验证/留出分段独立从 ${account.initialBalanceUSDT} USDT 开始，三段收益不能相加当成连续账户收益。`,
     `每边手续费+滑点 ${cost} bps，均按杠杆后的实际名义金额计算。固定每笔保证金，盈利不自动扩大下一笔仓位。`, '',
     '## 入场、退出和账户模型', '',
@@ -149,22 +160,24 @@ async function writeReport(out: string, s: State, total: number) {
     `数据覆盖：${JSON.stringify(s.config.coverage)}。时间切分：${JSON.stringify(s.config.split)}（UTC毫秒，60/20/20）。`,
     `训练样本至少 ${s.config.minTrades}，验证/测试至少 ${Math.ceil(Number(s.config.minTrades) / 3)}。按账户净收益率选参，同收益优先较小账户净值回撤；成果要求三段均正收益、无缺失、无强平。`,
     'GPU批量计算包含强平阈值的首次退出，同一退出参数在训练集内复用GPU结果；CPU执行双周期入场过滤与时间资金账本。每轮首组和最佳组核对完整CPU结果。所有轮次只搜索训练集，完成后固定训练前五进入验证，选一个进入最终留出。', '',
-    ...(s.config.fifteenRule ? [
-      '## 15m 叠加维度', '',
-      '15m MACD(12,26,9)，连续300根预热，最近100根DEA峰值。高位=DEA>0 且 DEA≥各自高位比例×峰值（15m未设置时为0.8）；中位=DEA≥0且不满足高位；低位=DEA<0。DIFF≥DEA为多头（含相等），DIFF<DEA为空头。',
-      '两个周期使用相同DEA三档和DIFF多空口径，但参数独立：1m用highRatio，15m用fifteenHighRatio，分别取值后做笛卡尔积。某周期低位或不限DEA时，只去除该周期无效的高位比例重复项。',
-      '1m及15m均必须无MA支撑：MA5/7/10/20/25/30/60/99/120全部不满足各自已收盘线 low < MA < close。有支撑直接排除。any仅表示不限制DEA或DIFF，仍强制15m无支撑。',
-      '入场 t 精确关联 floor(t/15m)×15m 时收盘的15m线，例如10:14使用10:00收盘线，10:15使用10:15收盘线；不使用正在形成的线。缺失或预热不足直接排除，缺口后重新预热。',
-      `15m覆盖：${JSON.stringify(s.config.fifteenCoverage)}。`, '',
+    ...(s.config.fifteenRule || s.config.btcFiveRule ? [
+      `## ${companion} 叠加维度`, '',
+      `${companion} MACD(12,26,9)，原生K线连续300根预热，最近100根DEA峰值。高位=DEA>0且DEA≥独立高位比例×峰值；中位=DEA≥0且未达高位；低位=DEA<0。DIFF≥DEA为多头，DIFF<DEA为空头。`,
+      `1m和${companion}的DEA、DIFF、高位比例和连续阈值独立组合。某周期低位或不限DEA时，只去除该周期无效的高位比例重复项。`,
+      `两个周期均必须无MA支撑：MA5/7/10/20/25/30/60/99/120全部不满足各自已收盘线 low < MA < close。any仅放开DEA/DIFF，仍要求MA无支撑。`,
+      btc ? '所有涨幅榜币种共用BTCUSDT 5m，不要求BTC在榜。入场t精确关联floor(t/5m)×5m时收盘的BTC线：10:04用10:00收盘线，10:05用10:05收盘线。交易与盈亏仍属于榜内币种。'
+        : '15m使用交易币种自身数据。入场t关联floor(t/15m)×15m时收盘的线：10:14用10:00收盘线，10:15用10:15收盘线。',
+      '不使用正在形成的线。缺失或预热不足直接排除，缺口后重新预热。',
+      `${companion}覆盖：${JSON.stringify(btc ? s.config.btcFiveCoverage : s.config.fifteenCoverage)}。`, '',
       '### 各组合训练集比较（不读取验证/留出收益）', '',
-      '|1m DEA|1m DIFF|15m DEA|15m DIFF|搜索组数|训练≥门槛组数|足量训练最佳笔数|足量训练最佳账户收益%|', '|---|---|---|---|---|---|---|---|',
-      ...fifteenFamilyRows(s), '',
+      `|1m DEA|1m DIFF|${companion} DEA|${companion} DIFF|搜索组数|训练≥门槛组数|足量训练最佳笔数|足量训练最佳账户收益%|`, '|---|---|---|---|---|---|---|---|',
+      ...companionFamilyRows(s), '',
     ] : []),
-    ...(s.config.grid && ((s.config.grid as MiningGrid).minuteStreak || (s.config.grid as MiningGrid).fifteenStreak) ? [
+    ...(s.config.grid && ((s.config.grid as MiningGrid).minuteStreak || (s.config.grid as MiningGrid).fifteenStreak || (s.config.grid as MiningGrid).btcFiveStreak) ? [
       '## 独立连阳/连阴组合', '',
       '正N=至少N连阳，负N=至少N连阴，0=不限；两个周期分别取值后做笛卡尔积，不要求相等，也不禁止相等。阳线close>open，阴线close<open；十字星、方向变化或缺口中断。计数包含当根已收盘线，监控与研究共用consecutiveStreakAt。',
-      '候选数超过max-trials时，按DEA/DIFF双周期状态×1m连续阈值×15m连续阈值分层等额抽样；每层内对阈值/持仓/止损/止盈组合无放回抽取。抽样在加载收益前由固定种子确定，未运行的组合不计作已验证。', '',
-      '|1m连续条件|15m连续条件|已运行组数|足量训练组数|足量训练最佳账户收益%|', '|---|---|---|---|---|',
+      `候选数超过max-trials时，按DEA/DIFF双周期状态×1m连续阈值×${companion}连续阈值分层等额抽样；每层内对阈值/持仓/止损/止盈组合无放回抽取。抽样在加载收益前由固定种子确定，未运行的组合不计作已验证。`, '',
+      `|1m连续条件|${companion}连续条件|已运行组数|足量训练组数|足量训练最佳账户收益%|`, '|---|---|---|---|---|',
       ...streakFamilyRows(s), '',
     ] : []),
     '## GPU轮次', '', '|轮次|新参数|GPU秒|CPU复核组|训练最高账户收益%|', '|---|---|---|---|---|',
@@ -186,17 +199,17 @@ async function writeReport(out: string, s: State, total: number) {
     `Telegram：${s.notices.filter((n) => n.sentAt).length} 条已确认，${s.notices.filter((n) => !n.sentAt).length} 条待发。消息中明确杠杆、保证金、初始资金、账户收益、回撤和强平。`,
     'state.json 保存账户参数、代码指纹及带SHA256的trials-起点-终点.json分片索引；分片保存每组训练结果，validations保存入围验证结果；trials.csv 保存每组账户结果；test-trades.csv 保存逐笔保证金、名义金额、费用与盈亏；test-equity.csv 保存留出账户净值。', '');
   await writeFile(path.join(out, 'report.md'), lines.join('\n'));
-  await writeFile(path.join(out, 'trials.csv'), ['id,round,highRatio,holdMinutes,stopLossPercent,takeProfitPercent,minuteDea,minuteDif,fifteenDea,fifteenDif,fifteenHighRatio,minuteStreak,fifteenStreak,trainTrades,trainAccountReturnPercent,trainDrawdownPercent,trainSkippedFunds,trainLiquidations,validationTrades,validationAccountReturnPercent',
-    ...s.trials.map((t) => [t.id, t.round, t.parameters.highRatio, t.parameters.holdMinutes, t.parameters.stopLossPercent, t.parameters.takeProfitPercent, t.parameters.minuteDea, t.parameters.minuteDif, t.parameters.fifteenDea, t.parameters.fifteenDif, t.parameters.fifteenHighRatio, t.parameters.minuteStreak, t.parameters.fifteenStreak, t.train.trades, t.train.accountReturnPercent, t.train.maxEquityDrawdownPercent, t.train.skippedFunds, t.train.liquidations, t.validation?.trades, t.validation?.accountReturnPercent].join(','))].join('\n') + '\n');
-  const tradeKeys: (keyof AccountTrade)[] = ['symbol', 'entryTime', 'exitTime', 'entryPrice', 'exitPrice', 'reason', 'leverage', 'marginUSDT', 'notionalUSDT', 'quantity', 'liquidationPrice', 'grossPnlUSDT', 'entryCostUSDT', 'exitCostUSDT', 'liquidationFeeUSDT', 'insuranceShortfallUSDT', 'netPnlUSDT', 'marginReturnPercent', 'netPercent', 'ambiguous', 'supportMa', 'minuteDea', 'minuteDif', 'minuteDeaLevel', 'minuteDirection', 'fifteenClosedAt', 'fifteenDea', 'fifteenDif', 'fifteenDeaLevel', 'fifteenDirection', 'fifteenSupportMa', 'minuteStreakCount', 'minuteStreakDirection', 'fifteenStreakCount', 'fifteenStreakDirection'];
+  await writeFile(path.join(out, 'trials.csv'), ['id,round,highRatio,holdMinutes,stopLossPercent,takeProfitPercent,minuteDea,minuteDif,fifteenDea,fifteenDif,fifteenHighRatio,minuteStreak,fifteenStreak,btcFiveDea,btcFiveDif,btcFiveHighRatio,btcFiveStreak,trainTrades,trainAccountReturnPercent,trainDrawdownPercent,trainSkippedFunds,trainLiquidations,validationTrades,validationAccountReturnPercent',
+    ...s.trials.map((t) => [t.id, t.round, t.parameters.highRatio, t.parameters.holdMinutes, t.parameters.stopLossPercent, t.parameters.takeProfitPercent, t.parameters.minuteDea, t.parameters.minuteDif, t.parameters.fifteenDea, t.parameters.fifteenDif, t.parameters.fifteenHighRatio, t.parameters.minuteStreak, t.parameters.fifteenStreak, t.parameters.btcFiveDea, t.parameters.btcFiveDif, t.parameters.btcFiveHighRatio, t.parameters.btcFiveStreak, t.train.trades, t.train.accountReturnPercent, t.train.maxEquityDrawdownPercent, t.train.skippedFunds, t.train.liquidations, t.validation?.trades, t.validation?.accountReturnPercent].join(','))].join('\n') + '\n');
+  const tradeKeys: (keyof AccountTrade)[] = ['symbol', 'entryTime', 'exitTime', 'entryPrice', 'exitPrice', 'reason', 'leverage', 'marginUSDT', 'notionalUSDT', 'quantity', 'liquidationPrice', 'grossPnlUSDT', 'entryCostUSDT', 'exitCostUSDT', 'liquidationFeeUSDT', 'insuranceShortfallUSDT', 'netPnlUSDT', 'marginReturnPercent', 'netPercent', 'ambiguous', 'supportMa', 'minuteDea', 'minuteDif', 'minuteDeaLevel', 'minuteDirection', 'fifteenClosedAt', 'fifteenDea', 'fifteenDif', 'fifteenDeaLevel', 'fifteenDirection', 'fifteenSupportMa', 'minuteStreakCount', 'minuteStreakDirection', 'fifteenStreakCount', 'fifteenStreakDirection', 'btcFiveSymbol', 'btcFiveClosedAt', 'btcFiveDea', 'btcFiveDif', 'btcFiveDeaLevel', 'btcFiveDirection', 'btcFiveSupportMa', 'btcFiveStreakCount', 'btcFiveStreakDirection'];
   await writeFile(path.join(out, 'test-trades.csv'), [tradeKeys.join(','), ...(s.winner?.testTrades ?? []).map((t) => tradeKeys.map((k) => k === 'entryTime' || k === 'exitTime' ? iso(t[k]) : t[k]).join(','))].join('\n') + '\n');
   const equityKeys: (keyof EquityPoint)[] = ['time', 'phase', 'freeUSDT', 'lockedMarginUSDT', 'unrealizedPnlUSDT', 'equityUSDT', 'positions'];
   await writeFile(path.join(out, 'test-equity.csv'), [equityKeys.join(','), ...(s.winner?.testEquity ?? []).map((point) => equityKeys.map((k) => k === 'time' ? iso(point.time) : point[k]).join(','))].join('\n') + '\n');
 }
 
 export async function main(args = process.argv.slice(2)) {
-  const strings = ['max-trials', 'fifteen-data', 'data', 'minutes-data', 'out', 'grid', 'batch', 'signal-batch', 'rounds', 'min-trades', 'min-net-rr', 'fee-bps', 'slippage-bps', 'seed', 'python', 'device', 'leverage', 'margin-usdt', 'balance-usdt', 'max-positions', 'maintenance-margin-percent', 'liquidation-fee-bps'];
-  const booleans = ['fetch-fifteen', 'resume', 'no-telegram', 'notify-only', 'help'];
+  const strings = ['study', 'btc-five-data', 'max-trials', 'fifteen-data', 'data', 'minutes-data', 'out', 'grid', 'batch', 'signal-batch', 'rounds', 'min-trades', 'min-net-rr', 'fee-bps', 'slippage-bps', 'seed', 'python', 'device', 'leverage', 'margin-usdt', 'balance-usdt', 'max-positions', 'maintenance-margin-percent', 'liquidation-fee-bps'];
+  const booleans = ['fetch-btc-five', 'fetch-fifteen', 'resume', 'no-telegram', 'notify-only', 'help'];
   const parsed = parseArgs({ args, strict: true, options: Object.fromEntries([
     ...strings.map((k) => [k, { type: 'string' as const }]), ...booleans.map((k) => [k, { type: 'boolean' as const }]),
   ]) });
@@ -208,7 +221,11 @@ export async function main(args = process.argv.slice(2)) {
     if (!String(values[k] ?? d).trim() || !Number.isFinite(n) || n < min || n > max || (integer && !Number.isInteger(n))) throw new Error(`${k} 必须为 ${min}..${max}${integer ? ' 的整数' : ''}`);
     return n;
   };
-  const out = path.resolve(str('out', 'reports/research/gainers-gpu-margin-no-ma-streak'));
+  const study = str('study', 'gainers');
+  if (!['gainers', 'btc5m'].includes(study)) throw new Error('study 必须为 gainers 或 btc5m');
+  const btcStudy = study === 'btc5m';
+  if ((btcStudy && (values['fetch-fifteen'] || values['fifteen-data'])) || (!btcStudy && (values['fetch-btc-five'] || values['btc-five-data']))) throw new Error('请使用当前研究对应的缓存选项');
+  const out = path.resolve(str('out', btcStudy ? 'reports/research/gainers-gpu-margin-no-ma-btc5m' : 'reports/research/gainers-gpu-margin-no-ma-streak'));
   if (values['notify-only'] && values['no-telegram']) throw new Error('notify-only 与 no-telegram 互斥');
   const batch = num('batch', 32, 1, 128), signalBatch = num('signal-batch', 1024, 1, 4096);
   const rounds = num('rounds', 0, 0, 100000), minTrades = num('min-trades', 100, 1, 100000);
@@ -253,7 +270,8 @@ export async function main(args = process.argv.slice(2)) {
     if (!state && values.resume) throw new Error('找不到可续跑的 state.json');
     const dataDir = path.resolve(str('data', 'data/research/hourly-initial'));
     const minuteDir = path.resolve(str('minutes-data', 'data/research/gainers-1m-archive-1day'));
-    const grid = validateMiningGrid(JSON.parse(await readFile(str('grid', fileURLToPath(new URL('./miner-grid-streak.json', import.meta.url))), 'utf8')));
+    const grid = validateMiningGrid(JSON.parse(await readFile(str('grid', fileURLToPath(new URL(btcStudy ? './miner-grid-btc5m.json' : './miner-grid-streak.json', import.meta.url))), 'utf8')));
+    if (btcStudy !== !!grid.btcFiveDea) throw new Error('BTC 5m 网格需搭配 --study btc5m；该研究必须包含BTC 5m维度');
     const search = miningSearch(grid, cost, minNetRR, seed, num('max-trials', 400000, 1, 400000));
     const candidates = search.candidates;
     const horizon = Math.max(...grid.holdMinutes);
@@ -275,12 +293,20 @@ export async function main(args = process.argv.slice(2)) {
       fifteenData = await loadFifteen(fifteenDir, plan15);
       signals = attachFifteen(signals, fifteenData.candles);
     }
+    let btcFiveData: Awaited<ReturnType<typeof loadBtcFive>> | undefined;
+    const btcFiveDir = path.resolve(str('btc-five-data', 'data/research/btc-5m-1day'));
+    if (btcStudy) {
+      const plan5 = planBtcFive(plan.start, plan.end);
+      if (values['fetch-btc-five']) await fetchBtcFive(btcFiveDir, plan5);
+      btcFiveData = await loadBtcFive(btcFiveDir, plan5);
+      signals = attachBtcFive(signals, btcFiveData.candles);
+    }
     const start = plan.start, end = plan.end, duration = (end - start) / MINUTE;
     const trainEnd = start + Math.floor(duration * 0.6) * MINUTE;
     const validationEnd = trainEnd + Math.floor(duration * 0.2) * MINUTE;
     if (Math.min(trainEnd - start, validationEnd - trainEnd, end - validationEnd) < horizon * MINUTE) throw new Error('每段需覆盖最大持有期');
     const trainingSignals = signals.filter((s) => s.time >= start && s.time < trainEnd);
-    const sources = ['streak.ts', 'miner-state.ts', 'fifteen.ts', 'fifteen-data.ts', 'client.ts', 'miner.ts', '../src/macd.ts', 'gainers-types.ts', 'types.ts', 'futures-account.ts', 'miner-core.ts', 'miner-notify.ts', 'gpu.ts', 'gpu/worker.py', 'gpu/requirements.txt', 'gainers-backtest.ts', 'gainers-config.ts', 'gainers-data.ts', 'backtest.ts', 'data.ts'];
+    const sources = ['btc-five.ts', 'btc-five-data.ts', 'native-data.ts', 'streak.ts', 'miner-state.ts', 'fifteen.ts', 'fifteen-data.ts', 'client.ts', 'miner.ts', '../src/macd.ts', 'gainers-types.ts', 'types.ts', 'futures-account.ts', 'miner-core.ts', 'miner-notify.ts', 'gpu.ts', 'gpu/worker.py', 'gpu/requirements.txt', 'gainers-backtest.ts', 'gainers-config.ts', 'gainers-data.ts', 'backtest.ts', 'data.ts'];
     const hashes: Record<string, string> = {};
     for (const file of sources) hashes[file] = digest(await readFile(new URL(file, import.meta.url)));
     const referencePath = 'reports/research/gainers-high-bull-1day/gainers/report.md';
@@ -302,12 +328,19 @@ export async function main(args = process.argv.slice(2)) {
           joinedSignals: signals.filter((s) => s.fifteen).length, unavailableSignals: signals.filter((s) => !s.fifteen).length,
           noSupportSignals: signals.filter((s) => s.fifteen?.supportMa === null).length,
           trainingNoSupport: trainingSignals.filter((s) => s.fifteen?.supportMa === null).length } } : {}),
+      ...(btcFiveData ? { study, btcFiveRule: { ...BTC_FIVE_RULE, highRatio: grid.btcFiveHighRatio ?? [BTC_FIVE_RULE.highRatio], noMaSupport: true }, btcFiveDir,
+        btcFiveHash: digest(Buffer.from(JSON.stringify(btcFiveData.manifest))),
+        btcFiveCoverage: { symbols: btcFiveData.candles.size, bars: [...btcFiveData.candles.values()].reduce((n, a) => n + a.length, 0),
+          missingBars: Object.values(btcFiveData.manifest.files).reduce((n, f) => n + f.missingBars, 0),
+          joinedSignals: signals.filter((s) => s.btcFive).length, unavailableSignals: signals.filter((s) => !s.btcFive).length,
+          noSupportSignals: signals.filter((s) => s.btcFive?.supportMa === null).length,
+          trainingNoSupport: trainingSignals.filter((s) => s.btcFive?.supportMa === null).length } } : {}),
       signalCount: signals.length, trainingSignals: trainingSignals.length, dataDir, minuteDir };
     const fingerprint = digest(Buffer.from(JSON.stringify(config)));
     if (state && (state.version !== 4 || state.fingerprint !== fingerprint)) throw new Error('数据、代码或挖掘参数已变化，拒绝混合续跑；请使用新输出目录');
     state ??= { version: 4, fingerprint, config, createdAt: new Date().toISOString(), status: 'mining', next: 0, trials: [], rounds: [], bestNotified: null, notices: [] };
     const s = state;
-    const entryLabel = (grid.fifteenDea ? '1m+15m双周期无MA支撑' : '1m无MA支撑') + (grid.minuteStreak || grid.fifteenStreak ? '·独立连阳/连阴组合' : '');
+    const entryLabel = (btcStudy ? '涨幅榜1m+BTC5m无MA支撑' : grid.fifteenDea ? '1m+15m双周期无MA支撑' : '1m无MA支撑') + (grid.minuteStreak || grid.fifteenStreak || grid.btcFiveStreak ? '·独立连阳/连阴组合' : '');
     const save = () => saveMiningState(out, s);
     const flush = async () => {
       if (sender) await flushNotices(s.notices, sender.send, save);
@@ -328,7 +361,7 @@ export async function main(args = process.argv.slice(2)) {
     const info = await worker.init(windowFile, trainingSignals.length, horizon, device);
     if (s.gpu && s.gpu.torch !== info.torch) throw new Error('PyTorch版本变化，请用新目录重新研究');
     s.gpu = info;
-    notice(s, 'started', `GPU做空挖掘已启动·${entryLabel}\n设备 ${info.device} / PyTorch ${info.torch}\n${iso(start)} → ${iso(end)}\n${candidates.length}/${search.plan.possible}组参数（${search.plan.exhaustive ? '全量' : '分层抽样'}，种子${seed}）；1–60分钟；净目标盈亏比≥${minNetRR}:1\n${accountText(account)}\n1m连续阈值 ${JSON.stringify(grid.minuteStreak ?? [0])}；15m连续阈值 ${JSON.stringify(grid.fifteenStreak ?? [0])}；正数连阳/负数连阴/0不限，独立组合。\n${grid.fifteenDea ? '1m、15m各自DEA高/中/低 × DIFF多/空；仅用已收盘线；1m与15m均无MA支撑。' : '1m无MA支撑。'}按账户收益重新选参。强平为成交价代理模型，未导入资金费。`);
+    notice(s, 'started', `GPU做空挖掘已启动·${entryLabel}\n设备 ${info.device} / PyTorch ${info.torch}\n${iso(start)} → ${iso(end)}\n${candidates.length}/${search.plan.possible}组参数（${search.plan.exhaustive ? '全量' : '分层抽样'}，种子${seed}）；1–60分钟；净目标盈亏比≥${minNetRR}:1\n${accountText(account)}\n1m连续阈值 ${JSON.stringify(grid.minuteStreak ?? [0])}；${btcStudy ? 'BTC 5m' : '15m'}连续阈值 ${JSON.stringify((btcStudy ? grid.btcFiveStreak : grid.fifteenStreak) ?? [0])}；正数连阳/负数连阴/0不限，独立组合。\n${btcStudy ? '涨幅榜1m与BTC 5m各自DEA高/中/低 × DIFF多/空；仅用已收盘线；两个周期均无MA支撑。' : grid.fifteenDea ? '1m、15m各自DEA高/中/低 × DIFF多/空；仅用已收盘线；1m与15m均无MA支撑。' : '1m无MA支撑。'}按账户收益重新选参。强平为成交价代理模型，未导入资金费。`);
     await save(); await flush();
     console.log(`设备 ${info.device}；训练信号 ${trainingSignals.length}；有效参数 ${candidates.length}；从第 ${s.next + 1} 组继续`);
     let addedRounds = 0;

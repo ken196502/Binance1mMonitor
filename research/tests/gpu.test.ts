@@ -182,3 +182,34 @@ test('MPS cached exits agree with scalar accounts for independent streak lengths
     assert.ok(filled>0);
   } finally { worker.close(); await rm(dir,{recursive:true,force:true}); }
 });
+
+test('BTC 5m market filter produces identical MPS and CPU accounts for ranked altcoins', { skip }, async () => {
+  const { DEFAULT_ACCOUNT, accountGpuParameters, backtestAccount } = await import('../futures-account.ts');
+  const { BTC_FIVE } = await import('../btc-five.ts');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'btc-five-gpu-'));
+  const worker = new GpuWorker(python);
+  try {
+    const { data, signals } = fixture();
+    signals.forEach((s, i) => {
+      s.streak = { direction: 'up', count: 3 };
+      s.btcFive = i % 11 === 0 ? null : { symbol: 'BTCUSDT', closedAt: Math.floor(s.time / BTC_FIVE) * BTC_FIVE,
+        dea: 0.7, dif: 0.9, peakDea: 1, deaLevel: 'mid', direction: 'bull', supportMa: i % 7 === 0 ? 'ma5' : null,
+        streak: { direction: 'down', count: 4 } };
+    });
+    const parameters = miningGrid({ highRatio: [0.8], holdMinutes: [3, 15], stopLossPercent: [0.2], takeProfitPercent: [2],
+      minuteDea: ['high'], minuteDif: ['bull'], minuteStreak: [0, 3, -3], btcFiveDea: ['high', 'mid'], btcFiveDif: ['bull'],
+      btcFiveHighRatio: [0.65, 0.9], btcFiveStreak: [0, 2, -4] }, 7, 3, 42);
+    const file = path.join(dir, 'windows.f32');
+    await writeGpuWindows(file, data, signals, 15, end);
+    await worker.init(file, signals.length, 15, device);
+    const result = await worker.evaluateCached(parameters.map((p) => accountGpuParameters(p, DEFAULT_ACCOUNT)), 37);
+    let filled = 0;
+    for (const [i, p] of parameters.entries()) {
+      const gpu = backtestAccount(data, signals, p, start, end, DEFAULT_ACCOUNT, result.offsets[i]);
+      assert.deepEqual(gpu, backtestAccount(data, signals, p, start, end, DEFAULT_ACCOUNT));
+      filled += gpu.trades.length;
+      assert.ok(gpu.trades.every((t) => t.symbol !== 'BTCUSDT' && t.btcFiveSymbol === 'BTCUSDT' && t.btcFiveSupportMa === null));
+    }
+    assert.ok(filled > 0);
+  } finally { worker.close(); await rm(dir, { recursive: true, force: true }); }
+});
