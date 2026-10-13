@@ -49,3 +49,33 @@ test('proactive backoff triggers when x-mbx-used-weight-1m exceeds safe threshol
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
+
+test('HTTP 418 and 451 record alert state once and deduplicate subsequent occurrences', async () => {
+  const { getStatusAlertedForTest, notifyStatusAnomaly } = await import('../../src/binance.ts');
+  resetBackoffForTest();
+
+  const alertedMap = getStatusAlertedForTest();
+  assert.equal(alertedMap.has(418), false);
+  assert.equal(alertedMap.has(451), false);
+
+  // 1. Test 418 first alert
+  await notifyStatusAnomaly(418, 'IP banned until 1700000000');
+  assert.equal(alertedMap.get(418), true);
+
+  // 2. Second alert for 418 does nothing extra and remains true
+  await notifyStatusAnomaly(418, 'IP banned until 1700000000');
+  assert.equal(alertedMap.get(418), true);
+
+  // 3. Test 451 first alert
+  await notifyStatusAnomaly(451, 'Service unavailable from restricted jurisdiction');
+  assert.equal(alertedMap.get(451), true);
+
+  // 4. Second alert for 451 does not duplicate
+  await notifyStatusAnomaly(451, 'Service unavailable from restricted jurisdiction');
+  assert.equal(alertedMap.get(451), true);
+
+  resetBackoffForTest();
+  assert.equal(alertedMap.has(418), false);
+  assert.equal(alertedMap.has(451), false);
+});
+

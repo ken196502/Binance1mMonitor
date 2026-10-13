@@ -20,6 +20,7 @@ import {
   type Response as UndiciResponse,
 } from "undici";
 import type { Candle } from "./macd.ts";
+import { sendTelegramMessage, telegramConfigured } from "./telegram.ts";
 
 // Proxy routing for Binance requests:
 const PROXY =
@@ -91,6 +92,51 @@ let backoffUntil = 0;
 let backoffReason = "";
 let lastUsedWeight1m = 0;
 
+/** 记录异常状态（418 / 451）是否已经告警过，避免每分钟检测到同样错误重复告警 */
+const statusAlerted = new Map<number, boolean>();
+
+export function getStatusAlertedForTest(): Map<number, boolean> {
+  return statusAlerted;
+}
+
+export function resetStatusAlertedForTest(): void {
+  statusAlerted.clear();
+}
+
+/** 触发 451 或 418 异常时做一次 TG 告警（已告警则不重复告警） */
+export async function notifyStatusAnomaly(status: number, detail: string): Promise<void> {
+  if (statusAlerted.get(status)) {
+    return;
+  }
+  statusAlerted.set(status, true);
+
+  const statusName =
+    status === 418
+      ? "IP被封禁 (418 I'm a teapot)"
+      : status === 451
+        ? "地区法律限制/不可访问 (451 Unavailable For Legal Reasons)"
+        : `异常状态 ${status}`;
+
+  const timeStr = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  const text = [
+    `🚨 <b>Binance 接口异常告警 (HTTP ${status})</b>`,
+    "",
+    `• <b>状态说明</b>: ${statusName}`,
+    `• <b>发生时间</b>: ${timeStr}`,
+    `• <b>详细信息</b>: <code>${detail.slice(0, 300)}</code>`,
+    "",
+    `⚠️ <i>同类异常已记录，持续遇到该错误不会重复刷屏。</i>`,
+  ].join("\n");
+
+  console.error(`[binance-alert] 触发异常状态 ${status} 告警: ${detail}`);
+  if (telegramConfigured()) {
+    const res = await sendTelegramMessage(text);
+    if (!res.ok) {
+      console.warn(`[binance-alert] 发送 TG 异常告警失败: ${res.error}`);
+    }
+  }
+}
+
 // Binance USDM 单 IP 限额 2400 weight/min。
 // 设定主动避让阈值（默认 1800，预留 600 安全缓冲区）。当已用权重 >= 阈值时主动暂停请求直至下一分钟窗口重置。
 const PROACTIVE_BACKOFF_WEIGHT = Number(process.env.PROACTIVE_BACKOFF_WEIGHT ?? 1800);
@@ -113,6 +159,7 @@ export function resetBackoffForTest(): void {
   backoffUntil = 0;
   backoffReason = "";
   lastUsedWeight1m = 0;
+  statusAlerted.clear();
 }
 
 const DEFAULT_HEADERS: Record<string, string> = {
@@ -165,8 +212,8 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
     }
   }
 
-  // 2. 被动兜底：若仍收到 418/429，严格按照币安给出的冷静时间强制避让
-  if (r.status === 418 || r.status === 429) {
+  // 2. 被动兜底：若仍收到 418/429/451，严格按照币安给出的冷静时间强制避让并触发告警
+  if (r.status === 418 || r.status === 429 || r.status === 451) {
     const retryAfter = Number(r.headers.get("retry-after") ?? 60);
     let waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60;
     let detailMsg = `HTTP ${r.status}`;
@@ -185,13 +232,19 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
     } catch {
       // ignore json parse error
     }
+
+    // 针对 418 (IP被封) 和 451 (地区法律限制)，触发单次 TG 告警（已告警则不重复）
+    if (r.status === 418 || r.status === 451) {
+      void notifyStatusAnomaly(r.status, detailMsg);
+    }
+
     // 限制单次避让上限（默认最多等待 300s），避免因币安返回长时间戳导致程序过长时间被彻底锁死
     // 但必须预留足够冷静期，避免在封禁未结束前过早重试导致封禁被币安再次顺延
     const maxBackoffSec = Number(process.env.MAX_BACKOFF_SECONDS ?? 300);
     const actualWaitSec = Math.min(waitSec, maxBackoffSec);
     backoffUntil = Date.now() + actualWaitSec * 1000;
     backoffReason = `HTTP ${r.status}: ${detailMsg}`;
-    throw new Error(`Binance 触发限频/封禁 (${backoffReason})，避让等待 ${actualWaitSec} 秒后重试`);
+    throw new Error(`Binance 触发限频/封禁/受限 (${backoffReason})，避让等待 ${actualWaitSec} 秒后重试`);
   }
 
   return r;
