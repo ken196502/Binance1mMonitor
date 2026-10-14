@@ -31,21 +31,25 @@ export interface AlertInput {
 }
 
 /** 格式化连阳/连阴文案（≥2 才算连续，如 2连阳、3连阴；1 根不叫“连”，返回空字符串） */
-export function formatStreak(count: number, dir: "up" | "down" | null): string {
+export function formatStreak(count: number, dir: "up" | "down" | null, diff1mLevel?: "high" | "mid" | "low" | null): string {
   if (!dir || count < 2) return "";
   const name = dir === "up" ? "阳" : "阴";
-  return `${count}连${name}`;
+  const levelSuffix = diff1mLevel ? ` 1m${diff1mLevel}` : "";
+  return `${count}连${name}${levelSuffix}`;
 }
 
 /**
  * 判断单行是否满足告警条件（非置顶币种需满足 60D 涨幅 > 0）：
- * 1. 无支撑 且 5m DIFF为中 且 1m DIFF为中 且 连阳(≥2根阳线)
- * 2. 无支撑 且 5m DIFF为中 且 1m DIFF为低 且 连阴(≥2根阴线)
+ * 1. 当前拿到排行榜的现价必须小于近 1500 根最高价的 96%（lastPrice < max1500 * 0.96）
+ * 2. 无支撑 且 5m DIFF为中 且 1m DIFF为中 且 连阳(≥2根阳线)
+ * 3. 无支撑 且 5m DIFF为中 且 1m DIFF为低 且 连阴(≥2根阴线)
  */
 export function isAlertMatch(r: Row, isPinned: boolean = false): boolean {
   if (r.supportMa) return false;
   // 非置顶币种必须 60D 涨幅 > 0（change60d === "up"）
   if (!isPinned && r.change60d !== "up") return false;
+  // 必须当前拿到排行榜的现价小于 max（近1500根）x 0.96 才播
+  if (r.max1500 == null || r.lastPrice >= r.max1500 * 0.96) return false;
   const l1m = r.diff1mLevel;
   const l5m = r.diff5mLevel ?? r.diff15mLevel;
   if (l5m !== "mid") return false;
@@ -69,6 +73,7 @@ export function pickHighBullItems(rows: Row[], pinnedSymbols: Set<string> = new 
         symbol: r.symbol,
         streakCount: r.streakCount ?? 0,
         streakDir: r.streakDir ?? null,
+        diff1mLevel: r.diff1mLevel ?? null,
         rank: r.rank ?? null,
         rankChange: r.rankChange ?? null,
         rankDelta: r.rankDelta ?? null,
@@ -123,7 +128,7 @@ export function formatAlertMessage(params: {
   if (pinned && pinned.length > 0) {
     const list = pinned
       .map((item) => {
-        const streak = formatStreak(item.streakCount, item.streakDir);
+        const streak = formatStreak(item.streakCount, item.streakDir, item.diff1mLevel);
         const streakSuffix = streak ? ` (${streak})` : "";
         return `• 📌 <a href="https://www.binance.com/zh-CN/futures/${item.symbol}"><b>${item.symbol}</b></a>${streakSuffix}`;
       })
@@ -156,7 +161,7 @@ export function formatAlertMessage(params: {
     if (unpinnedItems.length > 0) {
       const symList = unpinnedItems
         .map((item) => {
-          const streak = formatStreak(item.streakCount, item.streakDir);
+          const streak = formatStreak(item.streakCount, item.streakDir, item.diff1mLevel);
           const streakSuffix = streak ? ` (${streak})` : "";
           let rankTag = "";
           if (item.isDropped) {

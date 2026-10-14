@@ -86,7 +86,7 @@ function row(
 
   return {
     symbol,
-    lastPrice: 1,
+    lastPrice: 90,
     priceChangePercent: 0,
     quoteVolume: 1,
     state: "low-above",
@@ -99,6 +99,8 @@ function row(
     diff5mLevel,
     diff15m: 0.1,
     diff15mLevel: diff5mLevel,
+    change60d: "up",
+    max1500: 100,
     supportMa,
     streakCount,
     streakDir,
@@ -116,10 +118,10 @@ assert.equal(formatStreak(0, "up"), "");
 assert.equal(formatStreak(3, null), "");
 console.log("0. formatStreak 阳阴连数文案 (≥2 才展示) ✓");
 
-// --- 1. pickHighBull: filter !supportMa && ((1m=mid && streak=up) || (1m=low && streak=down)) && 5m=mid
+// --- 1. pickHighBull: filter !supportMa && ((1m=mid && streak=up) || (1m=low && streak=down)) && 5m=mid && lastPrice < max1500 * 0.96
 const testList = [
-  row("MATCH_MID_UP", 4, "up", "mid", "mid", null),     // match: no support, 1m mid, 5m mid, 4连阳
-  row("MATCH_LOW_DOWN", 2, "down", "low", "mid", null), // match: no support, 1m low, 5m mid, 2连阴
+  row("MATCH_MID_UP", 4, "up", "mid", "mid", null),     // match: no support, 1m mid, 5m mid, 4连阳, price 90 < 100*0.96
+  row("MATCH_LOW_DOWN", 2, "down", "low", "mid", null), // match: no support, 1m low, 5m mid, 2连阴, price 90 < 100*0.96
   row("MISMATCH_MID_DOWN", 3, "down", "mid", "mid", null), // no: 1m mid but 连阴
   row("MISMATCH_LOW_UP", 3, "up", "low", "mid", null),     // no: 1m low but 连阳
   row("STREAK_ONE_UP", 1, "up", "mid", "mid", null),       // no: 只有1根阳线，不算连
@@ -128,6 +130,9 @@ const testList = [
   row("DIFF1M_HIGH", 2, "up", "high", "mid", null),        // no: 1m is high
   row("DIFF5M_HIGH", 2, "up", "mid", "high", null),        // no: 5m is high
   row("DIFF5M_LOW", 2, "up", "mid", "low", null),          // no: 5m is low
+  { ...row("PRICE_TOO_HIGH", 2, "up", "mid", "mid", null), lastPrice: 97, max1500: 100 }, // no: 97 >= 100 * 0.96
+  { ...row("PRICE_EQUAL_HIGH", 2, "up", "mid", "mid", null), lastPrice: 96, max1500: 100 }, // no: 96 >= 100 * 0.96
+  { ...row("PRICE_NO_MAX1500", 2, "up", "mid", "mid", null), lastPrice: 90, max1500: null }, // no: no max1500
   row("MATCH_MID_UP", 4, "up", "mid", "mid", null),        // dupe
 ];
 assert.deepEqual(pickHighBull(testList), ["MATCH_MID_UP", "MATCH_LOW_DOWN"]);
@@ -137,7 +142,7 @@ assert.equal(items[0].symbol, "MATCH_MID_UP");
 assert.equal(items[0].streakCount, 4);
 assert.equal(items[0].streakDir, "up");
 assert.equal(items[1].symbol, "MATCH_LOW_DOWN");
-console.log("1. pickHighBull + pickHighBullItems filter (无支撑+1m中+5m中+连阳 或 无支撑+1m低+5m中+连阴) + dedupe ✓");
+console.log("1. pickHighBull + pickHighBullItems filter (无支撑+1m中+5m中+连阳 或 无支撑+1m低+5m中+连阴 + 现价<max1500*0.96) + dedupe ✓");
 
 // --- 2. below threshold on both boards (< 3) → no alert ---------------------
 const a = new TelegramAlerter();
@@ -193,9 +198,9 @@ assert.doesNotMatch(received[0].text, /24h 成交额榜/);
 assert.match(received[0].text, /置顶标的/);
 assert.match(received[0].text, /BTCUSDT<\/b><\/a> \(3连阳\)/);
 assert.match(received[0].text, /SOLUSDT<\/b><\/a> \(2连阳\)/);
-assert.match(received[0].text, /ETHUSDT<\/b><\/a> \(5连阴\)/);
-assert.match(received[0].text, /ADAUSDT<\/b><\/a> \(2连阳\)/);
-assert.match(received[0].text, /DOTUSDT<\/b><\/a> \(3连阳\)/);
+assert.match(received[0].text, /ETHUSDT<\/b><\/a> \(5连阴/);
+assert.match(received[0].text, /ADAUSDT<\/b><\/a> \(2连阳/);
+assert.match(received[0].text, /DOTUSDT<\/b><\/a> \(3连阳/);
 // 验证涨幅榜区域不包含置顶标的
 const gainersPart = received[0].text.split("24h 涨幅榜")[1] ?? "";
 assert.doesNotMatch(gainersPart, /BTCUSDT/);

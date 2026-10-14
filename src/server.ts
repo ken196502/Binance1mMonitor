@@ -11,6 +11,7 @@ import {
   fetchWeeklyOpen,
   fetch60dTrend,
   getBackoffStatus,
+  onAnomalyRecovered,
   type Ticker24h,
   type TickerTops,
 } from "./binance.ts";
@@ -37,7 +38,8 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 4111;
 const TOP_N = Number(process.env.TOP_N ?? 10);
 const REFRESH_TTL_MS = Number(process.env.REFRESH_TTL_MS ?? 60_000); // 默认 60s 刷新一次，对齐 1m K 线收盘周期并防止 API 超频
 const KLINE_LIMIT = Number(process.env.KLINE_LIMIT ?? 100);
-const KLINE_INIT_LIMIT = Number(process.env.KLINE_INIT_LIMIT ?? 500);
+const KLINE_INIT_LIMIT = Number(process.env.KLINE_INIT_LIMIT ?? 1500); // 冷启动拉取 1500 根
+const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? 1500); // 滚动存储 1500 根 1m K 线
 // "High position" = current DEA/DIFF is at/near the highest value in the window.
 const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
 const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in bars
@@ -56,12 +58,20 @@ export interface SymbolCandleCache {
 
 const candleCache = new Map<string, SymbolCandleCache>();
 
-// 监听 WebSocket 成交流，实时推进并合成当前分钟 K 线及 5m K 线
+// 从 418/451 异常恢复后，重置标的冷启动状态以重新拉取 1500 根 K 线
+onAnomalyRecovered(() => {
+  console.info(`[server] 检测到从 418/451 异常中恢复，重置所有标的 K 线缓存状态，以便重新拉取 1500 根完成冷启动`);
+  for (const [_, symCache] of candleCache) {
+    symCache.initialized = false;
+  }
+});
+
+// 监听 WebSocket 成交流，实时推进并合成当前分钟 K 线及 5m K 线（滚动维护 1500 根）
 wsManager.onTrade((tick) => {
   const symCache = candleCache.get(tick.symbol);
   if (symCache && symCache.initialized && symCache.candles1m.length > 0) {
-    symCache.candles1m = applyTradeToCandles(symCache.candles1m, tick, KLINE_LIMIT);
-    symCache.candles5m = update5mFrom1m(symCache.candles5m, symCache.candles1m, KLINE_LIMIT);
+    symCache.candles1m = applyTradeToCandles(symCache.candles1m, tick, KLINE_ROLLING_LIMIT);
+    symCache.candles5m = update5mFrom1m(symCache.candles5m, symCache.candles1m, 300);
   }
 });
 
@@ -75,9 +85,9 @@ export function resetCandleCacheForTest(): void {
 
 /**
  * 并发拉取单币种指标：
- * 1. 首次遇到标的时拉取 500 根 1m K 线并在本地聚合出 5m 历史 K 线完成冷启动；
- * 2. 完成初始化后，后续优先依赖 WebSocket 实时成交流就地更新 K 线，无需每次发起 REST 请求（大幅减少 90%+ 的 HTTP 权重）；
- * 3. 仅当缓存严重缺失或初次遇到时才发起 REST 同步。
+ * 1. 首次遇到标的或从 418/451 恢复时拉取 1500 根 1m K 线并在本地聚合出 5m 历史 K 线完成冷启动；
+ * 2. 完成初始化后，后续滚动存储 1500 根，优先依赖 WebSocket 实时成交流就地更新 K 线；
+ * 3. 仅当缓存严重缺失或冷启动时才发起 REST 同步。
  */
 async function fetchRowData(t: Ticker24h): Promise<Row> {
   try {
@@ -110,14 +120,14 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
     }
     const candles = symCache.candles1m;
 
-    // 首次拉取成功（获得足够 K 线）时完成初始化并由 500 根 1m 直接合成 5m
+    // 首次拉取成功（获得足够 K 线）时完成初始化并由 1500 根 1m 直接合成 5m
     if (isFirstRun && candles.length >= 35) {
-      symCache.candles5m = update5mFrom1m([], candles, KLINE_LIMIT);
+      symCache.candles5m = update5mFrom1m([], candles, 300);
       symCache.initialized = true;
       console.log(`[kline] ${t.symbol} 首次启动成功同步 ${candles.length} 根 1m K 线，合成 ${symCache.candles5m.length} 根 5m K 线`);
     } else if (symCache.initialized && candles.length > 0) {
       // 后续轮询用增量的 1m 更新 5m
-      symCache.candles5m = update5mFrom1m(symCache.candles5m, candles, KLINE_LIMIT);
+      symCache.candles5m = update5mFrom1m(symCache.candles5m, candles, 300);
     }
     const candles5m = symCache.candles5m;
 
@@ -150,6 +160,22 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       weekOpen != null && weekOpen > 0
         ? ((t.lastPrice - weekOpen) / weekOpen) * 100
         : null;
+
+    // 计算近 1500 根 1m K 线的最高价
+    let max1500: number | null = null;
+    if (candles.length > 0) {
+      const start = Math.max(0, candles.length - 1500);
+      let maxH = -Infinity;
+      for (let i = start; i < candles.length; i++) {
+        if (candles[i].high > maxH) {
+          maxH = candles[i].high;
+        }
+      }
+      if (Number.isFinite(maxH)) {
+        max1500 = maxH;
+      }
+    }
+
     return {
       ...t,
       state: sig?.state ?? "n/a",
@@ -169,6 +195,7 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       supportMa,
       streakCount: streak.count,
       streakDir: streak.direction,
+      max1500,
     };
   } catch (e) {
     if (getBackoffStatus().active) {
@@ -193,6 +220,7 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       supportMa: null,
       streakCount: 0,
       streakDir: null,
+      max1500: null,
     };
   }
 }
@@ -303,6 +331,7 @@ async function buildBoards(
         supportMa: null,
         streakCount: 0,
         streakDir: null,
+        max1500: null,
       }
     );
   };

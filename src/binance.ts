@@ -95,6 +95,16 @@ let lastUsedWeight1m = 0;
 /** 记录异常状态（418 / 451）是否已经告警过，避免每分钟检测到同样错误重复告警 */
 const statusAlerted = new Map<number, boolean>();
 
+let anomalyRecoveryListener: (() => void) | null = null;
+
+export function onAnomalyRecovered(listener: () => void): void {
+  anomalyRecoveryListener = listener;
+}
+
+export function triggerAnomalyRecoveredForTest(): void {
+  anomalyRecoveryListener?.();
+}
+
 export function getStatusAlertedForTest(): Map<number, boolean> {
   return statusAlerted;
 }
@@ -255,10 +265,15 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
     throw new Error(`Binance 触发限频/封禁/受限 (${backoffReason})，避让等待 ${actualWaitSec} 秒后重试`);
   }
 
-  // 3. 正常响应时（r.ok）：若此前曾记录过 418 / 451 异常告警状态，说明已解封恢复，清空告警状态
+  // 3. 正常响应时（r.ok）：若此前曾记录过 418 / 451 异常告警状态，说明已解封恢复，清空告警状态并触发恢复通知
   if (r.ok && statusAlerted.size > 0) {
-    console.info(`[binance] 接口已解封恢复正常 (HTTP ${r.status})，清空 418/451 告警标记`);
+    console.info(`[binance] 接口已解封恢复正常 (HTTP ${r.status})，清空 418/451 告警标记并重置 K 线冷启动状态`);
     statusAlerted.clear();
+    try {
+      anomalyRecoveryListener?.();
+    } catch (err) {
+      console.warn(`[binance] 异常恢复回调执行出错:`, err);
+    }
   }
 
   return r;

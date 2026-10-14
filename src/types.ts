@@ -30,12 +30,14 @@ export interface Row extends Ticker24h {
   rankDelta?: number | null; // 名次变动差值（如上升2位为 +2，下降3位为 -3，新进为 null）
   isDropped?: boolean; // 是否跌出前十
   isPinned?: boolean; // 是否置顶
+  max1500?: number | null; // 近1500根1m K线的最高价
 }
 
 export interface AlertSymbolItem {
   symbol: string;
   streakCount: number;
   streakDir: "up" | "down" | null;
+  diff1mLevel?: "high" | "mid" | "low" | null; // 1m DIFF 状态
   rank?: number | null;
   rankChange?: "up" | "down" | null;
   rankDelta?: number | null;

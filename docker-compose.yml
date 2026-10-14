@@ -1,0 +1,19 @@
+services:
+  binance-macd-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: binance-macd-monitor
+    restart: unless-stopped
+    ports:
+      - "${PORT:-4111}:4111"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PORT=4111
+      - TZ=Asia/Shanghai
+    # 宿主机网关映射：若在宿主机开启了代理（如 Clash 端口 7890），
+    # 可在 .env 中设置 PROXY=http://host.docker.internal:7890
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
