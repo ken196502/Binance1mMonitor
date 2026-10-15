@@ -58,11 +58,14 @@ export interface SymbolCandleCache {
 
 const candleCache = new Map<string, SymbolCandleCache>();
 
-// 从 418/451 异常恢复后，重置标的冷启动状态以重新拉取 1500 根 K 线
+// 从 418/451 异常恢复后，仅对真正缺乏有效 K 线（<35 根）的标的标记重置冷启动
+// 避免对原本已具备完整 K 线的标的全体重新发起 1500 根请求造成恢复期瞬时惊群二次被封
 onAnomalyRecovered(() => {
-  console.info(`[server] 检测到从 418/451 异常中恢复，重置所有标的 K 线缓存状态，以便重新拉取 1500 根完成冷启动`);
+  console.info(`[server] 检测到从 418/451 异常中恢复，平缓重置缺失标的的冷启动状态`);
   for (const [_, symCache] of candleCache) {
-    symCache.initialized = false;
+    if (symCache.candles1m.length < 35) {
+      symCache.initialized = false;
+    }
   }
 });
 
@@ -298,7 +301,7 @@ async function buildBoards(
     if (queue.length > 0) {
       // 根据当前权重动态控制请求间隔：平缓打散请求，彻底消除瞬时并发突发导致的 418
       const used = getBackoffStatus().usedWeight1m;
-      const delay = used >= 1600 ? 300 : used >= 1000 ? 150 : 80;
+      const delay = used >= 1600 ? 500 : used >= 1000 ? 300 : 200;
       await new Promise((r) => setTimeout(r, delay));
     }
   }

@@ -238,13 +238,30 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
     try {
       const errBody = (await r.json()) as any;
       if (errBody?.msg) {
-        detailMsg = errBody.msg;
-        const match = /banned until (\d+)/i.exec(errBody.msg);
+        const originalMsg = errBody.msg;
+        const match = /banned until (\d+)/i.exec(originalMsg);
         if (match) {
           const untilTs = Number(match[1]);
           if (untilTs > Date.now()) {
             waitSec = Math.ceil((untilTs - Date.now()) / 1000);
           }
+          // 将时间戳转换为可读格式用于告警
+          const bannedUntilDate = new Date(untilTs).toLocaleString("zh-CN", {
+            timeZone: "Asia/Shanghai",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          });
+          detailMsg = originalMsg.replace(
+            match[0],
+            `banned until ${bannedUntilDate} (${match[1]})`
+          );
+        } else {
+          detailMsg = originalMsg;
         }
       }
     } catch {
@@ -392,8 +409,13 @@ const weeklyOpenCache = new Map<string, { open: number; closeTime: number }>();
 
 /** 获取当前周 K 线的开盘价（按周缓存直至该根周 K 收盘，开盘价全周不变） */
 export async function fetchWeeklyOpen(symbol: string): Promise<number | null> {
+  const now = Date.now();
   const cached = weeklyOpenCache.get(symbol);
-  if (cached && Date.now() < cached.closeTime) {
+  if (cached && now < cached.closeTime) {
+    return cached.open;
+  }
+  // 跨日避峰：在 UTC 00:00 结算窗口且已有缓存时，避免发起周K请求
+  if (cached && isUtcMidnightPeak(now)) {
     return cached.open;
   }
   try {
@@ -417,6 +439,57 @@ interface Trend60dCache {
 
 const trend60dCache = new Map<string, Trend60dCache>();
 
+export function getTrend60dCacheForTest(): Map<string, Trend60dCache> {
+  return trend60dCache;
+}
+
+export function resetTrend60dCacheForTest(): void {
+  trend60dCache.clear();
+}
+
+/**
+ * 判断当前时间是否处于 UTC 00:00 跨日结算高峰期（23:59:00 ~ 00:02:00 UTC，即北京时间 07:59 ~ 08:02）。
+ * 此时币安正在执行日K收盘结算与资金费率交割，WAF 防火墙处于全天最严限频阶段。
+ */
+export function isUtcMidnightPeak(nowMs: number = Date.now()): boolean {
+  const msInDay = nowMs % 86400000;
+  // 86400000 ms/day. 23:59:00 是 86340000ms，00:02:00 是 120000ms
+  return msInDay >= 86340000 || msInDay <= 120000;
+}
+
+/**
+ * 根据标的名称生成确定性的哈希抖动（毫秒），用于将缓存过期时间打散在 0~45 分钟之间，避免全量标的在同一毫秒惊群失效。
+ */
+export function getSymbolJitter(symbol: string, maxJitterMs = 45 * 60 * 1000): number {
+  let hash = 0;
+  for (let i = 0; i < symbol.length; i++) {
+    hash = ((hash << 5) - hash + symbol.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % maxJitterMs;
+}
+
+let trend60dBudgetMinute = 0;
+let trend60dCountInMinute = 0;
+
+export function canFetchTrend60d(nowMs: number = Date.now()): boolean {
+  const currentMinute = Math.floor(nowMs / 60000);
+  if (currentMinute !== trend60dBudgetMinute) {
+    trend60dBudgetMinute = currentMinute;
+    trend60dCountInMinute = 0;
+  }
+  // 每分钟最多允许 2 个标的请求 60D 日K，严格将请求均匀打散至全天各分钟
+  return trend60dCountInMinute < 2;
+}
+
+export function recordTrend60dFetch(): void {
+  trend60dCountInMinute++;
+}
+
+export function resetTrend60dQuotaForTest(): void {
+  trend60dBudgetMinute = 0;
+  trend60dCountInMinute = 0;
+}
+
 export function getNextUtcMidnight(nowMs: number = Date.now()): number {
   const now = new Date(nowMs);
   return Date.UTC(
@@ -431,29 +504,52 @@ export function getNextUtcMidnight(nowMs: number = Date.now()): number {
 }
 
 /**
- * 拉取已收盘61日K线（每日UTC 0点同步刷新缓存），计算60日涨跌趋势。
- * 1d K线周期从 UTC 00:00 到 23:59:59。当前正在形成的日K尚未收盘，
- * 因此请求 limit=62 根，去掉最后一根未收盘日K后，取已收盘的61根日K：
- * 对比最新收盘日K close 与 60天前的那根已收盘日K close (第0根与第60根)。
- * 若 close > oldClose 则为 "up"，若 close < oldClose 则为 "down"。
+ * 拉取已收盘61日K线，计算60日涨跌趋势。
+ * 针对 UTC 0点跨日进行全面防封保护：
+ * 1. 跨日避峰：在 UTC 00:00 结算高峰期（07:59 ~ 08:02），沿用旧缓存，暂缓向币安发起日K请求；
+ * 2. 缓存打散：为各币种施加 0~45 分钟哈希抖动，彻底杜绝所有币种在 00:00:00 同时过期；
+ * 3. 频控预算：每分钟最多发起 2 个标的的日K请求，其余标的顺延至下一分钟，消除瞬时突发；
+ * 4. 故障保护：若请求失败，顺延 5 分钟重试并沿用旧缓存，防止死循环重复冲刺导致 418。
  */
 export async function fetch60dTrend(symbol: string): Promise<"up" | "down" | null> {
   const now = Date.now();
   const cached = trend60dCache.get(symbol);
+
+  // 1. 如果缓存尚未过期，直接返回
   if (cached && now < cached.nextUtcMidnight) {
     return cached.trend;
   }
 
+  // 2. 跨日避峰：在 UTC 00:00 结算高峰期（北京时间 07:59 ~ 08:02），若已有缓存则继续沿用
+  if (cached && isUtcMidnightPeak(now)) {
+    return cached.trend;
+  }
+
+  // 3. 频控预算：如果本分钟日K请求配额已满，已有缓存优先沿用，推迟至下一分钟刷新
+  if (cached && !canFetchTrend60d(now)) {
+    return cached.trend;
+  }
+
   try {
+    recordTrend60dFetch();
     // 请求 62 根日K：包含当前未收盘日K和前 61 根已收盘日K
     const r = await binanceFetch(`/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=62`);
-    if (!r.ok) return cached ? cached.trend : null;
+    if (!r.ok) {
+      if (cached) cached.nextUtcMidnight = now + 5 * 60 * 1000;
+      return cached ? cached.trend : null;
+    }
     const data = (await r.json()) as any[];
-    if (!data || !Array.isArray(data) || data.length === 0) return cached ? cached.trend : null;
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      if (cached) cached.nextUtcMidnight = now + 5 * 60 * 1000;
+      return cached ? cached.trend : null;
+    }
 
     // 过滤掉当前尚未收盘的日K
     const closedBars = data.filter((bar) => Number(bar[6]) <= now);
-    if (closedBars.length < 2) return cached ? cached.trend : null;
+    if (closedBars.length < 2) {
+      if (cached) cached.nextUtcMidnight = now + 5 * 60 * 1000;
+      return cached ? cached.trend : null;
+    }
 
     // 最新收盘日K (昨天)
     const latestClosed = closedBars[closedBars.length - 1];
@@ -471,10 +567,16 @@ export async function fetch60dTrend(symbol: string): Promise<"up" | "down" | nul
       trend = "down";
     }
 
-    const nextUtcMidnight = getNextUtcMidnight(now);
+    // 成功获取后：下一次过期时间设为下一个 UTC 跨日 + 避峰时间(2分钟) + 标的哈希抖动(0~45分钟)
+    const baseMidnight = getNextUtcMidnight(now);
+    const jitter = getSymbolJitter(symbol, 45 * 60 * 1000);
+    const nextUtcMidnight = baseMidnight + 120000 + jitter;
     trend60dCache.set(symbol, { trend, nextUtcMidnight });
     return trend;
   } catch {
+    if (cached) {
+      cached.nextUtcMidnight = now + 5 * 60 * 1000;
+    }
     return cached ? cached.trend : null;
   }
 }

@@ -1,5 +1,6 @@
 import { deaLevel, type FifteenParameters } from './fifteen.ts';
 import { matchesStreak } from './streak.ts';
+import { matchesMonitorEntry } from './monitor-signals.ts';
 import { shortReturn, summarize } from "./backtest.ts";
 import { HOUR, type Dataset, type Frame } from "./types.ts";
 import { validateGainersOptions } from "./gainers-config.ts";
@@ -12,6 +13,7 @@ export function highBull(dif: number, dea: number, peakDea: number, highRatio: n
 }
 
 export function matchesMinuteEntry(signal: MinuteSignal, highRatio: number, p?: FifteenParameters): boolean {
+  if (p?.monitorMode) return matchesMonitorEntry(signal, p, highRatio);
   if (!matchesStreak(signal.streak, p?.minuteStreak)) return false;
   if (!p || p.minuteDea === undefined && p.minuteDif === undefined) return signal.supportMa === null && highBull(signal.dif, signal.dea, signal.peakDea, highRatio);
   if (signal.supportMa !== null || ![signal.dea, signal.dif, signal.peakDea].every(Number.isFinite)) return false;

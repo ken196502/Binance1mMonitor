@@ -4,6 +4,7 @@ import { MINUTE, type GainersParameters, type MinuteDataset, type MinuteSignal }
 import type { Metrics } from './types.ts';
 import { deaLevel, matchesFifteen, type MiningParameters } from './fifteen.ts';
 import { matchesBtcFive } from './btc-five.ts';
+import { diffLevel } from '../src/macd.ts';
 
 /** Fixed-size isolated USDT margin. All values are explicit simulation inputs. */
 export interface AccountOptions {
@@ -20,6 +21,8 @@ export const DEFAULT_ACCOUNT: AccountOptions = {
   maintenanceMarginPercent: 0.5, liquidationFeeBps: 50, costBps: 7,
 };
 export interface AccountTrade {
+  board?: string; diff1m?: number; diff5m?: number; diff1mLevel?: string; diff5mLevel?: string;
+  fiveClosedAt?: number; max1500?: number; drawdownPercent?: number; change60d?: string | null; dailyClosedAt?: number; dailyBars?: number;
   symbol: string; entryTime: number; exitTime: number; entryPrice: number; exitPrice: number;
   reason: 'stop' | 'target' | 'timeout' | 'liquidation' | 'missing'; ambiguous: boolean;
   leverage: number; marginUSDT: number; notionalUSDT: number; quantity: number; liquidationPrice: number;
@@ -104,6 +107,11 @@ function planExit(data: MinuteDataset, signal: MinuteSignal, p: MiningParameters
   const insuranceShortfallUSDT = reason === 'liquidation' ? Math.max(0, -margin - grossPnlUSDT) : 0;
   const netPnlUSDT = grossPnlUSDT + insuranceShortfallUSDT - entryCostUSDT - exitCostUSDT - liquidationFeeUSDT;
   return { symbol: signal.symbol, entryTime: signal.time, exitTime, entryPrice, exitPrice, reason, ambiguous, supportMa: signal.supportMa,
+    ...(signal.monitor ? { board: signal.monitor.board, diff1m: signal.monitor.hist1m, diff5m: signal.monitor.hist5m,
+      diff1mLevel: diffLevel(signal.monitor.hist1m, signal.monitor.peakHist1m, p.highRatio),
+      diff5mLevel: diffLevel(signal.monitor.hist5m, signal.monitor.peakHist5m, p.fiveHighRatio ?? p.highRatio),
+      fiveClosedAt: signal.monitor.fiveClosedAt, max1500: signal.monitor.max1500, drawdownPercent: signal.monitor.drawdownPercent,
+      change60d: signal.monitor.change60d, dailyClosedAt: signal.monitor.dailyClosedAt, dailyBars: signal.monitor.dailyBars } : {}),
     ...(signal.streak ? { minuteStreakCount: signal.streak.count, minuteStreakDirection: signal.streak.direction } : {}),
     ...(signal.fifteen?.streak ? { fifteenStreakCount: signal.fifteen.streak.count, fifteenStreakDirection: signal.fifteen.streak.direction } : {}),
     ...(signal.fifteen === undefined ? {} : { minuteDea: signal.dea, minuteDif: signal.dif,

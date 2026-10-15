@@ -2,6 +2,7 @@ import type { Bar, Manifest, Metrics } from "./types.ts";
 import type { FifteenFeature } from './fifteen.ts';
 import type { BtcFiveFeature } from './btc-five.ts';
 import type { Streak } from '../src/macd.ts';
+import type { MonitorFeature } from './monitor-signals.ts';
 
 export const MINUTE = 60_000;
 export interface GainersParameters {
@@ -49,6 +50,7 @@ export interface MinuteDataset {
   candles: Map<string, Bar[]>;
 }
 export interface MinuteSignal {
+  monitor?: MonitorFeature;
   symbol: string;
   rank: number;
   boardTime: number;

@@ -4,9 +4,11 @@
 
 ## 独立 CLI 做空策略研究
 
-新增独立研究 **涨幅榜 1m + BTC 5m**：`npm run mine:btc5m -- --fetch-btc-five --batch 128 --no-telegram`。两周期独立搜索 DEA/DIFF、连续K线条件及高位比例，结果保存至 `reports/research/gainers-gpu-margin-no-ma-btc5m/`。详见 [研究说明](research/README.md#新增独立研究涨幅榜-1m--btc-5m)。
+当前新维度入口：`npm run mine:monitor -- --fetch --board all`。搜索交易币种自身的 **1m/5m DIFF柱体档位**、连续K线、距近1500根高点回撤，固定要求60D上涨及1m无MA支撑；涨跌榜独立选参，预先固定当前播报条件作为基线。默认使用小时缓存中最近7个完整UTC日，每榜从96,040组有效参数分层抽取20,000组，Apple Metal计算退出，CPU核对账户。详见[新维度研究](research/README.md#同币-1m5m-diff-新维度挖掘)。
 
-研究通过 CLI 单独运行，与监控服务、页面和 Telegram 无依赖。当前重点是 **gainers 涨幅榜：1m DEA 高位 + DIF ≥ DEA 直接做空，小止损、大止盈，不要求死叉**。全市场 USDT 永续小时数据用于重建每个历史整点的 24h 涨幅榜，分钟数据用于信号和成交回测。
+此前的独立研究 **涨幅榜 1m + BTC 5m** 仍保留：`npm run mine:btc5m -- --fetch-btc-five --batch 128 --no-telegram`。两周期独立搜索 DEA/DIF、连续K线条件及高位比例，结果保存至 `reports/research/gainers-gpu-margin-no-ma-btc5m/`。详见 [研究说明](research/README.md#新增独立研究涨幅榜-1m--btc-5m)。
+
+旧版 `research gainers` 通过 CLI 单独运行，与监控服务、页面和 Telegram 无依赖，规则是 **gainers 涨幅榜：1m DEA 高位 + DIF ≥ DEA 直接做空，小止损、大止盈，不要求死叉**。全市场 USDT 永续小时数据用于重建每个历史整点的 24h 涨幅榜，分钟数据用于信号和成交回测。
 
 ```bash
 # 首次获取全市场小时数据（已有缓存可复用）

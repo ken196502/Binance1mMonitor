@@ -4,6 +4,7 @@ import { validateBars } from './data.ts';
 import { MINUTE, type GainersParameters, type MinuteSignal } from './gainers-types.ts';
 import type { Bar } from './types.ts';
 import type { BtcFiveParameters } from './btc-five.ts';
+import type { MonitorParameters } from './monitor-signals.ts';
 
 export const FIFTEEN = 15 * MINUTE;
 export const FIFTEEN_RULE = { interval: '15m', warmupBars: 300, highWindow: 100, highRatio: 0.8 } as const;
@@ -13,7 +14,7 @@ export const FIFTEEN_AXES = {
   fifteenDea: ['any', 'high', 'mid', 'low'],
   fifteenDif: ['any', 'bull', 'bear'],
 } as const;
-export interface FifteenParameters extends StreakParameters {
+export interface FifteenParameters extends StreakParameters, MonitorParameters {
   fifteenHighRatio?: number;
   minuteDea?: typeof FIFTEEN_AXES.minuteDea[number];
   minuteDif?: typeof FIFTEEN_AXES.minuteDif[number];

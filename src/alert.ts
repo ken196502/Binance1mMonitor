@@ -1,8 +1,13 @@
-// "无支撑 + 1m DIFF中 + 5m DIFF中 + 连阳" 或 "无支撑 + 1m DIFF低 + 5m DIFF中 + 连阴" 监控告警
+// "无支撑 + 5m DIFF中 + (1m中+连阳 / 1m低+连阴) + 现价<近1500根最高价*0.96" 监控告警
 //
-// 判定规则（满足以下任意一组即命中）：
-//   1. 无支撑 (!row.supportMa) 且 1m DIFF为中 (diff1mLevel === 'mid') 且 5m DIFF为中 (diff5mLevel === 'mid') 且 连阳 (streakDir === 'up' && streakCount >= 2)
-//   2. 无支撑 (!row.supportMa) 且 1m DIFF为低 (diff1mLevel === 'low') 且 5m DIFF为中 (diff5mLevel === 'mid') 且 连阴 (streakDir === 'down' && streakCount >= 2)
+// 判定规则（必须同时满足以下所有条件）：
+//   1. 现价必须严格小于近 1500 根最高价的 96%（row.lastPrice < row.max1500 * 0.96）
+//   2. 无支撑 (!row.supportMa)
+//   3. 5m DIFF为中 (diff5mLevel === 'mid')
+//   4. 非置顶币种需满足 60D 涨幅 > 0 (row.change60d === 'up')
+//   5. 满足以下任意一组形态：
+//      - 1m DIFF为中 且 连阳 (diff1mLevel === 'mid' && streakDir === 'up' && streakCount >= 2)
+//      - 1m DIFF为低 且 连阴 (diff1mLevel === 'low' && streakDir === 'down' && streakCount >= 2)
 //
 // 告警逻辑：
 //   - 两个榜（24h涨幅榜、跌幅榜），任意榜出现 ≥ TG_ALERT_MIN (默认 3) 个满足条件的币种时进入关注。
@@ -12,6 +17,8 @@
 
 import type { Row, BoardAlertInfo, HighBullSummary, AlertSymbolItem } from "./types.ts";
 import { sendTelegramMessage, telegramConfigured, type TelegramSendResult } from "./telegram.ts";
+import { isAlertMatch } from './alert-rule.ts';
+export { isAlertMatch } from './alert-rule.ts';
 
 export type BoardKey = "gainers" | "losers";
 
@@ -36,29 +43,6 @@ export function formatStreak(count: number, dir: "up" | "down" | null, diff1mLev
   const name = dir === "up" ? "阳" : "阴";
   const levelSuffix = diff1mLevel ? ` 1m${diff1mLevel}` : "";
   return `${count}连${name}${levelSuffix}`;
-}
-
-/**
- * 判断单行是否满足告警条件（非置顶币种需满足 60D 涨幅 > 0）：
- * 1. 当前拿到排行榜的现价必须小于近 1500 根最高价的 96%（lastPrice < max1500 * 0.96）
- * 2. 无支撑 且 5m DIFF为中 且 1m DIFF为中 且 连阳(≥2根阳线)
- * 3. 无支撑 且 5m DIFF为中 且 1m DIFF为低 且 连阴(≥2根阴线)
- */
-export function isAlertMatch(r: Row, isPinned: boolean = false): boolean {
-  if (r.supportMa) return false;
-  // 非置顶币种必须 60D 涨幅 > 0（change60d === "up"）
-  if (!isPinned && r.change60d !== "up") return false;
-  // 必须当前拿到排行榜的现价小于 max（近1500根）x 0.96 才播
-  if (r.max1500 == null || r.lastPrice >= r.max1500 * 0.96) return false;
-  const l1m = r.diff1mLevel;
-  const l5m = r.diff5mLevel ?? r.diff15mLevel;
-  if (l5m !== "mid") return false;
-  const isUpStreak = r.streakDir === "up" && (r.streakCount ?? 0) >= 2;
-  const isDownStreak = r.streakDir === "down" && (r.streakCount ?? 0) >= 2;
-
-  if (l1m === "mid" && isUpStreak) return true;
-  if (l1m === "low" && isDownStreak) return true;
-  return false;
 }
 
 /** 筛选满足「无支撑+1mDIFF中+5mDIFF中+连阳 或 无支撑+1mDIFF低+5mDIFF中+连阴」的币种及连数详情（保留原榜单顺序并去重，非置顶需 60D 涨幅 > 0） */
@@ -121,7 +105,7 @@ export function formatAlertMessage(params: {
 }): string {
   const { min, boards, pinned } = params;
 
-  const header = `🚨 <b>无支撑 + 5m DIFF中 + (1m中+连阳 / 1m低+连阴) 告警</b>（触发阈值 ≥ ${min}）`;
+  const header = `🚨 <b>无支撑 + 5m DIFF中 + (1m中+连阳 / 1m低+连阴) 告警</b>（现价<1500根高点96% | 触发阈值 ≥ ${min}）`;
   const dashboardUrl = getDashboardUrl();
 
   let pinnedBlock = "";
@@ -273,7 +257,7 @@ export class TelegramAlerter {
         key: "gainers",
         icon: "📈",
         info: {
-          name: "24h 涨幅榜",
+          name: "↑↑涨幅榜(24h)↑↑",
           count: gainersItems.length,
           symbols: gainersItems.map((i) => i.symbol),
           items: gainersItems,
@@ -284,7 +268,7 @@ export class TelegramAlerter {
         key: "losers",
         icon: "📉",
         info: {
-          name: "24h 跌幅榜",
+          name: "↘︎↘︎跌幅榜(24h)↘︎↘︎",
           count: losersItems.length,
           symbols: losersItems.map((i) => i.symbol),
           items: losersItems,

@@ -192,8 +192,8 @@ assert.deepEqual(res2.summary.gainers.symbols, ["ETHUSDT", "ADAUSDT", "DOTUSDT"]
 assert.equal(countOf(res2.sent), 1);
 assert.equal(received.length, 1);
 assert.match(received[0].text, /告警/);
-assert.match(received[0].text, /24h 涨幅榜.*3/);
-assert.doesNotMatch(received[0].text, /24h 跌幅榜/);
+assert.match(received[0].text, /↑↑涨幅榜(24h)↑↑.*3/);
+assert.doesNotMatch(received[0].text, /24h跌幅榜/);
 assert.doesNotMatch(received[0].text, /24h 成交额榜/);
 assert.match(received[0].text, /置顶标的/);
 assert.match(received[0].text, /BTCUSDT<\/b><\/a> \(3连阳\)/);
@@ -202,7 +202,7 @@ assert.match(received[0].text, /ETHUSDT<\/b><\/a> \(5连阴/);
 assert.match(received[0].text, /ADAUSDT<\/b><\/a> \(2连阳/);
 assert.match(received[0].text, /DOTUSDT<\/b><\/a> \(3连阳/);
 // 验证涨幅榜区域不包含置顶标的
-const gainersPart = received[0].text.split("24h 涨幅榜")[1] ?? "";
+const gainersPart = received[0].text.split("↑↑涨幅榜(24h)↑↑")[1] ?? "";
 assert.doesNotMatch(gainersPart, /BTCUSDT/);
 assert.doesNotMatch(gainersPart, /SOLUSDT/);
 assert.match(received[0].auth, /TESTTOKEN/);
@@ -291,7 +291,7 @@ assert.equal(res7.summary.triggered, true);
 assert.equal(countOf(res7.sent), 1);
 assert.equal(received.length, 3);
 assert.match(received[2].text, /告警/);
-assert.match(received[2].text, /24h 跌幅榜.*3/);
+assert.match(received[2].text, /↘︎↘︎跌幅榜(24h)↘︎↘︎.*3/);
 console.log("8. re-trigger after recovery on losers → alert sent ✓");
 
 // --- 9. clear & re-trigger with send failure → retries on next check ----------
@@ -313,7 +313,7 @@ const res9 = await a.check({
 });
 assert.equal(res9.sent?.ok, true); // succeeded!
 assert.equal(received.length, 4);
-assert.match(received[3].text, /24h 涨幅榜.*3/);
+assert.match(received[3].text, /↑↑涨幅榜(24h)↑↑.*3/);
 console.log("9. failed send retries on subsequent check until delivered ✓");
 
 // --- 10. unconfigured telegram → explicit failure without crashing ------------
