@@ -24,6 +24,8 @@ import {
   calculateSupportMa,
   update5mFrom1m,
   calculateMaxHour,
+  calculateHourFirstClose,
+  calculateHourFirstLow,
   type Candle,
 } from "./macd.ts";
 import { TelegramAlerter } from "./alert.ts";
@@ -46,6 +48,10 @@ const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? 1500); // 
 // "High position" = current DEA/DIFF is at/near the highest value in the window.
 const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
 const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in bars
+
+// 跌幅榜降级保护配置：优先保证涨幅榜，避免跌幅榜在新币进榜或非整点时并发 REST 耗尽权重触发 418/429
+const LOSER_REST_WEIGHT_THRESHOLD = Number(process.env.LOSER_REST_WEIGHT_THRESHOLD ?? 800); // 已用权重>=800时跌幅榜全面禁止发起 REST
+const LOSER_MAX_COLD_STARTS_PER_ROUND = Number(process.env.LOSER_MAX_COLD_STARTS_PER_ROUND ?? 1); // 跌幅榜每轮最多冷启动1个标的
 
 // Telegram alert: 当三个榜单任意一个出现 ≥ TG_ALERT_MIN 个「无支撑 + 1m DIFF>0 + 5m DIFF<0」时发出通知。
 // 首次命中时通知，持续命中期间不因数量变化而重复播报。
@@ -89,13 +95,33 @@ export function resetCandleCacheForTest(): void {
   candleCache.clear();
 }
 
+export interface FetchRowOptions {
+  isGainerPriority?: boolean; // 是否属于涨幅榜/置顶高优先级队列
+  allowRestKline?: boolean;   // 是否允许发起 REST K 线请求
+  klineLimit?: number;        // 指定 K 线拉取数量（涨幅榜默认 1500，跌幅榜降级为 100）
+  allowTrendFetch?: boolean;  // 是否允许发起周K和60D日K
+}
+
+export interface FetchRowResult {
+  row: Row;
+  didRest: boolean;
+}
+
 /**
- * 并发拉取单币种指标：
- * 1. 首次遇到标的或从 418/451 恢复时拉取 1500 根 1m K 线并在本地聚合出 5m 历史 K 线完成冷启动；
+ * 并发/串行拉取单币种指标：
+ * 1. 优先保证涨幅榜：置顶标的与涨幅榜完整冷启动 1500 根，跌幅榜严格降级限流（最多拉取 100 根且每轮限额）；
  * 2. 完成初始化后，后续滚动存储 1500 根，优先依赖 WebSocket 实时成交流就地更新 K 线；
- * 3. 仅当缓存严重缺失或冷启动时才发起 REST 同步。
+ * 3. 精确记录是否发生实际网络 REST 请求，为调用方平滑限速提供依据，彻底防止突发触发 418。
  */
-async function fetchRowData(t: Ticker24h): Promise<Row> {
+async function fetchRowData(t: Ticker24h, options: FetchRowOptions = {}): Promise<FetchRowResult> {
+  const {
+    isGainerPriority = true,
+    allowRestKline = true,
+    klineLimit,
+    allowTrendFetch = true,
+  } = options;
+  let didRest = false;
+
   try {
     let symCache = candleCache.get(t.symbol);
     if (!symCache) {
@@ -109,8 +135,9 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
 
     const isFirstRun = !symCache.initialized;
     // 如果已经完成冷启动且本地 K 线充足，跳过 REST K 线请求，优先使用 WS 实时维持的 K 线
-    const needRestKline = isFirstRun || symCache.candles1m.length < 35;
-    const fetchLimit = isFirstRun ? KLINE_INIT_LIMIT : KLINE_LIMIT;
+    const needRestKline = allowRestKline && (isFirstRun || symCache.candles1m.length < 35);
+    const defaultInitLimit = isGainerPriority ? KLINE_INIT_LIMIT : Math.min(KLINE_INIT_LIMIT, 100);
+    const fetchLimit = klineLimit ?? (isFirstRun ? defaultInitLimit : KLINE_LIMIT);
 
     let candles1mRes: Candle[] = [];
     if (needRestKline) {
@@ -119,6 +146,7 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       }
       try {
         candles1mRes = await fetch1mCandles(t.symbol, fetchLimit);
+        didRest = true;
       } catch (err) {
         if (getBackoffStatus().active) {
           throw err;
@@ -127,14 +155,14 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       }
     }
 
-    // 周K与60日趋势：按需串行拉取，处于避让期时绝不发起请求，彻底防止并发冲刺触发 418
+    // 周K与60日趋势：优先保障涨幅榜，处于避让期或受限时绝不发起请求，彻底防止并发冲刺触发 418
     let weekOpen: number | null = null;
     let change60d: "up" | "down" | null = null;
-    if (!getBackoffStatus().active) {
+    if (allowTrendFetch && !getBackoffStatus().active) {
       weekOpen = await fetchWeeklyOpen(t.symbol).catch(() => null);
     }
-    if (!getBackoffStatus().active) {
-      change60d = await fetch60dTrend(t.symbol).catch(() => null);
+    if (allowTrendFetch && !getBackoffStatus().active) {
+      change60d = await fetch60dTrend(t.symbol, isGainerPriority).catch(() => null);
     }
 
     // 1m 保存：每次更新保存，若偶发网络异常则回退使用已保存的 1m 序列
@@ -201,54 +229,67 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
 
     // 计算最近一个整点到当前的最高价
     const maxHour = calculateMaxHour(candles, t.lastPrice);
+    // 计算最近一个整点第一分钟的收盘价与最低价
+    const hourFirstClose = calculateHourFirstClose(candles);
+    const hourFirstLow = calculateHourFirstLow(candles);
 
     return {
-      ...t,
-      state: sig?.state ?? "n/a",
-      alert: sig?.alert ?? false,
-      bullish: sig ? !sig.deathCross : null,
-      high: sig ? sig.highPosition : null,
-      dea: sig?.dea ?? null,
-      deaLevel,
-      diff1m: diff1mSig?.dif ?? null,
-      diff1mLevel: diff1mSig?.level ?? null,
-      diff5m: diff5mSig?.dif ?? null,
-      diff5mLevel: diff5mSig?.level ?? null,
-      diff15m: diff5mSig?.dif ?? null,
-      diff15mLevel: diff5mSig?.level ?? null,
-      weekChangePercent,
-      change60d,
-      supportMa,
-      streakCount: streak.count,
-      streakDir: streak.direction,
-      max1500,
-      maxHour,
+      row: {
+        ...t,
+        state: sig?.state ?? "n/a",
+        alert: sig?.alert ?? false,
+        bullish: sig ? !sig.deathCross : null,
+        high: sig ? sig.highPosition : null,
+        dea: sig?.dea ?? null,
+        deaLevel,
+        diff1m: diff1mSig?.dif ?? null,
+        diff1mLevel: diff1mSig?.level ?? null,
+        diff5m: diff5mSig?.dif ?? null,
+        diff5mLevel: diff5mSig?.level ?? null,
+        diff15m: diff5mSig?.dif ?? null,
+        diff15mLevel: diff5mSig?.level ?? null,
+        weekChangePercent,
+        change60d,
+        supportMa,
+        streakCount: streak.count,
+        streakDir: streak.direction,
+        max1500,
+        maxHour,
+        hourFirstClose,
+        hourFirstLow,
+      },
+      didRest,
     };
   } catch (e) {
     if (getBackoffStatus().active) {
       throw e;
     }
     return {
-      ...t,
-      state: "err",
-      alert: false,
-      bullish: null,
-      high: null,
-      dea: null,
-      deaLevel: null,
-      diff1m: null,
-      diff1mLevel: null,
-      diff5m: null,
-      diff5mLevel: null,
-      diff15m: null,
-      diff15mLevel: null,
-      weekChangePercent: null,
-      change60d: null,
-      supportMa: null,
-      streakCount: 0,
-      streakDir: null,
-      max1500: null,
-      maxHour: null,
+      row: {
+        ...t,
+        state: "err",
+        alert: false,
+        bullish: null,
+        high: null,
+        dea: null,
+        deaLevel: null,
+        diff1m: null,
+        diff1mLevel: null,
+        diff5m: null,
+        diff5mLevel: null,
+        diff15m: null,
+        diff15mLevel: null,
+        weekChangePercent: null,
+        change60d: null,
+        supportMa: null,
+        streakCount: 0,
+        streakDir: null,
+        max1500: null,
+        maxHour: null,
+        hourFirstClose: null,
+        hourFirstLow: null,
+      },
+      didRest,
     };
   }
 }
@@ -307,8 +348,9 @@ export async function buildBoards(
   const resultMap = new Map<string, Row>();
   const syncedSymbols = new Set<string>();
 
-  // 阶段 1：先确保涨幅榜获取完成 K 线同步
+  // 阶段 1：先确保涨幅榜获取完成 K 线同步（绝对最高优先级）
   let gainer429Detected = false;
+  let gainerColdStartCount = 0;
   for (let i = 0; i < gainersQueue.length; i++) {
     const item = gainersQueue[i];
     if (getBackoffStatus().active) {
@@ -316,10 +358,24 @@ export async function buildBoards(
       gainer429Detected = true;
       break;
     }
+
+    const symCache = candleCache.get(item.symbol);
+    const willColdStart = !symCache || !symCache.initialized || symCache.candles1m.length < 35;
+    if (willColdStart) {
+      gainerColdStartCount++;
+    }
+
+    let didRest = false;
     try {
-      const row = await fetchRowData(item);
-      resultMap.set(item.symbol, row);
+      const res = await fetchRowData(item, {
+        isGainerPriority: true,
+        allowRestKline: true,
+        klineLimit: willColdStart ? KLINE_INIT_LIMIT : KLINE_LIMIT,
+        allowTrendFetch: true,
+      });
+      resultMap.set(item.symbol, res.row);
       syncedSymbols.add(item.symbol);
+      didRest = res.didRest;
     } catch (e) {
       if (getBackoffStatus().active) {
         console.warn(`[binance] 同步涨幅榜标的 ${item.symbol} 时检测到 429/限频，立即停止同步: ${(e as any)?.message ?? e}`);
@@ -328,10 +384,13 @@ export async function buildBoards(
       }
     }
 
+    // 平滑请求节奏防突发：实际发起了 REST 请求平滑 200~500ms，纯本地计算仅需 20ms
     if (i < gainersQueue.length - 1 && !getBackoffStatus().active) {
       const used = getBackoffStatus().usedWeight1m;
-      const delay = used >= 1600 ? 500 : used >= 1000 ? 300 : 200;
-      await new Promise((r) => setTimeout(r, delay));
+      const delay = !didRest ? 20 : used >= 1400 ? 500 : used >= 1000 ? 300 : 200;
+      if (delay > 0) {
+        await new Promise((r) => setTimeout(r, delay));
+      }
     }
   }
 
@@ -354,8 +413,15 @@ export async function buildBoards(
         await waitForBackoffClear();
       }
       try {
-        const row = await fetchRowData(item);
-        resultMap.set(item.symbol, row);
+        const symCache = candleCache.get(item.symbol);
+        const willColdStart = !symCache || !symCache.initialized || symCache.candles1m.length < 35;
+        const res = await fetchRowData(item, {
+          isGainerPriority: true,
+          allowRestKline: true,
+          klineLimit: willColdStart ? KLINE_INIT_LIMIT : KLINE_LIMIT,
+          allowTrendFetch: true,
+        });
+        resultMap.set(item.symbol, res.row);
         syncedSymbols.add(item.symbol);
         wsManager.setSymbols(Array.from(syncedSymbols));
       } catch (e) {
@@ -365,7 +431,13 @@ export async function buildBoards(
     }
   }
 
-  // 阶段 3：等到没 429 了，才同步跌幅榜
+  // 阶段 3：严格优先保证涨幅榜，对跌幅榜实施降级与限流
+  const currentUsedWeight = getBackoffStatus().usedWeight1m;
+  const isBackoff = getBackoffStatus().active;
+  // 保护规则：当权重达到 LOSER_REST_WEIGHT_THRESHOLD(800) 或当前处于避让期、或涨幅榜刚刚发生了冷启动，跌幅榜本轮全面禁止任何 REST
+  const allowLoserRest = !isBackoff && currentUsedWeight < LOSER_REST_WEIGHT_THRESHOLD && gainerColdStartCount === 0;
+  let loserColdStarts = 0;
+
   for (let i = 0; i < losersQueue.length; i++) {
     const item = losersQueue[i];
     if (resultMap.has(item.symbol)) continue;
@@ -375,10 +447,28 @@ export async function buildBoards(
       await waitForBackoffClear();
     }
 
+    const symCache = candleCache.get(item.symbol);
+    const isColdStart = !symCache || !symCache.initialized || symCache.candles1m.length < 35;
+    const canDoColdStart = allowLoserRest && isColdStart && loserColdStarts < LOSER_MAX_COLD_STARTS_PER_ROUND;
+
+    // 只有在严格允许时才发起轻量冷启动 (100根K线，消耗仅 1 权重)，否则直接禁止 REST 请求使用降级
+    const allowRestKline = canDoColdStart;
+    const allowTrendFetch = allowLoserRest && !isColdStart; // 跌幅榜新标的当轮不拉周K/60D，防突发
+    if (canDoColdStart) {
+      loserColdStarts++;
+    }
+
+    let didRest = false;
     try {
-      const row = await fetchRowData(item);
-      resultMap.set(item.symbol, row);
+      const res = await fetchRowData(item, {
+        isGainerPriority: false,
+        allowRestKline,
+        klineLimit: 100, // 跌幅榜冷启动仅拉取 100 根 (weight 1)，相比 1500 根 (weight 10) 节省 90% 消耗
+        allowTrendFetch,
+      });
+      resultMap.set(item.symbol, res.row);
       syncedSymbols.add(item.symbol);
+      didRest = res.didRest;
     } catch (e) {
       if (getBackoffStatus().active) {
         console.warn(`[binance] 同步跌幅榜标的 ${item.symbol} 遇到限频，等待冷静期解除: ${(e as any)?.message ?? e}`);
@@ -388,8 +478,10 @@ export async function buildBoards(
 
     if (i < losersQueue.length - 1 && !getBackoffStatus().active) {
       const used = getBackoffStatus().usedWeight1m;
-      const delay = used >= 1600 ? 500 : used >= 1000 ? 300 : 200;
-      await new Promise((r) => setTimeout(r, delay));
+      const delay = !didRest ? 20 : used >= 1400 ? 500 : used >= 1000 ? 300 : 200;
+      if (delay > 0) {
+        await new Promise((r) => setTimeout(r, delay));
+      }
     }
   }
 
@@ -426,6 +518,8 @@ export async function buildBoards(
         streakDir: null,
         max1500: null,
         maxHour: null,
+        hourFirstClose: null,
+        hourFirstLow: null,
       }
     );
   };

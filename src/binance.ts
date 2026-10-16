@@ -182,8 +182,8 @@ export async function notifyStatusAnomaly(status: number, detail: string): Promi
 }
 
 // Binance USDM 单 IP 限额 2400 weight/min。
-// 设定主动避让阈值（默认 1800，预留 600 安全缓冲区）。当已用权重 >= 阈值时主动暂停请求直至下一分钟窗口重置。
-const PROACTIVE_BACKOFF_WEIGHT = Number(process.env.PROACTIVE_BACKOFF_WEIGHT ?? 1800);
+// 设定主动避让阈值（默认 1600，预留 800 安全缓冲区）。当已用权重 >= 阈值时主动暂停请求直至下一分钟窗口重置。
+const PROACTIVE_BACKOFF_WEIGHT = Number(process.env.PROACTIVE_BACKOFF_WEIGHT ?? 1600);
 
 export function is429Active(): boolean {
   const active = Date.now() < backoffUntil;
@@ -391,9 +391,11 @@ export async function getCryptoPerpSymbols(): Promise<Set<string>> {
     }
   } catch (e) {
     console.warn(`[binance] 获取 exchangeInfo 失败，回退使用已有缓存或基础过滤:`, (e as any)?.message ?? e);
-    // 失败后顺延 5 分钟重试，避免死循环高频重试
+    // 失败后顺延 5 分钟重试（若无缓存顺延 1 分钟），避免死循环高频重试
     if (cachedCryptoSymbols) {
       cryptoSymbolsExpiresAt = now + 5 * 60 * 1000;
+    } else {
+      cryptoSymbolsExpiresAt = now + 60 * 1000;
     }
   }
 
@@ -484,12 +486,12 @@ export async function fetchWeeklyOpen(symbol: string): Promise<number | null> {
   try {
     const r = await binanceFetch(`/fapi/v1/klines?symbol=${symbol}&interval=1w&limit=1`);
     if (!r.ok) {
-      if (cached) weeklyOpenCache.set(symbol, { ...cached, retryAfter: now + 5 * 60 * 1000 });
+      weeklyOpenCache.set(symbol, { open: cached?.open ?? 0, closeTime: 0, retryAfter: now + 5 * 60 * 1000 });
       return cached ? cached.open : null;
     }
     const data = (await r.json()) as any[];
     if (!data || data.length === 0) {
-      if (cached) weeklyOpenCache.set(symbol, { ...cached, retryAfter: now + 5 * 60 * 1000 });
+      weeklyOpenCache.set(symbol, { open: cached?.open ?? 0, closeTime: 0, retryAfter: now + 5 * 60 * 1000 });
       return cached ? cached.open : null;
     }
     const open = parseFloat(data[0][1]);
@@ -497,9 +499,7 @@ export async function fetchWeeklyOpen(symbol: string): Promise<number | null> {
     weeklyOpenCache.set(symbol, { open, closeTime });
     return open;
   } catch {
-    if (cached) {
-      weeklyOpenCache.set(symbol, { ...cached, retryAfter: now + 5 * 60 * 1000 });
-    }
+    weeklyOpenCache.set(symbol, { open: cached?.open ?? 0, closeTime: 0, retryAfter: now + 5 * 60 * 1000 });
     return cached ? cached.open : null;
   }
 }
@@ -543,13 +543,17 @@ export function getSymbolJitter(symbol: string, maxJitterMs = 45 * 60 * 1000): n
 let trend60dBudgetMinute = 0;
 let trend60dCountInMinute = 0;
 
-export function canFetchTrend60d(nowMs: number = Date.now()): boolean {
+export function canFetchTrend60d(nowMs: number = Date.now(), isPriority = true): boolean {
   const currentMinute = Math.floor(nowMs / 60000);
   if (currentMinute !== trend60dBudgetMinute) {
     trend60dBudgetMinute = currentMinute;
     trend60dCountInMinute = 0;
   }
-  // 每分钟最多允许 2 个标的请求 60D 日K，严格将请求均匀打散至全天各分钟
+  // 每分钟最多允许 2 个标的请求 60D 日K
+  // 非优先标的（跌幅榜）：只有在涨幅榜未占满且当前分钟已被消耗数为 0、且当前已用权重 < 800 时，才允许使用 1 个配额
+  if (!isPriority) {
+    return trend60dCountInMinute === 0 && lastUsedWeight1m < 800;
+  }
   return trend60dCountInMinute < 2;
 }
 
@@ -580,10 +584,10 @@ export function getNextUtcMidnight(nowMs: number = Date.now()): number {
  * 针对 UTC 0点跨日进行全面防封保护：
  * 1. 跨日避峰：在 UTC 00:00 结算高峰期（07:59 ~ 08:02），沿用旧缓存，暂缓向币安发起日K请求；
  * 2. 缓存打散：为各币种施加 0~45 分钟哈希抖动，彻底杜绝所有币种在 00:00:00 同时过期；
- * 3. 频控预算：每分钟最多发起 2 个标的的日K请求，其余标的顺延至下一分钟，消除瞬时突发；
+ * 3. 频控预算：每分钟最多发起 2 个标的的日K请求，严格优先保证涨幅榜标的，消除瞬时突发；
  * 4. 故障保护：若请求失败，顺延 5 分钟重试并沿用旧缓存，防止死循环重复冲刺导致 418。
  */
-export async function fetch60dTrend(symbol: string): Promise<"up" | "down" | null> {
+export async function fetch60dTrend(symbol: string, isPriority = true): Promise<"up" | "down" | null> {
   const now = Date.now();
   const cached = trend60dCache.get(symbol);
 
@@ -597,9 +601,12 @@ export async function fetch60dTrend(symbol: string): Promise<"up" | "down" | nul
     return cached.trend;
   }
 
-  // 3. 频控预算：如果本分钟日K请求配额已满，已有缓存优先沿用，推迟至下一分钟刷新
-  if (cached && !canFetchTrend60d(now)) {
+  // 3. 频控预算：如果本分钟日K请求配额已满，优先沿用已有缓存，或推迟至下一分钟刷新（优先保证涨幅榜）
+  if (cached && !canFetchTrend60d(now, isPriority)) {
     return cached.trend;
+  }
+  if (!cached && !canFetchTrend60d(now, isPriority)) {
+    return null;
   }
 
   try {
@@ -607,19 +614,19 @@ export async function fetch60dTrend(symbol: string): Promise<"up" | "down" | nul
     // 请求 62 根日K：包含当前未收盘日K和前 61 根已收盘日K
     const r = await binanceFetch(`/fapi/v1/klines?symbol=${symbol}&interval=1d&limit=62`);
     if (!r.ok) {
-      if (cached) cached.nextUtcMidnight = now + 5 * 60 * 1000;
+      trend60dCache.set(symbol, { trend: cached?.trend ?? null, nextUtcMidnight: now + 5 * 60 * 1000 });
       return cached ? cached.trend : null;
     }
     const data = (await r.json()) as any[];
     if (!data || !Array.isArray(data) || data.length === 0) {
-      if (cached) cached.nextUtcMidnight = now + 5 * 60 * 1000;
+      trend60dCache.set(symbol, { trend: cached?.trend ?? null, nextUtcMidnight: now + 5 * 60 * 1000 });
       return cached ? cached.trend : null;
     }
 
     // 过滤掉当前尚未收盘的日K
     const closedBars = data.filter((bar) => Number(bar[6]) <= now);
     if (closedBars.length < 2) {
-      if (cached) cached.nextUtcMidnight = now + 5 * 60 * 1000;
+      trend60dCache.set(symbol, { trend: cached?.trend ?? null, nextUtcMidnight: now + 5 * 60 * 1000 });
       return cached ? cached.trend : null;
     }
 

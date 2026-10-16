@@ -390,6 +390,36 @@ export function update5mFrom1m(cached5m: Candle[], candles1m: Candle[], maxBars 
 export const ONE_HOUR_MS = 60 * 60 * 1000;
 
 /**
+ * 获取最近一个整点第一分钟 (xx:00) 的 1m K 线最低价
+ */
+export function calculateHourFirstLow(candles: Candle[]): number | null {
+  if (candles.length === 0) return null;
+  const refTime = candles[candles.length - 1].time;
+  const hourStart = Math.floor(refTime / ONE_HOUR_MS) * ONE_HOUR_MS;
+  let firstBarInHour: Candle | null = null;
+  for (let i = candles.length - 1; i >= 0; i--) {
+    if (candles[i].time < hourStart) break;
+    firstBarInHour = candles[i];
+  }
+  return firstBarInHour ? firstBarInHour.low : null;
+}
+
+/**
+ * 获取最近一个整点第一分钟 (xx:00) 的 1m K 线收盘价（兼容保留）
+ */
+export function calculateHourFirstClose(candles: Candle[]): number | null {
+  if (candles.length === 0) return null;
+  const refTime = candles[candles.length - 1].time;
+  const hourStart = Math.floor(refTime / ONE_HOUR_MS) * ONE_HOUR_MS;
+  let firstBarInHour: Candle | null = null;
+  for (let i = candles.length - 1; i >= 0; i--) {
+    if (candles[i].time < hourStart) break;
+    firstBarInHour = candles[i];
+  }
+  return firstBarInHour ? firstBarInHour.close : null;
+}
+
+/**
  * 计算最近一个整点到当前的最高价（包含整点后所有 1m K 线的最高价及最新现价）
  */
 export function calculateMaxHour(candles: Candle[], lastPrice?: number): number | null {

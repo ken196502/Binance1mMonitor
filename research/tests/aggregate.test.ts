@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { aggregate1mTo5m, update5mFrom1m, calculateMaxHour, FIVE_MIN_MS, ONE_HOUR_MS, type Candle } from '../../src/macd.ts';
+import { aggregate1mTo5m, update5mFrom1m, calculateMaxHour, calculateHourFirstClose, calculateHourFirstLow, FIVE_MIN_MS, ONE_HOUR_MS, type Candle } from '../../src/macd.ts';
 
 test('aggregate1mTo5m aggregates 1m candles into 5m buckets correctly', () => {
   const baseTime = 1700000000000 - (1700000000000 % FIVE_MIN_MS); // aligned to 5m
@@ -90,4 +90,38 @@ test('calculateMaxHour returns null on empty candles and calculates highest pric
 
   // 3. 提供 lastPrice 高于 K 线最高价（盘中新高）时，取该 lastPrice
   assert.equal(calculateMaxHour(candles, 125), 125);
+});
+
+test('calculateHourFirstClose returns null on empty candles and calculates first minute close from recent hour start', () => {
+  assert.equal(calculateHourFirstClose([]), null);
+
+  const baseHour = 1700000000000 - (1700000000000 % ONE_HOUR_MS); // 整点 (xx:00)
+  const prevHourTime = baseHour - 60000; // 上一小时最后一分钟 (xx-1:59)
+
+  const candles: Candle[] = [
+    { time: prevHourTime, open: 200, high: 250, low: 190, close: 200, volume: 10 },
+    { time: baseHour, open: 100, high: 105, low: 98, close: 102, volume: 10 }, // 第一分钟收盘价为 102
+    { time: baseHour + 60000, open: 102, high: 120, low: 100, close: 110, volume: 15 },
+    { time: baseHour + 120000, open: 110, high: 115, low: 105, close: 108, volume: 20 },
+  ];
+
+  // 最近整点第一分钟的收盘价应为 102
+  assert.equal(calculateHourFirstClose(candles), 102);
+});
+
+test('calculateHourFirstLow returns null on empty candles and calculates first minute low from recent hour start', () => {
+  assert.equal(calculateHourFirstLow([]), null);
+
+  const baseHour = 1700000000000 - (1700000000000 % ONE_HOUR_MS); // 整点 (xx:00)
+  const prevHourTime = baseHour - 60000; // 上一小时最后一分钟 (xx-1:59)
+
+  const candles: Candle[] = [
+    { time: prevHourTime, open: 200, high: 250, low: 80, close: 200, volume: 10 }, // 上一小时 low=80 应被忽略
+    { time: baseHour, open: 100, high: 105, low: 98, close: 102, volume: 10 }, // 第一分钟最低价为 98
+    { time: baseHour + 60000, open: 102, high: 120, low: 95, close: 110, volume: 15 },
+    { time: baseHour + 120000, open: 110, high: 115, low: 92, close: 108, volume: 20 },
+  ];
+
+  // 最近整点第一分钟的最低价应为 98 (排除后几分钟更低的 95/92 及上一小时的 80)
+  assert.equal(calculateHourFirstLow(candles), 98);
 });

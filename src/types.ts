@@ -32,6 +32,8 @@ export interface Row extends Ticker24h {
   isPinned?: boolean; // 是否置顶
   max1500?: number | null; // 近1500根1m K线的最高价
   maxHour?: number | null; // 最近一个整点到当前的最高价
+  hourFirstClose?: number | null; // 最近一个整点第一分钟的收盘价
+  hourFirstLow?: number | null; // 最近一个整点第一分钟的最低价
 }
 
 export interface AlertSymbolItem {

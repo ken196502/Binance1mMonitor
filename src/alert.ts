@@ -1,8 +1,8 @@
-// "无支撑 + 5m DIFF中 + (1m中+连阳 / 1m低+连阴) + 现价<近1500根最高价*0.96 + 现价<整点最高价*0.99" 监控告警
+// "无支撑 + 5m DIFF中 + (1m中+连阳 / 1m低+连阴) + 现价<近1500根最高价*0.96 + 现价<整点第一分钟最低*0.9" 监控告警
 //
 // 判定规则（必须同时满足以下所有条件）：
 //   1. 现价必须严格小于近 1500 根最高价的 96%（row.lastPrice < row.max1500 * 0.96）
-//   2. 现价必须严格小于最近一个整点到当前的最高价的 99%（row.lastPrice < row.maxHour * 0.99）
+//   2. 现价必须严格小于最近一个整点第一分钟的最低价的 90%（row.lastPrice < row.hourFirstLow * 0.9）
 //   3. 无支撑 (!row.supportMa)
 //   4. 5m DIFF为中 (diff5mLevel === 'mid')
 //   5. 非置顶币种需满足 60D 涨幅 > 0 (row.change60d === 'up')
@@ -106,7 +106,7 @@ export function formatAlertMessage(params: {
 }): string {
   const { min, boards, pinned } = params;
 
-  const header = `🚨 <b>无支撑 + 5m DIFF中 + (1m中+连阳 / 1m低+连阴) 告警</b>（现价&lt;1500根高点96% | 现价&lt;整点高点99% | 触发阈值 ≥ ${min}）`;
+  const header = `🚨 <b>无支撑 + 5m DIFF中 + (1m中+连阳 / 1m低+连阴) 告警</b>（现价&lt;1500根高点96% | 现价&lt;整点第一分钟最低90% | 触发阈值 ≥ ${min}）`;
   const dashboardUrl = getDashboardUrl();
 
   let pinnedBlock = "";
