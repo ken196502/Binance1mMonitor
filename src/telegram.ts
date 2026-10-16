@@ -14,6 +14,14 @@ export function telegramConfigured(): boolean {
   return token.trim() !== "" && chatId.trim() !== "";
 }
 
+/** 转义 HTML 特殊字符，避免 Telegram HTML parse 报错 */
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 /** One-shot sendMessage. Never throws — failures come back as { ok:false, error }. */
 export async function sendTelegramMessage(text: string): Promise<TelegramSendResult> {
   const apiBase = process.env.TELEGRAM_API_BASE ?? "https://api.telegram.org";

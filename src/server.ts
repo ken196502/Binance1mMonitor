@@ -11,6 +11,8 @@ import {
   fetchWeeklyOpen,
   fetch60dTrend,
   getBackoffStatus,
+  is429Active,
+  waitForBackoffClear,
   onAnomalyRecovered,
   type Ticker24h,
   type TickerTops,
@@ -21,6 +23,7 @@ import {
   consecutiveStreak,
   calculateSupportMa,
   update5mFrom1m,
+  calculateMaxHour,
   type Candle,
 } from "./macd.ts";
 import { TelegramAlerter } from "./alert.ts";
@@ -109,13 +112,30 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
     const needRestKline = isFirstRun || symCache.candles1m.length < 35;
     const fetchLimit = isFirstRun ? KLINE_INIT_LIMIT : KLINE_LIMIT;
 
-    const [candles1mRes, weekOpen, change60d] = await Promise.all([
-      needRestKline
-        ? fetch1mCandles(t.symbol, fetchLimit).catch(() => [] as Candle[])
-        : Promise.resolve([] as Candle[]),
-      fetchWeeklyOpen(t.symbol),
-      fetch60dTrend(t.symbol),
-    ]);
+    let candles1mRes: Candle[] = [];
+    if (needRestKline) {
+      if (getBackoffStatus().active) {
+        throw new Error(`Binance 限频中 (${getBackoffStatus().reason})，停止拉取 ${t.symbol} K线`);
+      }
+      try {
+        candles1mRes = await fetch1mCandles(t.symbol, fetchLimit);
+      } catch (err) {
+        if (getBackoffStatus().active) {
+          throw err;
+        }
+        console.warn(`[binance] 拉取 ${t.symbol} 1m K线失败:`, (err as any)?.message ?? err);
+      }
+    }
+
+    // 周K与60日趋势：按需串行拉取，处于避让期时绝不发起请求，彻底防止并发冲刺触发 418
+    let weekOpen: number | null = null;
+    let change60d: "up" | "down" | null = null;
+    if (!getBackoffStatus().active) {
+      weekOpen = await fetchWeeklyOpen(t.symbol).catch(() => null);
+    }
+    if (!getBackoffStatus().active) {
+      change60d = await fetch60dTrend(t.symbol).catch(() => null);
+    }
 
     // 1m 保存：每次更新保存，若偶发网络异常则回退使用已保存的 1m 序列
     if (candles1mRes.length > 0) {
@@ -179,6 +199,9 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       }
     }
 
+    // 计算最近一个整点到当前的最高价
+    const maxHour = calculateMaxHour(candles, t.lastPrice);
+
     return {
       ...t,
       state: sig?.state ?? "n/a",
@@ -199,6 +222,7 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       streakCount: streak.count,
       streakDir: streak.direction,
       max1500,
+      maxHour,
     };
   } catch (e) {
     if (getBackoffStatus().active) {
@@ -224,6 +248,7 @@ async function fetchRowData(t: Ticker24h): Promise<Row> {
       streakCount: 0,
       streakDir: null,
       max1500: null,
+      maxHour: null,
     };
   }
 }
@@ -241,9 +266,13 @@ export function resetSnapshotForTest(): void {
 }
 
 /**
- * 对涨跌幅榜、置顶币种及跌出前十币种做全局去重，避免相同币种重复向币安发起 K 线请求。
+ * 优先级与两阶段同步设计：
+ * 1. 确保涨幅榜获取完成 K 线同步（包含置顶标的 BTC/SOL 与 24h 涨幅榜标的）；
+ * 2. 如果检测到 429 就立即停止 K 线同步，并立即开始 WebSocket 订阅已同步标的；
+ * 3. 等到没 429 了（冷静期结束），才继续同步跌幅榜；
+ * 4. 跌幅榜同步完成后，再重新订阅全部标的。
  */
-async function buildBoards(
+export async function buildBoards(
   tops: TickerTops,
   pinnedTickers: Ticker24h[] = [],
   droppedGainerTickers: Ticker24h[] = [],
@@ -255,62 +284,123 @@ async function buildBoards(
   droppedGainers: Row[];
   droppedLosers: Row[];
 }> {
-  // 优先级队列设计：
-  // 1. 置顶标的 (BTC/SOL) 最高优
-  // 2. 24h 涨幅榜标的 (Gainers) 其次（优先保证涨幅榜数据完整与展示）
-  // 3. 24h 跌幅榜标的 (Losers)
-  // 4. 掉出榜单标的 (Dropped) 最低优
-  const uniqueTickers = new Map<string, Ticker24h>();
-  const addTickers = (list: Ticker24h[]) => {
-    for (const t of list) {
-      if (!uniqueTickers.has(t.symbol)) {
-        uniqueTickers.set(t.symbol, t);
+  // 分组策略：
+  // 1. 涨幅榜组：置顶标的 (BTC/SOL) + 24h 涨幅榜标的 (Gainers) + 掉出涨幅榜标的 (droppedGainers)
+  // 2. 跌幅榜组：24h 跌幅榜标的 (Losers) + 掉出跌幅榜标的 (droppedLosers)
+  const gainerMap = new Map<string, Ticker24h>();
+  for (const t of [...pinnedTickers, ...tops.gainers, ...droppedGainerTickers]) {
+    if (!gainerMap.has(t.symbol)) {
+      gainerMap.set(t.symbol, t);
+    }
+  }
+
+  const loserMap = new Map<string, Ticker24h>();
+  for (const t of [...tops.losers, ...droppedLoserTickers]) {
+    if (!gainerMap.has(t.symbol) && !loserMap.has(t.symbol)) {
+      loserMap.set(t.symbol, t);
+    }
+  }
+
+  const gainersQueue = Array.from(gainerMap.values());
+  const losersQueue = Array.from(loserMap.values());
+
+  const resultMap = new Map<string, Row>();
+  const syncedSymbols = new Set<string>();
+
+  // 阶段 1：先确保涨幅榜获取完成 K 线同步
+  let gainer429Detected = false;
+  for (let i = 0; i < gainersQueue.length; i++) {
+    const item = gainersQueue[i];
+    if (getBackoffStatus().active) {
+      console.warn(`[binance] 429 限频生效，立即停止涨幅榜 K 线同步 (已完成 ${resultMap.size}/${gainersQueue.length})`);
+      gainer429Detected = true;
+      break;
+    }
+    try {
+      const row = await fetchRowData(item);
+      resultMap.set(item.symbol, row);
+      syncedSymbols.add(item.symbol);
+    } catch (e) {
+      if (getBackoffStatus().active) {
+        console.warn(`[binance] 同步涨幅榜标的 ${item.symbol} 时检测到 429/限频，立即停止同步: ${(e as any)?.message ?? e}`);
+        gainer429Detected = true;
+        break;
       }
     }
-  };
 
-  addTickers(pinnedTickers);
-  addTickers(tops.gainers);
-  addTickers(tops.losers);
-  addTickers(droppedGainerTickers);
-  addTickers(droppedLoserTickers);
-
-  const gainerSymbolSet = new Set([
-    ...pinnedTickers.map((t) => t.symbol),
-    ...tops.gainers.map((t) => t.symbol),
-  ]);
-
-  const queue = Array.from(uniqueTickers.values());
-  const resultMap = new Map<string, Row>();
-
-  // 严格串行单队列处理 + 动态平滑延时（防 WAF 瞬时频控 418）
-  // 优先保证涨幅榜：如果涨幅榜已经完成，而当前已用权重已偏高（>=1500），主动跳过跌幅榜/掉榜币，避免冲刺被 418/429 封禁
-  while (queue.length) {
-    if (getBackoffStatus().active) break;
-    const item = queue.shift()!;
-
-    // 优先策略：如果不是置顶或涨幅榜标的，且权重已接近警戒线（>= 1500），柔性放弃拉取低优标的以保全涨幅榜
-    if (!gainerSymbolSet.has(item.symbol) && getBackoffStatus().usedWeight1m >= 1500) {
-      console.warn(`[binance] ⚠️ 当前权重(${getBackoffStatus().usedWeight1m}/2400)偏高，跳过低优标的 ${item.symbol}，优先保全涨幅榜`);
-      continue;
-    }
-
-    const row = await fetchRowData(item);
-    resultMap.set(item.symbol, row);
-
-    if (queue.length > 0) {
-      // 根据当前权重动态控制请求间隔：平缓打散请求，彻底消除瞬时并发突发导致的 418
+    if (i < gainersQueue.length - 1 && !getBackoffStatus().active) {
       const used = getBackoffStatus().usedWeight1m;
       const delay = used >= 1600 ? 500 : used >= 1000 ? 300 : 200;
       await new Promise((r) => setTimeout(r, delay));
     }
   }
 
-  // 若处于避让期但涨幅榜已成功拉取，允许展示已有涨幅榜，不直接整页抛错崩溃
-  const hasGainers = tops.gainers.some((t) => resultMap.has(t.symbol));
-  if (getBackoffStatus().active && !hasGainers) {
-    throw new Error(getBackoffStatus().reason || "Binance 触发限频/封禁");
+  // 阶段 2：如果检测到 429 就停止，开始订阅当前已同步标的
+  if (syncedSymbols.size > 0) {
+    wsManager.setSymbols(Array.from(syncedSymbols));
+    console.log(`[binance-ws] 已订阅当前已同步标的 (${syncedSymbols.size} 个): ${Array.from(syncedSymbols).join(", ")}`);
   }
+
+  // 如果检测到 429，严格等待冷静期结束（等到没 429 了）
+  if (gainer429Detected || getBackoffStatus().active) {
+    console.warn(`[binance] 触发 429 限频保护，暂停 REST 请求，保持 WebSocket 实时订阅，等待冷静期结束...`);
+    await waitForBackoffClear();
+    console.log(`[binance] 429 限频已解除，检查并补全涨幅榜未完成标的...`);
+
+    // 如果涨幅榜还有未完成的标的，优先确保涨幅榜全部完成
+    for (const item of gainersQueue) {
+      if (resultMap.has(item.symbol)) continue;
+      if (getBackoffStatus().active) {
+        await waitForBackoffClear();
+      }
+      try {
+        const row = await fetchRowData(item);
+        resultMap.set(item.symbol, row);
+        syncedSymbols.add(item.symbol);
+        wsManager.setSymbols(Array.from(syncedSymbols));
+      } catch (e) {
+        console.warn(`[binance] 补齐涨幅榜标的 ${item.symbol} 失败:`, (e as any)?.message ?? e);
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+
+  // 阶段 3：等到没 429 了，才同步跌幅榜
+  for (let i = 0; i < losersQueue.length; i++) {
+    const item = losersQueue[i];
+    if (resultMap.has(item.symbol)) continue;
+
+    if (getBackoffStatus().active) {
+      console.warn(`[binance] 同步跌幅榜期间检测到 429 限频，暂停并等待冷静期结束...`);
+      await waitForBackoffClear();
+    }
+
+    try {
+      const row = await fetchRowData(item);
+      resultMap.set(item.symbol, row);
+      syncedSymbols.add(item.symbol);
+    } catch (e) {
+      if (getBackoffStatus().active) {
+        console.warn(`[binance] 同步跌幅榜标的 ${item.symbol} 遇到限频，等待冷静期解除: ${(e as any)?.message ?? e}`);
+        await waitForBackoffClear();
+      }
+    }
+
+    if (i < losersQueue.length - 1 && !getBackoffStatus().active) {
+      const used = getBackoffStatus().usedWeight1m;
+      const delay = used >= 1600 ? 500 : used >= 1000 ? 300 : 200;
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+
+  // 阶段 4：跌幅榜同步完成，重新订阅全部
+  const allSymbols = [
+    ...pinnedTickers.map((t) => t.symbol),
+    ...tops.gainers.map((t) => t.symbol),
+    ...tops.losers.map((t) => t.symbol),
+  ];
+  wsManager.setSymbols(allSymbols);
+  console.log(`[binance-ws] 全部标的同步完毕，重新订阅全部标的 (${allSymbols.length} 个)`);
 
   // 对于未拉取到的标的，使用 fallback 默认空行填充，确保前端不报错且涨幅榜正常展示
   const getRowOrFallback = (t: Ticker24h): Row => {
@@ -335,6 +425,7 @@ async function buildBoards(
         streakCount: 0,
         streakDir: null,
         max1500: null,
+        maxHour: null,
       }
     );
   };
@@ -447,23 +538,37 @@ async function refresh(): Promise<Status> {
   };
 }
 
+let lastKnownStatus: Status | null = null;
+
 async function getStatus(): Promise<Status> {
   const now = Date.now();
   if (cache && now - cache.at < REFRESH_TTL_MS) return cache.promise;
-  const promise = refresh().catch((e: unknown): Status => {
-    const errorMsg = e instanceof Error ? e.message : String(e);
-    return {
-      at: new Date().toISOString(),
-      base: process.env.BINANCE_BASE ?? "https://fapi.binance.com",
-      topN: TOP_N,
-      highRatio: HIGH_RATIO,
-      highWindow: HIGH_WINDOW,
-      gainers: [],
-      losers: [],
-      volume: [],
-      error: errorMsg,
-    };
-  });
+  const promise = refresh()
+    .then((status) => {
+      lastKnownStatus = status;
+      return status;
+    })
+    .catch((e: unknown): Status => {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      if (lastKnownStatus) {
+        return {
+          ...lastKnownStatus,
+          at: new Date().toISOString(),
+          error: errorMsg,
+        };
+      }
+      return {
+        at: new Date().toISOString(),
+        base: process.env.BINANCE_BASE ?? "https://fapi.binance.com",
+        topN: TOP_N,
+        highRatio: HIGH_RATIO,
+        highWindow: HIGH_WINDOW,
+        gainers: [],
+        losers: [],
+        volume: [],
+        error: errorMsg,
+      };
+    });
   cache = { at: now, promise };
   return promise;
 }
@@ -584,18 +689,28 @@ const server = http.createServer(async (req, res) => {
   res.end(html);
 });
 
-server.listen(PORT, () => {
-  const proxy = process.env.PROXY ?? process.env.BINANCE_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? "(direct)";
-  console.log(`Binance 1m MACD monitor (u本位合约) → http://localhost:${PORT}`);
-  console.log(
-    `base=${process.env.BINANCE_BASE ?? "https://fapi.binance.com"}  proxy=${proxy}  topN=${TOP_N}  ttl=${REFRESH_TTL_MS}ms  highRatio=${HIGH_RATIO}  highWindow=${HIGH_WINDOW}m`,
-  );
-  console.log(`前端: 开发用 \`npm run dev\`（Vite 开 :5173）；生产先 \`npm run build\` 再 \`npm start\`，由后端托管 web/dist`);
-  console.log(
-    `Telegram: ${telegramConfigured() ? "已配置" : "未配置（TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 缺失，命中不会推送）"}  阈值 TG_ALERT_MIN=${process.env.TG_ALERT_MIN ?? 3}  恢复通知 TG_SEND_RECOVERY=${process.env.TG_SEND_RECOVERY ?? "true"}`,
-  );
+const isMainModule =
+  process.argv[1] &&
+  (process.argv[1].endsWith("/server.ts") || process.argv[1].endsWith("/server.js") || process.argv[1].endsWith("src/server.ts")) &&
+  process.env.NODE_ENV !== "test" &&
+  !process.env.NODE_TEST_CONTEXT;
 
-  // 启动后台定时轮询检测
-  pollLoop();
-  setInterval(pollLoop, REFRESH_TTL_MS);
-});
+if (isMainModule) {
+  server.listen(PORT, () => {
+    const proxy = process.env.PROXY ?? process.env.BINANCE_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? "(direct)";
+    console.log(`Binance 1m MACD monitor (u本位合约) → http://localhost:${PORT}`);
+    console.log(
+      `base=${process.env.BINANCE_BASE ?? "https://fapi.binance.com"}  proxy=${proxy}  topN=${TOP_N}  ttl=${REFRESH_TTL_MS}ms  highRatio=${HIGH_RATIO}  highWindow=${HIGH_WINDOW}m`,
+    );
+    console.log(`前端: 开发用 \`npm run dev\`（Vite 开 :5173）；生产先 \`npm run build\` 再 \`npm start\`，由后端托管 web/dist`);
+    console.log(
+      `Telegram: ${telegramConfigured() ? "已配置" : "未配置（TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 缺失，命中不会推送）"}  阈值 TG_ALERT_MIN=${process.env.TG_ALERT_MIN ?? 3}  恢复通知 TG_SEND_RECOVERY=${process.env.TG_SEND_RECOVERY ?? "true"}`,
+    );
+
+    // 启动后台定时轮询检测
+    pollLoop();
+    setInterval(pollLoop, REFRESH_TTL_MS);
+  });
+}
+
+export { server };

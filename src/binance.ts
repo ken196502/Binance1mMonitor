@@ -20,7 +20,7 @@ import {
   type Response as UndiciResponse,
 } from "undici";
 import type { Candle } from "./macd.ts";
-import { sendTelegramMessage, telegramConfigured } from "./telegram.ts";
+import { sendTelegramMessage, telegramConfigured, escapeHtml } from "./telegram.ts";
 
 // Proxy routing for Binance requests:
 export const PROXY =
@@ -91,6 +91,7 @@ function isNetworkError(e: unknown): boolean {
 let backoffUntil = 0;
 let backoffReason = "";
 let lastUsedWeight1m = 0;
+let lastHttpStatus = 200;
 
 /** 记录异常状态（418 / 451）是否已经告警过，避免每分钟检测到同样错误重复告警 */
 const statusAlerted = new Map<number, boolean>();
@@ -121,6 +122,30 @@ export function setBackoffUntilForTest(ts: number): void {
   backoffUntil = ts;
 }
 
+/**
+ * 格式化币安封禁时间戳。
+ * 币安返回的时间戳通常为 10 位秒级 Unix 时间戳（如 1729000000），直接传入 new Date 会被误作为毫秒而显示为 1970 年。
+ * 此处自动兼容秒级（<1e11）与毫秒级（>=1e11）时间戳，转为东八区北京时间。
+ */
+export function formatBannedUntil(msg: string): string {
+  return msg.replace(/\bbanned until (\d{10,13})\b/i, (match, digits) => {
+    const rawTs = Number(digits);
+    if (!Number.isFinite(rawTs) || rawTs <= 0) return match;
+    const untilMs = rawTs < 1e11 ? rawTs * 1000 : rawTs;
+    const dateStr = new Date(untilMs).toLocaleString("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    return `banned until ${dateStr} (${digits})`;
+  });
+}
+
 /** 触发 451 或 418 异常时做一次 TG 告警（已告警则不重复告警） */
 export async function notifyStatusAnomaly(status: number, detail: string): Promise<void> {
   if (statusAlerted.get(status)) {
@@ -136,17 +161,18 @@ export async function notifyStatusAnomaly(status: number, detail: string): Promi
         : `异常状态 ${status}`;
 
   const timeStr = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  const formattedDetail = formatBannedUntil(detail);
   const text = [
     `🚨 <b>Binance 接口异常告警 (HTTP ${status})</b>`,
     "",
     `• <b>状态说明</b>: ${statusName}`,
     `• <b>发生时间</b>: ${timeStr}`,
-    `• <b>详细信息</b>: <code>${detail.slice(0, 300)}</code>`,
+    `• <b>详细信息</b>: <code>${escapeHtml(formattedDetail.slice(0, 300))}</code>`,
     "",
     `⚠️ <i>同类异常已记录，持续遇到该错误不会重复刷屏。</i>`,
   ].join("\n");
 
-  console.error(`[binance-alert] 触发异常状态 ${status} 告警: ${detail}`);
+  console.error(`[binance-alert] 触发异常状态 ${status} 告警: ${formattedDetail}`);
   if (telegramConfigured()) {
     const res = await sendTelegramMessage(text);
     if (!res.ok) {
@@ -159,17 +185,44 @@ export async function notifyStatusAnomaly(status: number, detail: string): Promi
 // 设定主动避让阈值（默认 1800，预留 600 安全缓冲区）。当已用权重 >= 阈值时主动暂停请求直至下一分钟窗口重置。
 const PROACTIVE_BACKOFF_WEIGHT = Number(process.env.PROACTIVE_BACKOFF_WEIGHT ?? 1800);
 
+export function is429Active(): boolean {
+  const active = Date.now() < backoffUntil;
+  return active && (lastHttpStatus === 429 || backoffReason.includes("429"));
+}
+
+export function getLastHttpStatus(): number {
+  return lastHttpStatus;
+}
+
+export function setLastHttpStatusForTest(status: number): void {
+  lastHttpStatus = status;
+}
+
+export async function waitForBackoffClear(maxWaitMs = 120_000): Promise<boolean> {
+  const now = Date.now();
+  if (now >= backoffUntil) return true;
+  const waitMs = Math.min(Math.max(10, backoffUntil - now + 500), maxWaitMs);
+  console.log(`[binance] 等待避让/限频冷静期结束，等待 ${Math.ceil(waitMs / 1000)} 秒...`);
+  await new Promise((r) => setTimeout(r, waitMs));
+  return Date.now() >= backoffUntil;
+}
+
 export function getBackoffStatus(): {
   active: boolean;
   backoffUntil: number;
   reason: string;
   usedWeight1m: number;
+  is429: boolean;
+  lastHttpStatus: number;
 } {
+  const active = Date.now() < backoffUntil;
   return {
-    active: Date.now() < backoffUntil,
+    active,
     backoffUntil,
     reason: backoffReason,
     usedWeight1m: lastUsedWeight1m,
+    is429: active && (lastHttpStatus === 429 || backoffReason.includes("429")),
+    lastHttpStatus,
   };
 }
 
@@ -177,6 +230,7 @@ export function resetBackoffForTest(): void {
   backoffUntil = 0;
   backoffReason = "";
   lastUsedWeight1m = 0;
+  lastHttpStatus = 200;
   statusAlerted.clear();
 }
 
@@ -232,6 +286,7 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
 
   // 2. 被动兜底：若仍收到 418/429/451，严格按照币安给出的冷静时间强制避让并触发告警
   if (r.status === 418 || r.status === 429 || r.status === 451) {
+    lastHttpStatus = r.status;
     const retryAfter = Number(r.headers.get("retry-after") ?? 60);
     let waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60;
     let detailMsg = `HTTP ${r.status}`;
@@ -241,25 +296,14 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
         const originalMsg = errBody.msg;
         const match = /banned until (\d+)/i.exec(originalMsg);
         if (match) {
-          const untilTs = Number(match[1]);
-          if (untilTs > Date.now()) {
-            waitSec = Math.ceil((untilTs - Date.now()) / 1000);
+          const rawTs = Number(match[1]);
+          if (Number.isFinite(rawTs) && rawTs > 0) {
+            const untilMs = rawTs < 1e11 ? rawTs * 1000 : rawTs;
+            if (untilMs > Date.now()) {
+              waitSec = Math.ceil((untilMs - Date.now()) / 1000);
+            }
           }
-          // 将时间戳转换为可读格式用于告警
-          const bannedUntilDate = new Date(untilTs).toLocaleString("zh-CN", {
-            timeZone: "Asia/Shanghai",
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            hour12: false,
-          });
-          detailMsg = originalMsg.replace(
-            match[0],
-            `banned until ${bannedUntilDate} (${match[1]})`
-          );
+          detailMsg = formatBannedUntil(originalMsg);
         } else {
           detailMsg = originalMsg;
         }
@@ -283,13 +327,16 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
   }
 
   // 3. 正常响应时（r.ok）：若此前曾记录过 418 / 451 异常告警状态，说明已解封恢复，清空告警状态并触发恢复通知
-  if (r.ok && statusAlerted.size > 0) {
-    console.info(`[binance] 接口已解封恢复正常 (HTTP ${r.status})，清空 418/451 告警标记并重置 K 线冷启动状态`);
-    statusAlerted.clear();
-    try {
-      anomalyRecoveryListener?.();
-    } catch (err) {
-      console.warn(`[binance] 异常恢复回调执行出错:`, err);
+  if (r.ok) {
+    lastHttpStatus = r.status;
+    if (statusAlerted.size > 0) {
+      console.info(`[binance] 接口已解封恢复正常 (HTTP ${r.status})，清空 418/451 告警标记并重置 K 线冷启动状态`);
+      statusAlerted.clear();
+      try {
+        anomalyRecoveryListener?.();
+      } catch (err) {
+        console.warn(`[binance] 异常恢复回调执行出错:`, err);
+      }
     }
   }
 
@@ -308,6 +355,15 @@ export async function getCryptoPerpSymbols(): Promise<Set<string>> {
   if (cachedCryptoSymbols && now < cryptoSymbolsExpiresAt) {
     return cachedCryptoSymbols;
   }
+  // 1. 若当前处于 418/429 避让冷静期，只要已有缓存，坚决沿用已有缓存，绝不发 REST 请求
+  if (cachedCryptoSymbols && getBackoffStatus().active) {
+    return cachedCryptoSymbols;
+  }
+  // 2. 跨日避峰：在 UTC 00:00 结算窗口且已有缓存时，避免发起 exchangeInfo 请求
+  if (cachedCryptoSymbols && isUtcMidnightPeak(now)) {
+    return cachedCryptoSymbols;
+  }
+
   try {
     const r = await binanceFetch(`/fapi/v1/exchangeInfo`);
     if (r.ok) {
@@ -325,14 +381,20 @@ export async function getCryptoPerpSymbols(): Promise<Set<string>> {
         }
         if (set.size > 0) {
           cachedCryptoSymbols = set;
-          cryptoSymbolsExpiresAt = now + 60 * 60 * 1000; // 缓存 1 小时
-          console.log(`[binance] 成功更新纯 Crypto 永续合约白名单，共 ${set.size} 个标的（已排除美股/ETF等 TradFi 合约）`);
+          // 缓存 1 小时，外加 0~15 分钟随机抖动，避免每次在整整一小时同一秒固定过期造成与新进榜冷启动重叠
+          const jitter = Math.floor(Math.random() * 15 * 60 * 1000);
+          cryptoSymbolsExpiresAt = now + 60 * 60 * 1000 + jitter;
+          console.log(`[binance] 成功更新纯 Crypto 永续合约白名单，共 ${set.size} 个标的（已排除美股/ETF等 TradFi 合约，缓存至 ${new Date(cryptoSymbolsExpiresAt).toLocaleTimeString()}）`);
           return set;
         }
       }
     }
   } catch (e) {
     console.warn(`[binance] 获取 exchangeInfo 失败，回退使用已有缓存或基础过滤:`, (e as any)?.message ?? e);
+    // 失败后顺延 5 分钟重试，避免死循环高频重试
+    if (cachedCryptoSymbols) {
+      cryptoSymbolsExpiresAt = now + 5 * 60 * 1000;
+    }
   }
 
   return cachedCryptoSymbols ?? new Set<string>();
@@ -344,11 +406,9 @@ export function setCachedCryptoSymbolsForTest(symbols: Set<string> | null): void
 }
 
 export async function fetch24hTickers(): Promise<Ticker24h[]> {
-  const [r, cryptoSymbols] = await Promise.all([
-    binanceFetch(`/fapi/v1/ticker/24hr`),
-    getCryptoPerpSymbols(),
-  ]);
+  const r = await binanceFetch(`/fapi/v1/ticker/24hr`);
   if (!r.ok) throw new Error(`24hr ticker failed: HTTP ${r.status}`);
+  const cryptoSymbols = await getCryptoPerpSymbols();
   const data = (await r.json()) as any[];
   return data
     .filter((d) => {
@@ -405,7 +465,7 @@ export async function fetch15mCandles(symbol: string, limit = 100): Promise<Cand
   return fetchCandles(symbol, "15m", limit);
 }
 
-const weeklyOpenCache = new Map<string, { open: number; closeTime: number }>();
+const weeklyOpenCache = new Map<string, { open: number; closeTime: number; retryAfter?: number }>();
 
 /** 获取当前周 K 线的开盘价（按周缓存直至该根周 K 收盘，开盘价全周不变） */
 export async function fetchWeeklyOpen(symbol: string): Promise<number | null> {
@@ -414,20 +474,32 @@ export async function fetchWeeklyOpen(symbol: string): Promise<number | null> {
   if (cached && now < cached.closeTime) {
     return cached.open;
   }
+  if (cached?.retryAfter && now < cached.retryAfter) {
+    return cached.open;
+  }
   // 跨日避峰：在 UTC 00:00 结算窗口且已有缓存时，避免发起周K请求
   if (cached && isUtcMidnightPeak(now)) {
     return cached.open;
   }
   try {
     const r = await binanceFetch(`/fapi/v1/klines?symbol=${symbol}&interval=1w&limit=1`);
-    if (!r.ok) return cached ? cached.open : null;
+    if (!r.ok) {
+      if (cached) weeklyOpenCache.set(symbol, { ...cached, retryAfter: now + 5 * 60 * 1000 });
+      return cached ? cached.open : null;
+    }
     const data = (await r.json()) as any[];
-    if (!data || data.length === 0) return null;
+    if (!data || data.length === 0) {
+      if (cached) weeklyOpenCache.set(symbol, { ...cached, retryAfter: now + 5 * 60 * 1000 });
+      return cached ? cached.open : null;
+    }
     const open = parseFloat(data[0][1]);
     const closeTime = Number(data[0][6]);
     weeklyOpenCache.set(symbol, { open, closeTime });
     return open;
   } catch {
+    if (cached) {
+      weeklyOpenCache.set(symbol, { ...cached, retryAfter: now + 5 * 60 * 1000 });
+    }
     return cached ? cached.open : null;
   }
 }

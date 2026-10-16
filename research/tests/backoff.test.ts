@@ -79,6 +79,20 @@ test('HTTP 418 and 451 record alert state once and deduplicate subsequent occurr
   assert.equal(alertedMap.has(451), false);
 });
 
+test('formatBannedUntil correctly formats both 10-digit (seconds) and 13-digit (ms) timestamps without 1970', async () => {
+  const { formatBannedUntil } = await import('../../src/binance.ts');
+
+  // 10-digit seconds: 1700000000 -> 2023-11-15 (UTC+8)
+  const formatted10 = formatBannedUntil('IP banned until 1700000000');
+  assert.doesNotMatch(formatted10, /1970/);
+  assert.match(formatted10, /2023/);
+
+  // 13-digit milliseconds: 1700000000000 -> 2023-11-15 (UTC+8)
+  const formatted13 = formatBannedUntil('IP banned until 1700000000000');
+  assert.doesNotMatch(formatted13, /1970/);
+  assert.match(formatted13, /2023/);
+});
+
 test('HTTP 418/451 alerted status is cleared when request succeeds (解封)', async () => {
   const { getStatusAlertedForTest, setBackoffUntilForTest, fetch24hTickers } = await import('../../src/binance.ts');
   resetBackoffForTest();

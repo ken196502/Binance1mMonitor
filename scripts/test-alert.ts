@@ -101,6 +101,7 @@ function row(
     diff15mLevel: diff5mLevel,
     change60d: "up",
     max1500: 100,
+    maxHour: 100,
     supportMa,
     streakCount,
     streakDir,
@@ -118,10 +119,10 @@ assert.equal(formatStreak(0, "up"), "");
 assert.equal(formatStreak(3, null), "");
 console.log("0. formatStreak 阳阴连数文案 (≥2 才展示) ✓");
 
-// --- 1. pickHighBull: filter !supportMa && ((1m=mid && streak=up) || (1m=low && streak=down)) && 5m=mid && lastPrice < max1500 * 0.96
+// --- 1. pickHighBull: filter !supportMa && ((1m=mid && streak=up) || (1m=low && streak=down)) && 5m=mid && lastPrice < max1500 * 0.96 && lastPrice < maxHour * 0.99
 const testList = [
-  row("MATCH_MID_UP", 4, "up", "mid", "mid", null),     // match: no support, 1m mid, 5m mid, 4连阳, price 90 < 100*0.96
-  row("MATCH_LOW_DOWN", 2, "down", "low", "mid", null), // match: no support, 1m low, 5m mid, 2连阴, price 90 < 100*0.96
+  row("MATCH_MID_UP", 4, "up", "mid", "mid", null),     // match: no support, 1m mid, 5m mid, 4连阳, price 90 < 100*0.96 && 90 < 100*0.99
+  row("MATCH_LOW_DOWN", 2, "down", "low", "mid", null), // match: no support, 1m low, 5m mid, 2连阴, price 90 < 100*0.96 && 90 < 100*0.99
   row("MISMATCH_MID_DOWN", 3, "down", "mid", "mid", null), // no: 1m mid but 连阴
   row("MISMATCH_LOW_UP", 3, "up", "low", "mid", null),     // no: 1m low but 连阳
   row("STREAK_ONE_UP", 1, "up", "mid", "mid", null),       // no: 只有1根阳线，不算连
@@ -130,9 +131,12 @@ const testList = [
   row("DIFF1M_HIGH", 2, "up", "high", "mid", null),        // no: 1m is high
   row("DIFF5M_HIGH", 2, "up", "mid", "high", null),        // no: 5m is high
   row("DIFF5M_LOW", 2, "up", "mid", "low", null),          // no: 5m is low
-  { ...row("PRICE_TOO_HIGH", 2, "up", "mid", "mid", null), lastPrice: 97, max1500: 100 }, // no: 97 >= 100 * 0.96
-  { ...row("PRICE_EQUAL_HIGH", 2, "up", "mid", "mid", null), lastPrice: 96, max1500: 100 }, // no: 96 >= 100 * 0.96
-  { ...row("PRICE_NO_MAX1500", 2, "up", "mid", "mid", null), lastPrice: 90, max1500: null }, // no: no max1500
+  { ...row("PRICE_TOO_HIGH", 2, "up", "mid", "mid", null), lastPrice: 97, max1500: 100, maxHour: 100 }, // no: 97 >= 100 * 0.96
+  { ...row("PRICE_EQUAL_HIGH", 2, "up", "mid", "mid", null), lastPrice: 96, max1500: 100, maxHour: 100 }, // no: 96 >= 100 * 0.96
+  { ...row("PRICE_NO_MAX1500", 2, "up", "mid", "mid", null), lastPrice: 90, max1500: null, maxHour: 100 }, // no: no max1500
+  { ...row("PRICE_HOUR_TOO_HIGH", 2, "up", "mid", "mid", null), lastPrice: 95.5, max1500: 100, maxHour: 96 }, // no: 95.5 >= 96 * 0.99 (95.04)
+  { ...row("PRICE_HOUR_EQUAL_HIGH", 2, "up", "mid", "mid", null), lastPrice: 95.04, max1500: 100, maxHour: 96 }, // no: 95.04 >= 96 * 0.99
+  { ...row("PRICE_NO_MAXHOUR", 2, "up", "mid", "mid", null), lastPrice: 90, max1500: 100, maxHour: null }, // no: no maxHour
   row("MATCH_MID_UP", 4, "up", "mid", "mid", null),        // dupe
 ];
 assert.deepEqual(pickHighBull(testList), ["MATCH_MID_UP", "MATCH_LOW_DOWN"]);
@@ -142,7 +146,7 @@ assert.equal(items[0].symbol, "MATCH_MID_UP");
 assert.equal(items[0].streakCount, 4);
 assert.equal(items[0].streakDir, "up");
 assert.equal(items[1].symbol, "MATCH_LOW_DOWN");
-console.log("1. pickHighBull + pickHighBullItems filter (无支撑+1m中+5m中+连阳 或 无支撑+1m低+5m中+连阴 + 现价<max1500*0.96) + dedupe ✓");
+console.log("1. pickHighBull + pickHighBullItems filter (无支撑+1m中+5m中+连阳 或 无支撑+1m低+5m中+连阴 + 现价<max1500*0.96 + 现价<maxHour*0.99) + dedupe ✓");
 
 // --- 2. below threshold on both boards (< 3) → no alert ---------------------
 const a = new TelegramAlerter();
@@ -192,7 +196,7 @@ assert.deepEqual(res2.summary.gainers.symbols, ["ETHUSDT", "ADAUSDT", "DOTUSDT"]
 assert.equal(countOf(res2.sent), 1);
 assert.equal(received.length, 1);
 assert.match(received[0].text, /告警/);
-assert.match(received[0].text, /↑↑涨幅榜(24h)↑↑.*3/);
+assert.match(received[0].text, /↑↑涨幅榜\(24h\)↑↑.*3/);
 assert.doesNotMatch(received[0].text, /24h跌幅榜/);
 assert.doesNotMatch(received[0].text, /24h 成交额榜/);
 assert.match(received[0].text, /置顶标的/);
@@ -291,7 +295,7 @@ assert.equal(res7.summary.triggered, true);
 assert.equal(countOf(res7.sent), 1);
 assert.equal(received.length, 3);
 assert.match(received[2].text, /告警/);
-assert.match(received[2].text, /↘︎↘︎跌幅榜(24h)↘︎↘︎.*3/);
+assert.match(received[2].text, /↘︎↘︎跌幅榜\(24h\)↘︎↘︎.*3/);
 console.log("8. re-trigger after recovery on losers → alert sent ✓");
 
 // --- 9. clear & re-trigger with send failure → retries on next check ----------
@@ -313,7 +317,7 @@ const res9 = await a.check({
 });
 assert.equal(res9.sent?.ok, true); // succeeded!
 assert.equal(received.length, 4);
-assert.match(received[3].text, /↑↑涨幅榜(24h)↑↑.*3/);
+assert.match(received[3].text, /↑↑涨幅榜\(24h\)↑↑.*3/);
 console.log("9. failed send retries on subsequent check until delivered ✓");
 
 // --- 10. unconfigured telegram → explicit failure without crashing ------------

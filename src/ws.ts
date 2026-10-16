@@ -3,7 +3,7 @@
 // 从而使 1m MACD 与 DIFF 指标保持实时更新，无需定时高频 REST 轮询请求 K 线，将 REST API 权重消耗降到最低。
 
 import { WebSocket, ProxyAgent } from "undici";
-import { PROXY } from "./binance.ts";
+import { PROXY, getBackoffStatus, onAnomalyRecovered } from "./binance.ts";
 import type { Candle } from "./macd.ts";
 
 export interface TradeTick {
@@ -23,12 +23,27 @@ class BinanceWsManager {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private pingInterval: NodeJS.Timeout | null = null;
   private nextSubId = 1;
+  private isClosed = false;
+
+  constructor() {
+    onAnomalyRecovered(() => {
+      if (!this.isClosed && (!this.ws || this.ws.readyState !== 1)) {
+        console.info(`[binance-ws] 检测到接口已从异常中恢复，唤醒 WebSocket 重新连接`);
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.connect();
+      }
+    });
+  }
 
   public onTrade(listener: TradeListener): () => void {
     this.listeners.push(listener);
     return () => {
       this.listeners = this.listeners.filter((l) => l !== listener);
     };
+  }
+
+  public getSubscribedSymbols(): string[] {
+    return Array.from(this.subscribedSymbols);
   }
 
   public setSymbols(symbols: string[]): void {
@@ -74,7 +89,16 @@ class BinanceWsManager {
   }
 
   private connect(): void {
-    if (this.isConnecting || (this.ws && this.ws.readyState === 1)) return;
+    if (this.isClosed || this.isConnecting || (this.ws && this.ws.readyState === 1)) return;
+
+    // 若当前处于 418/429 避让冷静期，绝不强行发起连接，避免连接风暴加剧 IP 封禁
+    const backoff = getBackoffStatus();
+    if (backoff.active) {
+      console.warn(`[binance-ws] 检测到 Binance 处于避让期 (${backoff.reason})，暂缓 WebSocket 连接`);
+      this.scheduleReconnect();
+      return;
+    }
+
     this.isConnecting = true;
 
     try {
@@ -86,6 +110,10 @@ class BinanceWsManager {
 
       ws.addEventListener("open", () => {
         this.isConnecting = false;
+        if (this.isClosed) {
+          ws.close();
+          return;
+        }
         console.log(`[binance-ws] WebSocket 连接成功 (fstream.binance.com)`);
 
         if (this.subscribedSymbols.size > 0) {
@@ -105,6 +133,7 @@ class BinanceWsManager {
             // undici WebSocket 不直接暴露 ping 方法，可发送无效查询或者依赖底层 keepalive
           }
         }, 30000);
+        this.pingInterval.unref?.();
       });
 
       ws.addEventListener("message", (e) => {
@@ -130,7 +159,8 @@ class BinanceWsManager {
         this.isConnecting = false;
         this.ws = null;
         if (this.pingInterval) clearInterval(this.pingInterval);
-        console.warn(`[binance-ws] 连接关闭 (code: ${e.code}, reason: ${e.reason})，将在 5 秒后自动重连...`);
+        if (this.isClosed) return;
+        console.warn(`[binance-ws] 连接关闭 (code: ${e.code}, reason: ${e.reason})，准备排队重连...`);
         this.scheduleReconnect();
       });
 
@@ -151,13 +181,26 @@ class BinanceWsManager {
   }
 
   private scheduleReconnect(): void {
+    if (this.isClosed) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+
+    const backoff = getBackoffStatus();
+    let delay = 5000;
+    if (backoff.active) {
+      const waitMs = Math.max(5000, backoff.backoffUntil - Date.now() + 1000);
+      delay = waitMs;
+      console.warn(
+        `[binance-ws] 检测到处于限频/封禁冷静期 (${backoff.reason})，延迟 ${Math.ceil(delay / 1000)} 秒后再尝试重连 WebSocket...`,
+      );
+    }
+
     this.reconnectTimer = setTimeout(() => {
       this.connect();
-    }, 5000);
+    }, delay);
   }
 
   public close(): void {
+    this.isClosed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.pingInterval) clearInterval(this.pingInterval);
     if (this.ws) {
