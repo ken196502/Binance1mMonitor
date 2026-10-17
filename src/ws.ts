@@ -91,14 +91,6 @@ class BinanceWsManager {
   private connect(): void {
     if (this.isClosed || this.isConnecting || (this.ws && this.ws.readyState === 1)) return;
 
-    // 若当前处于 418/429 避让冷静期，绝不强行发起连接，避免连接风暴加剧 IP 封禁
-    const backoff = getBackoffStatus();
-    if (backoff.active) {
-      console.warn(`[binance-ws] 检测到 Binance 处于避让期 (${backoff.reason})，暂缓 WebSocket 连接`);
-      this.scheduleReconnect();
-      return;
-    }
-
     this.isConnecting = true;
 
     try {
@@ -184,19 +176,9 @@ class BinanceWsManager {
     if (this.isClosed) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
 
-    const backoff = getBackoffStatus();
-    let delay = 5000;
-    if (backoff.active) {
-      const waitMs = Math.max(5000, backoff.backoffUntil - Date.now() + 1000);
-      delay = waitMs;
-      console.warn(
-        `[binance-ws] 检测到处于限频/封禁冷静期 (${backoff.reason})，延迟 ${Math.ceil(delay / 1000)} 秒后再尝试重连 WebSocket...`,
-      );
-    }
-
     this.reconnectTimer = setTimeout(() => {
       this.connect();
-    }, delay);
+    }, 5000);
   }
 
   public close(): void {

@@ -49,9 +49,10 @@ const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? 1500); // 
 const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
 const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in bars
 
-// 跌幅榜降级保护配置：优先保证涨幅榜，避免跌幅榜在新币进榜或非整点时并发 REST 耗尽权重触发 418/429
-const LOSER_REST_WEIGHT_THRESHOLD = Number(process.env.LOSER_REST_WEIGHT_THRESHOLD ?? 800); // 已用权重>=800时跌幅榜全面禁止发起 REST
-const LOSER_MAX_COLD_STARTS_PER_ROUND = Number(process.env.LOSER_MAX_COLD_STARTS_PER_ROUND ?? 1); // 跌幅榜每轮最多冷启动1个标的
+// 跌幅榜保护配置：优先保证涨幅榜，在涨幅榜完成后、权重充裕时对跌幅榜实施平滑同步
+const LOSER_REST_WEIGHT_THRESHOLD = Number(process.env.LOSER_REST_WEIGHT_THRESHOLD ?? 1400); // 已用权重>=1400时跌幅榜暂停发起 REST
+const LOSER_MAX_COLD_STARTS_PER_ROUND = Number(process.env.LOSER_MAX_COLD_STARTS_PER_ROUND ?? 10); // 涨幅榜完成后，跌幅榜每轮最多冷启动标的数
+const LOSER_KLINE_LIMIT = Number(process.env.LOSER_KLINE_LIMIT ?? 1500); // 跌幅榜冷启动拉取 K 线数（默认 1500，保障 1m/5m DIFF 及 MA120/max1500 完整计算）
 
 // Telegram alert: 当三个榜单任意一个出现 ≥ TG_ALERT_MIN 个「无支撑 + 1m DIFF>0 + 5m DIFF<0」时发出通知。
 // 首次命中时通知，持续命中期间不因数量变化而重复播报。
@@ -67,12 +68,15 @@ export interface SymbolCandleCache {
 
 const candleCache = new Map<string, SymbolCandleCache>();
 
-// 从 418/451 异常恢复后，仅对真正缺乏有效 K 线（<35 根）的标的标记重置冷启动
-// 避免对原本已具备完整 K 线的标的全体重新发起 1500 根请求造成恢复期瞬时惊群二次被封
+// 从 418/451 异常恢复后，对缺乏有效 K 线（<35 根）或因封禁断流数据已过期的标的标记重置冷启动
+// 避免因旧缓存断流导致指标异常，同时平缓重新同步
 onAnomalyRecovered(() => {
-  console.info(`[server] 检测到从 418/451 异常中恢复，平缓重置缺失标的的冷启动状态`);
+  console.info(`[server] 检测到从 418/451 异常中恢复，平缓重置缺失或过期标的的冷启动状态`);
+  const now = Date.now();
   for (const [_, symCache] of candleCache) {
-    if (symCache.candles1m.length < 35) {
+    const lastBar = symCache.candles1m[symCache.candles1m.length - 1];
+    const isStale = !lastBar || now - lastBar.time > 5 * 60_000;
+    if (symCache.candles1m.length < 35 || isStale) {
       symCache.initialized = false;
     }
   }
@@ -98,7 +102,7 @@ export function resetCandleCacheForTest(): void {
 export interface FetchRowOptions {
   isGainerPriority?: boolean; // 是否属于涨幅榜/置顶高优先级队列
   allowRestKline?: boolean;   // 是否允许发起 REST K 线请求
-  klineLimit?: number;        // 指定 K 线拉取数量（涨幅榜默认 1500，跌幅榜降级为 100）
+  klineLimit?: number;        // 指定 K 线拉取数量（冷启动默认 1500，滚动为 100）
   allowTrendFetch?: boolean;  // 是否允许发起周K和60D日K
 }
 
@@ -109,7 +113,7 @@ export interface FetchRowResult {
 
 /**
  * 并发/串行拉取单币种指标：
- * 1. 优先保证涨幅榜：置顶标的与涨幅榜完整冷启动 1500 根，跌幅榜严格降级限流（最多拉取 100 根且每轮限额）；
+ * 1. 优先保证涨幅榜：置顶标的与涨幅榜首先完成冷启动，随后在安全权重内平滑同步跌幅榜；
  * 2. 完成初始化后，后续滚动存储 1500 根，优先依赖 WebSocket 实时成交流就地更新 K 线；
  * 3. 精确记录是否发生实际网络 REST 请求，为调用方平滑限速提供依据，彻底防止突发触发 418。
  */
@@ -136,7 +140,7 @@ async function fetchRowData(t: Ticker24h, options: FetchRowOptions = {}): Promis
     const isFirstRun = !symCache.initialized;
     // 如果已经完成冷启动且本地 K 线充足，跳过 REST K 线请求，优先使用 WS 实时维持的 K 线
     const needRestKline = allowRestKline && (isFirstRun || symCache.candles1m.length < 35);
-    const defaultInitLimit = isGainerPriority ? KLINE_INIT_LIMIT : Math.min(KLINE_INIT_LIMIT, 100);
+    const defaultInitLimit = isGainerPriority ? KLINE_INIT_LIMIT : LOSER_KLINE_LIMIT;
     const fetchLimit = klineLimit ?? (isFirstRun ? defaultInitLimit : KLINE_LIMIT);
 
     let candles1mRes: Candle[] = [];
@@ -350,20 +354,16 @@ export async function buildBoards(
 
   // 阶段 1：先确保涨幅榜获取完成 K 线同步（绝对最高优先级）
   let gainer429Detected = false;
-  let gainerColdStartCount = 0;
   for (let i = 0; i < gainersQueue.length; i++) {
     const item = gainersQueue[i];
     if (getBackoffStatus().active) {
-      console.warn(`[binance] 429 限频生效，立即停止涨幅榜 K 线同步 (已完成 ${resultMap.size}/${gainersQueue.length})`);
+      console.warn(`[binance] 429/418 避让生效，立即停止涨幅榜 K 线同步 (已完成 ${resultMap.size}/${gainersQueue.length})`);
       gainer429Detected = true;
       break;
     }
 
     const symCache = candleCache.get(item.symbol);
     const willColdStart = !symCache || !symCache.initialized || symCache.candles1m.length < 35;
-    if (willColdStart) {
-      gainerColdStartCount++;
-    }
 
     let didRest = false;
     try {
@@ -378,7 +378,7 @@ export async function buildBoards(
       didRest = res.didRest;
     } catch (e) {
       if (getBackoffStatus().active) {
-        console.warn(`[binance] 同步涨幅榜标的 ${item.symbol} 时检测到 429/限频，立即停止同步: ${(e as any)?.message ?? e}`);
+        console.warn(`[binance] 同步涨幅榜标的 ${item.symbol} 时检测到 429/418 限频，立即停止同步: ${(e as any)?.message ?? e}`);
         gainer429Detected = true;
         break;
       }
@@ -394,93 +394,98 @@ export async function buildBoards(
     }
   }
 
-  // 阶段 2：如果检测到 429 就停止，开始订阅当前已同步标的
+  // 阶段 2：如果检测到限频或封禁，立即订阅当前已同步标的
   if (syncedSymbols.size > 0) {
     wsManager.setSymbols(Array.from(syncedSymbols));
     console.log(`[binance-ws] 已订阅当前已同步标的 (${syncedSymbols.size} 个): ${Array.from(syncedSymbols).join(", ")}`);
   }
 
-  // 如果检测到 429，严格等待冷静期结束（等到没 429 了）
-  if (gainer429Detected || getBackoffStatus().active) {
-    console.warn(`[binance] 触发 429 限频保护，暂停 REST 请求，保持 WebSocket 实时订阅，等待冷静期结束...`);
-    await waitForBackoffClear();
-    console.log(`[binance] 429 限频已解除，检查并补全涨幅榜未完成标的...`);
+  // 区分短暂 429 与严重封禁 (418)：
+  // 仅在短暂 429 限频且冷静期极短（<= 5 秒）时，才尝试等待解除后补齐未完成标的；
+  // 若是 418 IP 封禁或长期避让，绝不在循环中长时间阻塞，立即跳过后续 REST 请求以保证服务正常响应
+  const backoff = getBackoffStatus();
+  const remainSec = Math.ceil((backoff.backoffUntil - Date.now()) / 1000);
+  const isShort429 = backoff.active && backoff.is429 && !backoff.reason.includes("418") && remainSec <= 5;
 
-    // 如果涨幅榜还有未完成的标的，优先确保涨幅榜全部完成
-    for (const item of gainersQueue) {
-      if (resultMap.has(item.symbol)) continue;
-      if (getBackoffStatus().active) {
-        await waitForBackoffClear();
+  if (isShort429) {
+    console.warn(`[binance] 检测到短暂 429 限频 (剩余 ${remainSec}s)，等待冷静期结束...`);
+    const cleared = await waitForBackoffClear(10_000);
+    if (cleared) {
+      console.log(`[binance] 429 限频已解除，检查并补全涨幅榜未完成标的...`);
+      for (const item of gainersQueue) {
+        if (resultMap.has(item.symbol)) continue;
+        if (getBackoffStatus().active) break;
+        try {
+          const symCache = candleCache.get(item.symbol);
+          const willColdStart = !symCache || !symCache.initialized || symCache.candles1m.length < 35;
+          const res = await fetchRowData(item, {
+            isGainerPriority: true,
+            allowRestKline: true,
+            klineLimit: willColdStart ? KLINE_INIT_LIMIT : KLINE_LIMIT,
+            allowTrendFetch: true,
+          });
+          resultMap.set(item.symbol, res.row);
+          syncedSymbols.add(item.symbol);
+          wsManager.setSymbols(Array.from(syncedSymbols));
+        } catch (e) {
+          console.warn(`[binance] 补齐涨幅榜标的 ${item.symbol} 失败:`, (e as any)?.message ?? e);
+          if (getBackoffStatus().active) break;
+        }
+        await new Promise((r) => setTimeout(r, 200));
       }
-      try {
-        const symCache = candleCache.get(item.symbol);
-        const willColdStart = !symCache || !symCache.initialized || symCache.candles1m.length < 35;
-        const res = await fetchRowData(item, {
-          isGainerPriority: true,
-          allowRestKline: true,
-          klineLimit: willColdStart ? KLINE_INIT_LIMIT : KLINE_LIMIT,
-          allowTrendFetch: true,
-        });
-        resultMap.set(item.symbol, res.row);
-        syncedSymbols.add(item.symbol);
-        wsManager.setSymbols(Array.from(syncedSymbols));
-      } catch (e) {
-        console.warn(`[binance] 补齐涨幅榜标的 ${item.symbol} 失败:`, (e as any)?.message ?? e);
-      }
-      await new Promise((r) => setTimeout(r, 200));
     }
   }
 
-  // 阶段 3：严格优先保证涨幅榜，对跌幅榜实施降级与限流
-  const currentUsedWeight = getBackoffStatus().usedWeight1m;
-  const isBackoff = getBackoffStatus().active;
-  // 保护规则：当权重达到 LOSER_REST_WEIGHT_THRESHOLD(800) 或当前处于避让期、或涨幅榜刚刚发生了冷启动，跌幅榜本轮全面禁止任何 REST
-  const allowLoserRest = !isBackoff && currentUsedWeight < LOSER_REST_WEIGHT_THRESHOLD && gainerColdStartCount === 0;
-  let loserColdStarts = 0;
+  // 阶段 3：涨幅榜已完全同步；在当前未处于避让期且权重未超标的前提下对跌幅榜进行平滑同步
+  if (!getBackoffStatus().active) {
+    let loserColdStarts = 0;
 
-  for (let i = 0; i < losersQueue.length; i++) {
-    const item = losersQueue[i];
-    if (resultMap.has(item.symbol)) continue;
+    for (let i = 0; i < losersQueue.length; i++) {
+      const item = losersQueue[i];
+      if (resultMap.has(item.symbol)) continue;
 
-    if (getBackoffStatus().active) {
-      console.warn(`[binance] 同步跌幅榜期间检测到 429 限频，暂停并等待冷静期结束...`);
-      await waitForBackoffClear();
-    }
-
-    const symCache = candleCache.get(item.symbol);
-    const isColdStart = !symCache || !symCache.initialized || symCache.candles1m.length < 35;
-    const canDoColdStart = allowLoserRest && isColdStart && loserColdStarts < LOSER_MAX_COLD_STARTS_PER_ROUND;
-
-    // 只有在严格允许时才发起轻量冷启动 (100根K线，消耗仅 1 权重)，否则直接禁止 REST 请求使用降级
-    const allowRestKline = canDoColdStart;
-    const allowTrendFetch = allowLoserRest && !isColdStart; // 跌幅榜新标的当轮不拉周K/60D，防突发
-    if (canDoColdStart) {
-      loserColdStarts++;
-    }
-
-    let didRest = false;
-    try {
-      const res = await fetchRowData(item, {
-        isGainerPriority: false,
-        allowRestKline,
-        klineLimit: 100, // 跌幅榜冷启动仅拉取 100 根 (weight 1)，相比 1500 根 (weight 10) 节省 90% 消耗
-        allowTrendFetch,
-      });
-      resultMap.set(item.symbol, res.row);
-      syncedSymbols.add(item.symbol);
-      didRest = res.didRest;
-    } catch (e) {
       if (getBackoffStatus().active) {
-        console.warn(`[binance] 同步跌幅榜标的 ${item.symbol} 遇到限频，等待冷静期解除: ${(e as any)?.message ?? e}`);
-        await waitForBackoffClear();
+        console.warn(`[binance] 同步跌幅榜期间检测到 429/418 限频，立即停止后续标的同步`);
+        break;
       }
-    }
 
-    if (i < losersQueue.length - 1 && !getBackoffStatus().active) {
-      const used = getBackoffStatus().usedWeight1m;
-      const delay = !didRest ? 20 : used >= 1400 ? 500 : used >= 1000 ? 300 : 200;
-      if (delay > 0) {
-        await new Promise((r) => setTimeout(r, delay));
+      const currentUsedWeight = getBackoffStatus().usedWeight1m;
+      const allowLoserRest = currentUsedWeight < LOSER_REST_WEIGHT_THRESHOLD;
+
+      const symCache = candleCache.get(item.symbol);
+      const isColdStart = !symCache || !symCache.initialized || symCache.candles1m.length < 35;
+      const canDoColdStart = allowLoserRest && isColdStart && loserColdStarts < LOSER_MAX_COLD_STARTS_PER_ROUND;
+
+      const allowRestKline = canDoColdStart;
+      const allowTrendFetch = allowLoserRest;
+      if (canDoColdStart) {
+        loserColdStarts++;
+      }
+
+      let didRest = false;
+      try {
+        const res = await fetchRowData(item, {
+          isGainerPriority: false,
+          allowRestKline,
+          klineLimit: isColdStart ? LOSER_KLINE_LIMIT : KLINE_LIMIT,
+          allowTrendFetch,
+        });
+        resultMap.set(item.symbol, res.row);
+        syncedSymbols.add(item.symbol);
+        didRest = res.didRest;
+      } catch (e) {
+        if (getBackoffStatus().active) {
+          console.warn(`[binance] 同步跌幅榜标的 ${item.symbol} 遇到限频/封禁，立即停止同步: ${(e as any)?.message ?? e}`);
+          break;
+        }
+      }
+
+      if (i < losersQueue.length - 1 && !getBackoffStatus().active) {
+        const used = getBackoffStatus().usedWeight1m;
+        const delay = !didRest ? 20 : used >= 1400 ? 500 : used >= 1000 ? 300 : 200;
+        if (delay > 0) {
+          await new Promise((r) => setTimeout(r, delay));
+        }
       }
     }
   }
@@ -636,7 +641,18 @@ let lastKnownStatus: Status | null = null;
 
 async function getStatus(): Promise<Status> {
   const now = Date.now();
-  if (cache && now - cache.at < REFRESH_TTL_MS) return cache.promise;
+  const backoff = getBackoffStatus();
+  if (cache && now - cache.at < REFRESH_TTL_MS) {
+    if (!backoff.active) {
+      // 避让冷静期已解除：若当前缓存为过去的错误，则跳过缓存立即重新请求，确保第一时间解封恢复
+      const cached = await cache.promise;
+      if (!cached.error) {
+        return cached;
+      }
+    } else {
+      return cache.promise;
+    }
+  }
   const promise = refresh()
     .then((status) => {
       lastKnownStatus = status;

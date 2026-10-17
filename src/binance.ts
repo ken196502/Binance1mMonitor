@@ -190,6 +190,11 @@ export function is429Active(): boolean {
   return active && (lastHttpStatus === 429 || backoffReason.includes("429"));
 }
 
+export function is418Active(): boolean {
+  const active = Date.now() < backoffUntil;
+  return active && (lastHttpStatus === 418 || backoffReason.includes("418"));
+}
+
 export function getLastHttpStatus(): number {
   return lastHttpStatus;
 }
@@ -213,6 +218,7 @@ export function getBackoffStatus(): {
   reason: string;
   usedWeight1m: number;
   is429: boolean;
+  is418: boolean;
   lastHttpStatus: number;
 } {
   const active = Date.now() < backoffUntil;
@@ -222,6 +228,7 @@ export function getBackoffStatus(): {
     reason: backoffReason,
     usedWeight1m: lastUsedWeight1m,
     is429: active && (lastHttpStatus === 429 || backoffReason.includes("429")),
+    is418: active && (lastHttpStatus === 418 || backoffReason.includes("418")),
     lastHttpStatus,
   };
 }
@@ -290,6 +297,7 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
     const retryAfter = Number(r.headers.get("retry-after") ?? 60);
     let waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60;
     let detailMsg = `HTTP ${r.status}`;
+    let banUntilTimestamp: number | null = null;
     try {
       const errBody = (await r.json()) as any;
       if (errBody?.msg) {
@@ -299,6 +307,7 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
           const rawTs = Number(match[1]);
           if (Number.isFinite(rawTs) && rawTs > 0) {
             const untilMs = rawTs < 1e11 ? rawTs * 1000 : rawTs;
+            banUntilTimestamp = untilMs;
             if (untilMs > Date.now()) {
               waitSec = Math.ceil((untilMs - Date.now()) / 1000);
             }
@@ -317,10 +326,23 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
       void notifyStatusAnomaly(r.status, detailMsg);
     }
 
-    // 限制单次避让上限（默认最多等待 300s），避免因币安返回长时间戳导致程序过长时间被彻底锁死
-    // 但必须预留足够冷静期，避免在封禁未结束前过早重试导致封禁被币安再次顺延
-    const maxBackoffSec = Number(process.env.MAX_BACKOFF_SECONDS ?? 300);
-    const actualWaitSec = Math.min(waitSec, maxBackoffSec);
+    // 避让等待时间计算：
+    // - 对于 418 IP 封禁：若币安明确指定了 banned until 时间戳，必须严格等待至该时间戳（+2s 缓冲）！
+    //   绝不能用 Math.min(waitSec, 300) 提前截断，提前重试会导致币安防火墙重置并延长封禁！
+    //   若未指定时间戳，默认至少避让 120 秒。
+    // - 对于 429 频控 / 451：按 retryAfter（默认 60s），可限制合理上限。
+    let actualWaitSec: number;
+    if (r.status === 418) {
+      if (banUntilTimestamp && banUntilTimestamp > Date.now()) {
+        actualWaitSec = Math.ceil((banUntilTimestamp - Date.now()) / 1000) + 2;
+      } else {
+        actualWaitSec = Math.max(waitSec, 120);
+      }
+    } else {
+      const maxBackoffSec = Number(process.env.MAX_BACKOFF_SECONDS ?? 300);
+      actualWaitSec = Math.min(waitSec, maxBackoffSec);
+    }
+
     backoffUntil = Date.now() + actualWaitSec * 1000;
     backoffReason = `HTTP ${r.status}: ${detailMsg}`;
     throw new Error(`Binance 触发限频/封禁/受限 (${backoffReason})，避让等待 ${actualWaitSec} 秒后重试`);
@@ -330,8 +352,22 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
   if (r.ok) {
     lastHttpStatus = r.status;
     if (statusAlerted.size > 0) {
+      const recoveredStatuses = Array.from(statusAlerted.keys());
       console.info(`[binance] 接口已解封恢复正常 (HTTP ${r.status})，清空 418/451 告警标记并重置 K 线冷启动状态`);
       statusAlerted.clear();
+      if (telegramConfigured()) {
+        const timeStr = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+        const text = [
+          `✅ <b>Binance 接口已恢复正常 (HTTP 200)</b>`,
+          "",
+          `• <b>恢复异常</b>: ${recoveredStatuses.map((s) => `HTTP ${s}`).join(", ")} 已解除`,
+          `• <b>恢复时间</b>: ${timeStr}`,
+          `• <b>监控状态</b>: 数据同步已恢复正常运行。`,
+        ].join("\n");
+        sendTelegramMessage(text).catch((err) => {
+          console.warn(`[binance-alert] 发送 TG 恢复通知失败:`, err);
+        });
+      }
       try {
         anomalyRecoveryListener?.();
       } catch (err) {
@@ -550,9 +586,9 @@ export function canFetchTrend60d(nowMs: number = Date.now(), isPriority = true):
     trend60dCountInMinute = 0;
   }
   // 每分钟最多允许 2 个标的请求 60D 日K
-  // 非优先标的（跌幅榜）：只有在涨幅榜未占满且当前分钟已被消耗数为 0、且当前已用权重 < 800 时，才允许使用 1 个配额
+  // 非优先标的（跌幅榜）：只要当前分钟已被消耗数 < 2 且当前已用权重 < 1400 时，允许使用配额
   if (!isPriority) {
-    return trend60dCountInMinute === 0 && lastUsedWeight1m < 800;
+    return trend60dCountInMinute < 2 && lastUsedWeight1m < 1400;
   }
   return trend60dCountInMinute < 2;
 }
