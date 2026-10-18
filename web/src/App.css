@@ -312,6 +312,17 @@ th.col-symbol, td.col-symbol {
   pointer-events: none;
 }
 
+/* ---- 点击榜单行切换右侧图表 ---- */
+/* 表格里已有点击语义的元素（排序按钮、币安链接）优先级更高，这里只做整行手型 */
+tr.row-selectable { cursor: pointer; }
+tr.row-selectable:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+/* 图表当前标的：左侧竖条 + 底色 + 币种高亮。
+   底色/竖条用 :not(.alert) 排除告警行 —— 告警的琥珀色是更强的信号，不该被选中态盖掉，
+   但币种高亮保留，这样命中告警的行被选中时也看得出图表切到了它。 */
+tbody tr.chart-selected:not(.alert) { background: rgba(77, 157, 255, 0.12); }
+tbody tr.chart-selected:not(.alert) > td:first-child { box-shadow: inset 3px 0 0 #4d9dff; }
+tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
+
 @media (min-width: 900px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

@@ -55,13 +55,29 @@ function fmtSmall(v: number | null | undefined): string {
   return String(Number(v.toPrecision(4)));
 }
 
+/** 期望的每根 K 线像素宽度：再窄蜡烛实体就会退化成 1px 竖线，看不出涨跌 */
+const TARGET_BAR_SPACING = 8;
+/** 右侧价格轴的大致占用，算可见根数时要扣掉 */
+const PRICE_SCALE_WIDTH = 70;
+
+/**
+ * 首屏显示多少根 K 线：按容器宽度和目标像素宽度反推，而不是把 200 根全部 fitContent 进去。
+ * 右栏只有半屏宽，硬塞 200 根会让每根只剩 3~4px（手机更窄只有 1~2px），
+ * lightweight-charts 的蜡烛实体最小只画 1px，于是整屏只剩一排竖线（影线）。
+ */
+function defaultVisibleBars(hostWidth: number): number {
+  const usable = Math.max(160, hostWidth - PRICE_SCALE_WIDTH - 8);
+  return Math.max(30, Math.floor(usable / TARGET_BAR_SPACING));
+}
+
 interface ChartPanelProps {
   symbols: string[]; // 下拉可选标的（榜单 + 置顶）
+  symbol: string; // 当前标的（受控：下拉与榜单点击都改它）
+  onSymbolChange: (symbol: string) => void;
   active?: boolean; // 窄屏 tab 状态（与榜单保持一致，始终可见）
 }
 
-export function ChartPanel({ symbols, active }: ChartPanelProps) {
-  const [symbol, setSymbol] = useState("BTCUSDT");
+export function ChartPanel({ symbols, symbol, onSymbolChange, active }: ChartPanelProps) {
   const [hiddenMa, setHiddenMa] = useState<ReadonlySet<number>>(() => new Set<number>());
   const [hoverTime, setHoverTime] = useState<number | null>(null);
 
@@ -96,7 +112,15 @@ export function ChartPanel({ symbols, active }: ChartPanelProps) {
         horzLines: { color: "rgba(35,42,56,0.55)" },
       },
       rightPriceScale: { borderColor: BORDER, scaleMargins: { top: 0.08, bottom: 0.06 } },
-      timeScale: { borderColor: BORDER, rightOffset: 3, barSpacing: 6, fixLeftEdge: true },
+      timeScale: {
+        borderColor: BORDER,
+        rightOffset: 3,
+        barSpacing: TARGET_BAR_SPACING,
+        // 无论怎么缩放都不让每根低于 2px，否则又会退化成一排竖线
+        minBarSpacing: 2,
+        maxBarSpacing: 40,
+        fixLeftEdge: true,
+      },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: { color: "rgba(230,237,243,0.35)", width: 1, style: 3, labelBackgroundColor: "#2a3140" },
@@ -233,7 +257,11 @@ export function ChartPanel({ symbols, active }: ChartPanelProps) {
     dea.setData(data.bars.map((b) => ({ time: toTs(b.time), value: b.dea })));
 
     if (symbolChanged || !prevRange) {
-      ts.fitContent();
+      // 首次加载 / 换标的：只显示"看得清"的最近若干根，而不是把全部历史压进一屏
+      const len = data.bars.length;
+      const visible = defaultVisibleBars(hostRef.current?.clientWidth ?? 0);
+      if (visible >= len) ts.fitContent();
+      else ts.setVisibleLogicalRange({ from: len - visible, to: len - 1 + 3 });
     } else if (prevRange.to >= prev.len - 1) {
       // 原本贴着最右侧 → 跟随最新一根；用户回看历史则保持原区间不动
       ts.scrollToRealTime();
@@ -291,7 +319,7 @@ export function ChartPanel({ symbols, active }: ChartPanelProps) {
         <select
           className="chart-symbol"
           value={symbol}
-          onChange={(e) => setSymbol(e.target.value)}
+          onChange={(e) => onSymbolChange(e.target.value)}
           aria-label="选择交易对"
         >
           {options.map((s) => (

@@ -5,16 +5,20 @@ interface RowProps {
   row: Row;
   changeLabel: number; // priceChangePercent (gainers) or quoteVolume/1e8 (volume)
   isPercentage?: boolean; // true for price change, false for volume
+  onSelect?: (symbol: string) => void; // 点击整行 → 右侧图表切到该标的
+  selected?: boolean; // 是否为图表当前标的
 }
 
 // Single table row: displays rank, shift, symbol, 24h change, streak count, streak gain, 1m30upR, support.
-export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
+export function StatusRow({ row, changeLabel, isPercentage = true, onSelect, selected }: RowProps) {
   const isPinned = row.isPinned ?? (row.symbol === "BTCUSDT" || row.symbol === "SOLUSDT");
 
   const rowClasses = [
     row.alert ? "alert" : "",
     isPinned ? "pinned-row" : "",
     row.isDropped ? "dropped-row" : "",
+    selected ? "chart-selected" : "",
+    onSelect ? "row-selectable" : "",
   ].filter(Boolean).join(" ");
 
   const streakGainStr = row.streakGainPercent != null
@@ -30,7 +34,23 @@ export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
     : undefined;
 
   return (
-    <tr className={rowClasses}>
+    <tr
+      className={rowClasses}
+      onClick={onSelect ? () => onSelect(row.symbol) : undefined}
+      onKeyDown={
+        onSelect
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(row.symbol);
+              }
+            }
+          : undefined
+      }
+      tabIndex={onSelect ? 0 : undefined}
+      aria-selected={onSelect ? !!selected : undefined}
+      title={onSelect ? `点击在右侧图表查看 ${row.symbol}` : undefined}
+    >
       <td className="col-rank">
         {isPinned ? (
           <span className="pin-icon" title="置顶标的">📌</span>
@@ -71,6 +91,8 @@ export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
           rel="noopener noreferrer"
           className="symbol-link"
           title={`在币安查看 ${row.symbol} 合约行情`}
+          // 行整体可点击切换图表，但币安链接要保留"新标签打开行情"的原行为
+          onClick={(e) => e.stopPropagation()}
         >
           {row.symbol}
         </a>

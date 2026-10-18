@@ -10,6 +10,8 @@ import "./App.css";
 export default function App() {
   const { status, error } = useStatus();
   const [remaining, setRemaining] = useState(60);
+  // 图表当前标的：下拉与"点击榜单行"共用同一份状态，右上角标题随它更新
+  const [chartSymbol, setChartSymbol] = useState("BTCUSDT");
 
   // Countdown ring: seconds left until the current 1m candle closes (the
   // wall-clock minute boundary). Driven off the clock, not lastFetchedAt, so it
@@ -48,6 +50,14 @@ export default function App() {
     ? status.gainers.map((r) => r.symbol)
     : ["BTCUSDT", "SOLUSDT"];
 
+  // 点击榜单行 → 切图表。窄屏上图表在表格下方，得滚过去才看得到切没切成。
+  const selectSymbol = (symbol: string) => {
+    setChartSymbol(symbol);
+    if (window.innerWidth < 900) {
+      document.getElementById("s2")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
   return (
     <>
       <header>
@@ -69,8 +79,15 @@ export default function App() {
           rows={status && !status.error ? status.gainers : []}
           changeKey="priceChangePercent"
           active={true}
+          onSelectSymbol={selectSymbol}
+          selectedSymbol={chartSymbol}
         />
-        <ChartPanel symbols={chartSymbols} active={true} />
+        <ChartPanel
+          symbols={chartSymbols}
+          symbol={chartSymbol}
+          onSymbolChange={setChartSymbol}
+          active={true}
+        />
       </div>
     </>
   );
