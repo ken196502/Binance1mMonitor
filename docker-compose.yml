@@ -12,10 +12,33 @@ services:
       - PORT=4111
       - TZ=Asia/Shanghai
       - DASHBOARD_URL=https://${DOMAIN}
+      # —— 容器内 mihomo 代理 ——
+      # 镜像内置 mihomo，启动时 entrypoint 会在容器内拉起它（默认混合端口 7890），
+      # 并把 PROXY/HTTPS_PROXY/HTTP_PROXY 自动指向 http://127.0.0.1:7890，
+      # 于是所有 Binance 行情请求与 Telegram 播报都经由容器内 mihomo 出站。
+      # 置 0 可关闭容器内 mihomo（改为直连或使用外部代理）。
+      - MIHOMO_ENABLE=${MIHOMO_ENABLE:-1}
+      # 订阅地址（Clash/Mihomo YAML 格式）；支持多个，用逗号 / 空格 / 换行分隔。
+      # 默认模式(provider)下每个订阅作为 mihomo proxy-provider 加载，由 PROXY 组按
+      # Binance 健康检查自动选节点；raw 模式下则按顺序下载第一个可用者直接当配置用。
+      # 留空则读取挂载的 config.yaml 或使用内置直连默认配置。
+      # 默认内置两个公共订阅源（wzmwayne 精选 / ovmvo FreeSub），可在 .env 中覆盖为更稳定的自建订阅。
+      - MIHOMO_SUBSCRIPTION_URL=${MIHOMO_SUBSCRIPTION_URL:-https://raw.githubusercontent.com/wzmwayne/proxy-node/main/output/aio/clash.yaml,https://raw.githubusercontent.com/ovmvo/FreeSub/refs/heads/main/sub/permanent/mihomo.yaml}
+      # 订阅加载模式：provider（默认，见上）/ raw（订阅直接作为完整配置）
+      - MIHOMO_CONFIG_MODE=${MIHOMO_CONFIG_MODE:-provider}
+      # Binance 健康检查：只有能对下面地址返回 200 的节点才会被 PROXY 组选中（规避 451 地区屏蔽）
+      - MIHOMO_HEALTHCHECK_URL=${MIHOMO_HEALTHCHECK_URL:-https://fapi.binance.com/fapi/v1/ping}
+      - MIHOMO_HEALTHCHECK_INTERVAL=${MIHOMO_HEALTHCHECK_INTERVAL:-600}
+      # 拉取订阅本身也需要代理时可用宿主机网关上的代理（见下方 extra_hosts）
+      - MIHOMO_SUBSCRIPTION_PROXY=${MIHOMO_SUBSCRIPTION_PROXY:-}
+      - MIHOMO_PROXY_PORT=${MIHOMO_PROXY_PORT:-7890}
     # 宿主机网关映射：如需通过宿主机本地代理（如 Clash 端口 7890），
-    # 可在 .env 中配置 PROXY=http://host.docker.internal:7890
+    # 可在 .env 中显式配置 PROXY=http://host.docker.internal:7890（显式设置后 entrypoint 不再指向容器内 mihomo）
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # 可选：挂载你自己的 mihomo 配置（含代理节点），优先级高于 MIHOMO_SUBSCRIPTION_URL
+    # volumes:
+    #   - ./docker/mihomo/config.yaml:/etc/mihomo/config.yaml:ro
     expose:
       - "4111"
     # 可选：如果除 Traefik 代理外还需要直接在宿主机端口访问，可解开以下注释

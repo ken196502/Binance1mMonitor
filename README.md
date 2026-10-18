@@ -107,6 +107,62 @@ npm start              # 起后端，托管 web/dist 静态资源 + /api/status
 
 面板每 5 秒轮询一次 `/api/status`，后端对 Binance 的请求有 ~20s 缓存 TTL，避免触发限频。
 
+### Docker 部署（容器内置 mihomo 代理）
+
+生产镜像内置 **mihomo（Clash.Meta）** 内核与 Geo 数据：容器启动时由 `docker/entrypoint.sh` 先在容器内拉起 mihomo，再把 `PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` 指向 `http://127.0.0.1:7890`，最后 `exec npm start`。因为 `src/binance.ts` 与 `src/telegram.ts` 都用 undici 的 `EnvHttpProxyAgent`，**Binance 行情监控、60D 趋势、Telegram 播报全部经由容器内 mihomo 出站**，宿主机不需要再开 Clash，也不必配 `host.docker.internal`。
+
+默认（provider 模式）会把订阅节点按 `fapi.binance.com` 健康检查（`expected-status=200`）自动筛选，规避机房被 Binance `HTTP 451` 屏蔽的问题。
+
+提供代理节点有两种方式（优先级：挂载配置 > 订阅地址 > 内置默认直连配置）：
+
+```bash
+# 方式 1（推荐）：在 .env 里给 Clash/Mihomo YAML 订阅地址
+MIHOMO_SUBSCRIPTION_URL=https://example.com/api/v1/client/subscribe?token=xxx
+
+# 也支持多个订阅源（逗号 / 空格 / 换行分隔），每个都作为 mihomo proxy-provider 加载。
+# docker-compose 默认已内置以下两个公共订阅源，不配置时直接生效：
+#   https://raw.githubusercontent.com/wzmwayne/proxy-node/main/output/aio/clash.yaml
+#   https://raw.githubusercontent.com/ovmvo/FreeSub/refs/heads/main/sub/permanent/mihomo.yaml
+
+# 方式 2：挂载自己的完整配置（含 proxies / proxy-groups / rules），优先级最高
+mkdir -p docker/mihomo
+# 把你的 config.yaml（含 proxy-providers 订阅亦可）放到 docker/mihomo/config.yaml
+# 然后在 docker-compose.yml 中放开：
+#   volumes:
+#     - ./docker/mihomo/config.yaml:/etc/mihomo/config.yaml:ro
+```
+
+**为什么默认用 provider 模式（自动规避 Binance 451）**：很多机房（尤其美国云主机）会被 Binance 以 `HTTP 451` 拒绝。若把订阅直接当配置用，节点由订阅自己的规则/默认选择决定，可能恰好选中被屏蔽的节点；本项目默认把订阅转成 `proxy-provider`，并生成一个对 Binance 做健康检查的 `fallback` 组：
+
+```yaml
+proxy-groups:
+  - name: PROXY
+    type: fallback
+    url: https://fapi.binance.com/fapi/v1/ping
+    expected-status: 200     # 只有能 200 命中 Binance 的节点才算可用
+```
+
+这样 `PROXY` 组只会选中能正常访问 `fapi.binance.com` 的节点，节点失效时自动切换，`DOMAIN-SUFFIX,binance.com / telegram.org` 等流量统一走它。若想完全沿用订阅自带的规则与节点，可设 `MIHOMO_CONFIG_MODE=raw`。
+
+```bash
+# 在 .env 中配置 DOMAIN / TELEGRAM_* 后一键启动
+docker compose up -d --build
+docker compose logs -f binance-macd-monitor   # 可见 [entrypoint] 与 mihomo 日志
+```
+
+要点与排错：
+
+- **订阅格式**：只支持 Clash / Mihomo 的 YAML 订阅（`proxies:` / `proxy-groups:` …）。base64 分享链接列表无法直接使用，请先用 subconverter 之类转成 Clash 配置再挂载，或直接挂载成品 `config.yaml`。
+- **多个订阅**：`MIHOMO_SUBSCRIPTION_URL` 可用逗号 / 空格 / 换行分隔多个地址，全部作为 provider 加载；某个源失效不影响其它源。
+- **选点与 451 规避**：provider 模式下 `PROXY` 组按 `MIHOMO_HEALTHCHECK_URL`（默认 `https://fapi.binance.com/fapi/v1/ping`）做健康检查，`expected-status=200` 才算可用，因此被 Binance 屏蔽的节点会被自动跳过。启动后前 ~10-15 秒健康检查还在跑，可能短暂拿到 451，随后会自动切到可用节点。
+- **raw 模式**：`MIHOMO_CONFIG_MODE=raw`，按顺序下载第一个可用的订阅直接当配置用；其中的 `mixed-port` / `port` / `socks-port` 会被自动改写为 `MIHOMO_PROXY_PORT`（默认 7890），控制端口收敛到 `127.0.0.1:9090`。
+- **没配节点也能跑**：未提供订阅也没挂载配置时，使用 `docker/mihomo/config.default.yaml`（`MATCH,DIRECT` 全部直连），监控不会中断，只是等于没走代理；日志会提示。
+- **不想用容器内代理**：`MIHOMO_ENABLE=0` 关闭 mihomo；或显式设置 `PROXY`（如 `PROXY=http://host.docker.internal:7890` 走宿主机 Clash），此时 entrypoint 会沿用你的设置不再自动指向容器内 mihomo。
+- **拉订阅本身需要代理**（仅 raw 模式下载订阅时使用）：`MIHOMO_SUBSCRIPTION_PROXY=http://host.docker.internal:7890`（compose 已声明 `host.docker.internal` 网关映射）。
+- **改端口**：`MIHOMO_PROXY_PORT=7890`（raw 模式会自动对齐配置里的 `mixed-port`）。
+- **升级内核**：`MIHOMO_VERSION` 默认 `v1.19.32`，可在构建时覆盖：`docker compose build --build-arg MIHOMO_VERSION=v1.19.40`；国内网络拉不动 GitHub 时用镜像前缀 `--build-arg MIHOMO_DOWNLOAD_BASE=https://gh-proxy.com/https://github.com/MetaCubeX/mihomo/releases/download`。
+- **挂载整个配置目录**会覆盖镜像内置的 `geoip.metadb` / `geosite.dat`，含 `GEOIP`/`GEOSITE` 规则的配置首次启动会尝试联网下载；建议只挂载单个 `config.yaml` 文件。
+
 ## 配置（环境变量）
 
 | 变量 | 默认 | 说明 |
@@ -125,7 +181,14 @@ npm start              # 起后端，托管 web/dist 静态资源 + /api/status
 | `TG_ALERT_MIN` | `3` | Telegram 告警阈值：任意一个榜单出现 ≥ N 个「DEA 高位 + DIFF 多头」时推送 |
 | `TG_REPEAT_MINUTES` | `0` | 持续命中时的重发间隔（分钟），0 = 仅在首次触发时通知 |
 | `DASHBOARD_URL` | `https://macd.reluv.xyz` | Telegram 提醒中附带的面板链接地址 |
-| `PROXY` | _(空)_ | 本应用专用的代理地址（如 `http://127.0.0.1:7890`），**设置后强制走该代理**；未设置则回退到标准 `HTTPS_PROXY`/`HTTP_PROXY`（`NO_PROXY` 同样生效），都未设置则直连。由 undici `ProxyAgent`/`EnvHttpProxyAgent` 应用到所有 fetch（**含 Telegram API**） |
+| `PROXY` | _(空)_ | 本应用专用的代理地址（如 `http://127.0.0.1:7890`），**设置后强制走该代理**；未设置则回退到标准 `HTTPS_PROXY`/`HTTP_PROXY`（`NO_PROXY` 同样生效），都未设置则直连。由 undici `ProxyAgent`/`EnvHttpProxyAgent` 应用到所有 fetch（**含 Telegram API**）。Docker 部署时由 entrypoint 自动指向容器内 mihomo |
+| `MIHOMO_ENABLE` | `1` | Docker 部署：是否在容器内启动 mihomo（`0` 关闭） |
+| `MIHOMO_SUBSCRIPTION_URL` | _内置两个公共订阅_ | Docker 部署：Clash/Mihomo YAML 订阅地址（可多个，逗号/空格/换行分隔），默认每个都作为 proxy-provider 加载；留空则用挂载配置或内置直连默认配置 |
+| `MIHOMO_CONFIG_MODE` | `provider` | `provider`：订阅作为 proxy-provider + PROXY(fallback) 组按 Binance 健康检查自动选点；`raw`：订阅直接作为完整配置 |
+| `MIHOMO_HEALTHCHECK_URL` | `https://fapi.binance.com/fapi/v1/ping` | provider 模式选点用的健康检查地址 |
+| `MIHOMO_HEALTHCHECK_INTERVAL` | `600` | 健康检查周期（秒） |
+| `MIHOMO_SUBSCRIPTION_PROXY` | _(空)_ | raw 模式下下载订阅本身所走的代理（如 `http://host.docker.internal:7890`） |
+| `MIHOMO_PROXY_PORT` | `7890` | 容器内 mihomo 混合端口（raw 模式会自动对齐配置里的 `mixed-port`） |
 
 示例：
 
@@ -164,6 +227,11 @@ web/           # React 前端（Vite + TypeScript）
     components/      # GroupSection / Row
     hooks/useStatus.ts  # 每 5s 轮询 /api/status
     lib/format.ts    # fmt / pct / colClass
+docker/
+  entrypoint.sh              # 容器入口：拉起 mihomo → 注入 PROXY → exec npm start
+  mihomo/config.default.yaml # 无节点时的兜底配置（全部直连）
+Dockerfile     # 多阶段构建：前端产物 + 生产依赖 + mihomo 内核与 Geo 数据
+docker-compose.yml  # Traefik 反代 + 容器内 mihomo 代理
 ```
 
 开发验证：`npm run typecheck`、`npm test`、`npm run build`。测试使用本地模拟数据与模拟 Telegram 服务，不请求真实通知服务。

@@ -1,0 +1,55 @@
+# ==========================================
+# 容器内 mihomo 默认配置（无代理节点，全部直连）
+# ==========================================
+# 这个文件只作为「没有提供任何节点配置」时的兜底：mihomo 正常启动，
+# 但所有流量按 MATCH,DIRECT 直连，等于没走代理（不会报错，也不会中断监控）。
+#
+# 要真正走代理，二选一：
+#   1) 挂载自己的完整配置（推荐，含代理节点/机场订阅内容）：
+#        volumes:
+#          - ./docker/mihomo/config.yaml:/etc/mihomo/config.yaml:ro
+#   2) 在 .env 里给订阅地址（默认 provider 模式：订阅作为 proxy-provider，
+#      并用对 Binance 做健康检查的 fallback 组自动选点，规避 451）：
+#        MIHOMO_SUBSCRIPTION_URL=https://example.com/api/v1/client/subscribe?token=xxx
+#      （必须是 Clash / Mihomo 的 YAML 订阅，base64 分享链接列表无法直接使用）
+#
+# 混合端口与 entrypoint 里的 MIHOMO_PROXY_PORT 保持一致（默认 7890）。
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: false
+unified-delay: true
+tcp-concurrent: true
+
+# 仅监听容器内回环地址，供本容器内的 Node 进程使用；不对外暴露控制端口
+external-controller: 127.0.0.1:9090
+
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  fallback:
+    - 8.8.8.8
+    - 1.1.1.1
+
+# 默认无节点：占位为空列表，`PROXY` 组只指向 DIRECT
+proxies: []
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - DIRECT
+
+rules:
+  - GEOIP,LAN,DIRECT,no-resolve
+  - MATCH,DIRECT
