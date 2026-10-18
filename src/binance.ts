@@ -21,6 +21,7 @@ import {
 } from "undici";
 import type { Candle } from "./macd.ts";
 import { sendTelegramMessage, telegramConfigured, escapeHtml } from "./telegram.ts";
+import { rotateProxyNode, findWorkingNode, currentProxyNode, markProxyNodeBad } from "./proxyNode.ts";
 
 // Proxy routing for Binance requests:
 export const PROXY =
@@ -255,23 +256,64 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
     throw new Error(`Binance 限频/避让冷静期中 (${backoffReason})，剩余 ${remainSec} 秒，已暂停请求`);
   }
 
-  let r: UndiciResponse;
-  try {
-    const base = getBase();
-    r = await undiciFetch(`${base}${path}`, {
-      dispatcher,
-      headers: DEFAULT_HEADERS,
-    });
-  } catch (e) {
-    const base = getBase();
-    const fallback = getFallbackBase();
-    if (!fallback || fallback === base || !isNetworkError(e)) throw e;
-    r = await undiciFetch(`${fallback}${path}`, {
-      dispatcher,
-      headers: DEFAULT_HEADERS,
-    });
+  const base = getBase();
+  const fallback = getFallbackBase();
+  const canFallback = !!fallback && fallback !== base;
+  // mihomo 的健康检查只测连通性/延迟，不校验状态码（实测：恒定返回 451 的节点
+  // 依然被标为 alive），所以 PROXY 组会停在被 Binance 封禁的节点上，导致整块面板
+  // 长时间报错。这里在撞上 451 / 网络层失败时，先主动探测若干候选节点，挑选真正
+  // 能 200 命中 Binance 的再继续，避免盲目重试浪费一整轮请求。
+  const maxNodeRotations = Number(process.env.PROXY_ROTATE_MAX ?? 3);
+  const probeUrl = `${base}/fapi/v1/ping`;
+
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt <= maxNodeRotations; attempt++) {
+    if (attempt > 0) {
+      const working = await findWorkingNode(probeUrl, dispatcher);
+      if (!working) break; // mihomo 不可用 / 没有可用节点 → 走下面的常规错误处理
+      console.warn(`[binance] 已更换可用代理节点，重试请求 (第 ${attempt} 次): ${path}`);
+    }
+
+    try {
+      const r = await undiciFetch(`${base}${path}`, {
+        dispatcher,
+        headers: DEFAULT_HEADERS,
+      });
+
+      // 只有「节点」把我们带到被封禁地区时（451）才换节点；429/418 是全局限频，
+      // 换节点无意义，仍交给原有的避让逻辑。
+      if (r.status === 451 && attempt < maxNodeRotations) {
+        markProxyNodeBad(await currentProxyNode());
+        const working = await findWorkingNode(probeUrl, dispatcher);
+        if (working) continue;
+      }
+      return handleBinanceResponse(r);
+    } catch (e) {
+      lastError = e;
+      // 网络层失败：换节点后再试；没有 fallback base 时这里原本会直接抛出。
+      if (isNetworkError(e) && canFallback && attempt === 0) {
+        return await undiciFetch(`${fallback}${path}`, {
+          dispatcher,
+          headers: DEFAULT_HEADERS,
+        });
+      }
+      if (!isNetworkError(e)) throw e;
+      // 最后一轮仍失败 → 交由下方抛出，保持原有错误语义
+      if (attempt === maxNodeRotations) break;
+    }
   }
 
+  if (lastError) throw lastError;
+  throw new Error(`Binance 请求失败: ${path}`);
+}
+
+  /**
+ * 处理 Binance 响应：记录权重占用、执行 418/429/451 避让与告警、并在恢复正常时
+ * 清理异常标记。451 在这里仍会抛出（原有的避让语义不变），只是调用方在到达这里
+ * 之前已经先尝试过更换代理节点。
+ */
+async function handleBinanceResponse(r: UndiciResponse): Promise<UndiciResponse> {
   // 1. 检查并记录当前 1 分钟权重占用，实施主动避让（Proactive Backoff 防 429）
   const usedWeightHeader = r.headers.get("x-mbx-used-weight-1m");
   if (usedWeightHeader) {

@@ -86,8 +86,13 @@ generate_provider_config() {
   local out="$1"; shift
   local urls=("$@")
   local hc="${MIHOMO_HEALTHCHECK_URL:-https://fapi.binance.com/fapi/v1/ping}"
-  local hc_interval="${MIHOMO_HEALTHCHECK_INTERVAL:-600}"
+  local hc_interval="${MIHOMO_HEALTHCHECK_INTERVAL:-180}"
   local provider_interval="${MIHOMO_PROVIDER_INTERVAL:-3600}"
+  # 免费订阅里常混着「说明/剩余流量/到期时间/官网」之类的展示位，它们伪装成节点
+  # （常见 server: 127.0.0.1 + 443），却根本不通。mihomo 的 fallback 组偶尔会选中
+  # 这些死节点，导致所有 Binance 请求 connection refused（面板报 fetch failed）。
+  # 这里按名称把它们直接从 provider 里剔除，从根上避免被选中的可能。
+  local exclude_filter="${MIHOMO_EXCLUDE_FILTER:-(?i)(说明|剩余|到期|过期|官网|订阅|流量|套餐|时效|天数|群组|客服|邮箱|公告|重置|续费|防失联|请勿|转发卡)}"
   local i
 
   {
@@ -129,6 +134,7 @@ generate_provider_config() {
         "    url: \"${u}\"" \
         "    interval: ${provider_interval}" \
         "    path: ./providers/sub${i}.yaml" \
+        "    exclude-filter: \"${exclude_filter}\"" \
         "    health-check:" \
         "      enable: true" \
         "      url: \"${hc}\"" \
@@ -151,9 +157,24 @@ generate_provider_config() {
     for _ in "${urls[@]}"; do printf '      - sub%s\n' "$i"; i=$((i + 1)); done
 
     printf '%s\n' \
-      "  # 手动指定节点（需要时可通过 /etc/mihomo 的 Clash API 把 PROXY 切到某个节点）" \
+      "  # 手动指定节点（需要时可通过 Clash API 把 MANUAL 切到某个节点）" \
       "  - name: MANUAL" \
       "    type: select" \
+      "    use:"
+    i=1
+    for _ in "${urls[@]}"; do printf '      - sub%s\n' "$i"; i=$((i + 1)); done
+
+    # ACTIVE 是应用真正使用的出口（rules 指向它）。默认走 PROXY（fallback 自动选点）；
+    # 但 mihomo 的健康检查只看连通性/延迟、不校验状态码，被 Binance 451 的节点同样会被
+    # 判定 alive，所以 src/proxyNode.ts 会在撞上 451 / 网络错误时用 Clash API 把它切到别的
+    # 节点，实现真正的「换地区」。这里把全部节点也列进组里供其切换。
+    printf '%s\n' \
+      "  # 应用可控的活动出口：默认 PROXY，故障时由 src/proxyNode.ts 切换到具体节点" \
+      "  - name: ACTIVE" \
+      "    type: select" \
+      "    proxies:" \
+      "      - PROXY" \
+      "      - MANUAL" \
       "    use:"
     i=1
     for _ in "${urls[@]}"; do printf '      - sub%s\n' "$i"; i=$((i + 1)); done
@@ -161,14 +182,14 @@ generate_provider_config() {
     printf '%s\n' \
       "" \
       "rules:" \
-      "  - DOMAIN-SUFFIX,binance.com,PROXY" \
-      "  - DOMAIN-SUFFIX,binancefuture.com,PROXY" \
-      "  - DOMAIN-SUFFIX,bnbstatic.com,PROXY" \
-      "  - DOMAIN-SUFFIX,telegram.org,PROXY" \
-      "  - DOMAIN-SUFFIX,telegram.me,PROXY" \
-      "  - DOMAIN-SUFFIX,t.me,PROXY" \
-      "  - DOMAIN-SUFFIX,telegra.ph,PROXY" \
-      "  - MATCH,PROXY"
+      "  - DOMAIN-SUFFIX,binance.com,ACTIVE" \
+      "  - DOMAIN-SUFFIX,binancefuture.com,ACTIVE" \
+      "  - DOMAIN-SUFFIX,bnbstatic.com,ACTIVE" \
+      "  - DOMAIN-SUFFIX,telegram.org,ACTIVE" \
+      "  - DOMAIN-SUFFIX,telegram.me,ACTIVE" \
+      "  - DOMAIN-SUFFIX,t.me,ACTIVE" \
+      "  - DOMAIN-SUFFIX,telegra.ph,ACTIVE" \
+      "  - MATCH,ACTIVE"
   } > "$out"
 }
 
@@ -212,6 +233,23 @@ prepare_mihomo_config() {
 }
 
 # ---------------------------------------------------------------- 启动 mihomo
+# ACTIVE 组默认走 PROXY（fallback 自动选点）。mihomo 的 select 组有时会把默认值
+# 定在组内第二个条目（MANUAL）上，绕过自动选点；这里显式拨回 PROXY，
+# 之后由 src/proxyNode.ts 在遇到 451 / 网络故障时接管切换。
+reset_active_group() {
+  local api="http://$MIHOMO_PROXY_HOST:${MIHOMO_EXTERNAL_CONTROLLER_PORT:-9090}"
+  local i
+  for ((i = 1; i <= 15; i++)); do
+    if curl -fsS -m 3 -X PUT "${api}/proxies/ACTIVE" \
+        -H "Content-Type: application/json" -d '{"name":"PROXY"}' >/dev/null 2>&1; then
+      log "已将 ACTIVE 出口组切回 PROXY（自动选点）"
+      return 0
+    fi
+    sleep 1
+  done
+  log "警告: 未能把 ACTIVE 切回 PROXY（控制端口未就绪？）"
+}
+
 start_mihomo() {
   if [ "$MIHOMO_ENABLE" = "0" ]; then
     log "MIHOMO_ENABLE=0，跳过容器内 mihomo"
@@ -243,6 +281,7 @@ start_mihomo() {
     fi
     if (: > "/dev/tcp/$MIHOMO_PROXY_HOST/$MIHOMO_PROXY_PORT") 2>/dev/null; then
       log "mihomo 已就绪: http://$MIHOMO_PROXY_HOST:$MIHOMO_PROXY_PORT"
+      reset_active_group
       return 0
     fi
     sleep 1

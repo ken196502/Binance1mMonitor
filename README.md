@@ -144,6 +144,10 @@ proxy-groups:
 
 这样 `PROXY` 组只会选中能正常访问 `fapi.binance.com` 的节点，节点失效时自动切换，`DOMAIN-SUFFIX,binance.com / telegram.org` 等流量统一走它。若想完全沿用订阅自带的规则与节点，可设 `MIHOMO_CONFIG_MODE=raw`。
 
+> ⚠️ **重要：mihomo 的 health-check 并不校验 HTTP 状态码**（实测 v1.19.32：把探测地址换成对所有人都返回 500 的 URL，节点依旧被判为 alive；`expected-status` 在该版本中也不生效）。也就是说被 Binance 以 **451** 拒绝的节点仍会被标成 alive 并留在 `PROXY` 组上，仅靠 health-check 无法规避 451。
+>
+> 因此实际出口由 `ACTIVE` 组承担（rules 指向 `ACTIVE`，默认走 `PROXY` 自动选点），并由 `src/proxyNode.ts` 兜底：一旦真实请求撞上 451 或网络错误，就用 Clash API 把 `ACTIVE` 切到其它候选节点，并**逐个探测确认真的能 200 命中 Binance** 再采用（`PROXY_PROBE_TRIES` 控制探测数）。探测不通的节点会被拉黑，不再重复选用。
+
 ```bash
 # 在 .env 中配置 DOMAIN / TELEGRAM_* 后一键启动
 docker compose up -d --build
@@ -186,9 +190,14 @@ docker compose logs -f binance-macd-monitor   # 可见 [entrypoint] 与 mihomo �
 | `MIHOMO_SUBSCRIPTION_URL` | _内置两个公共订阅_ | Docker 部署：Clash/Mihomo YAML 订阅地址（可多个，逗号/空格/换行分隔），默认每个都作为 proxy-provider 加载；留空则用挂载配置或内置直连默认配置 |
 | `MIHOMO_CONFIG_MODE` | `provider` | `provider`：订阅作为 proxy-provider + PROXY(fallback) 组按 Binance 健康检查自动选点；`raw`：订阅直接作为完整配置 |
 | `MIHOMO_HEALTHCHECK_URL` | `https://fapi.binance.com/fapi/v1/ping` | provider 模式选点用的健康检查地址 |
-| `MIHOMO_HEALTHCHECK_INTERVAL` | `600` | 健康检查周期（秒） |
+| `MIHOMO_HEALTHCHECK_INTERVAL` | `180` | 健康检查周期（秒） |
+| `MIHOMO_EXCLUDE_FILTER` | 内置正则 | 按名称剔除订阅里的「说明/剩余流量/到期/官网」等假节点（它们的 server 常是 `127.0.0.1:443`，会让面板直接 `fetch failed`） |
 | `MIHOMO_SUBSCRIPTION_PROXY` | _(空)_ | raw 模式下下载订阅本身所走的代理（如 `http://host.docker.internal:7890`） |
 | `MIHOMO_PROXY_PORT` | `7890` | 容器内 mihomo 混合端口（raw 模式会自动对齐配置里的 `mixed-port`） |
+| `MIHOMO_API_URL` | `http://127.0.0.1:9090` | mihomo 控制接口地址，`src/proxyNode.ts` 用它切换节点 |
+| `MIHOMO_PROXY_GROUP` | `ACTIVE` | 应用实际使用的出口组名 |
+| `PROXY_ROTATE_MAX` | `3` | 单次请求最多因 451 / 网络错误换几次节点 |
+| `PROXY_PROBE_TRIES` | `6` | 换节点时最多探测多少个候选（探测通过才采用） |
 
 示例：
 

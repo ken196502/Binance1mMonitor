@@ -28,7 +28,10 @@ services:
       - MIHOMO_CONFIG_MODE=${MIHOMO_CONFIG_MODE:-provider}
       # Binance 健康检查：只有能对下面地址返回 200 的节点才会被 PROXY 组选中（规避 451 地区屏蔽）
       - MIHOMO_HEALTHCHECK_URL=${MIHOMO_HEALTHCHECK_URL:-https://fapi.binance.com/fapi/v1/ping}
-      - MIHOMO_HEALTHCHECK_INTERVAL=${MIHOMO_HEALTHCHECK_INTERVAL:-600}
+      # 健康检查周期（秒）：决定节点失效后的最长中断时间，周期越短切换越快
+      - MIHOMO_HEALTHCHECK_INTERVAL=${MIHOMO_HEALTHCHECK_INTERVAL:-180}
+      # 按名称剔除订阅里的「说明/剩余流量/到期/官网」等假节点（server 常为 127.0.0.1:443）
+      - MIHOMO_EXCLUDE_FILTER=${MIHOMO_EXCLUDE_FILTER:-}
       # 拉取订阅本身也需要代理时可用宿主机网关上的代理（见下方 extra_hosts）
       - MIHOMO_SUBSCRIPTION_PROXY=${MIHOMO_SUBSCRIPTION_PROXY:-}
       - MIHOMO_PROXY_PORT=${MIHOMO_PROXY_PORT:-7890}
