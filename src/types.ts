@@ -16,31 +16,39 @@ export interface Row extends Ticker24h {
   diff1m?: number | null;
   diff1mLevel?: "high" | "mid" | "low" | null; // 1m DIFF: 过去N根百分之x且>0算高，>0算中，<0算低
   diff5m?: number | null;
-  diff5mLevel?: "high" | "mid" | "low" | null; // 5m DIFF: 过去N根百分之x且>0算高，>0算中，<0算低
+  diff5mLevel?: "high" | "mid" | "low" | null;
   diff15m?: number | null;
   diff15mLevel?: "high" | "mid" | "low" | null;
-  weekChangePercent?: number | null; // 周K涨跌幅度%（保留供告警过滤等使用）
-  change60d?: "up" | "down" | null; // 60日K涨跌（已收盘61日K对比）: "up" | "down" | null
+  weekChangePercent?: number | null;
+  change60d?: "up" | "down" | null;
   supportMa?: string | null; // 支撑MA，如 "ma10"，无支撑为 null
   streakCount: number;
   streakDir: "up" | "down" | null;
+  streakGainPercent?: number | null; // 连阳期间累计涨幅%
+  greenBarRatio30?: number | null; // 近30根1m MACD 绿柱占比 (0~1)
+  greenBarCount30?: number | null; // 近30根1m MACD 绿柱数量
   rank?: number | null; // 榜单自然排名 1..10，置顶或跌出时为 null
   prevRank?: number | null; // 上期自然排名 1..10
   rankChange?: "up" | "down" | null; // "up": 上升; "down": 下跌; null: 无变化/未对比
   rankDelta?: number | null; // 名次变动差值（如上升2位为 +2，下降3位为 -3，新进为 null）
   isDropped?: boolean; // 是否跌出前十
   isPinned?: boolean; // 是否置顶
-  max1500?: number | null; // 近1500根1m K线的最高价
-  maxHour?: number | null; // 最近一个整点到当前的最高价
-  hourFirstClose?: number | null; // 最近一个整点第一分钟的收盘价
-  hourFirstLow?: number | null; // 最近一个整点第一分钟的最低价
+  max1500?: number | null; // 兼容保留
+  maxHour?: number | null;
+  hourFirstClose?: number | null;
+  hourFirstLow?: number | null;
 }
 
 export interface AlertSymbolItem {
   symbol: string;
+  priceChangePercent?: number | null;
   streakCount: number;
   streakDir: "up" | "down" | null;
-  diff1mLevel?: "high" | "mid" | "low" | null; // 1m DIFF 状态
+  streakGainPercent?: number | null;
+  greenBarRatio30?: number | null;
+  greenBarCount30?: number | null;
+  diff1mLevel?: "high" | "mid" | "low" | null;
+  supportMa?: string | null;
   rank?: number | null;
   rankChange?: "up" | "down" | null;
   rankDelta?: number | null;
@@ -59,7 +67,7 @@ export interface HighBullSummary {
   min: number;
   triggered: boolean; // 任意一个榜单 count >= min
   gainers: BoardAlertInfo;
-  losers: BoardAlertInfo;
+  losers?: BoardAlertInfo;
   volume?: BoardAlertInfo;
 }
 

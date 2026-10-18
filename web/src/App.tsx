@@ -4,21 +4,10 @@ import { GroupSection } from "./components/GroupSection";
 import { Countdown } from "./components/Countdown";
 import "./App.css";
 
-type TabId = "s1" | "s2";
 
-interface TabDef {
-  id: TabId;
-  label: string; // mobile tab label
-}
-
-const TABS: TabDef[] = [
-  { id: "s1", label: "涨幅前十" },
-  { id: "s2", label: "跌幅前十" },
-];
 
 export default function App() {
   const { status, error } = useStatus();
-  const [active, setActive] = useState<TabId>("s1");
   const [remaining, setRemaining] = useState(60);
 
   // Countdown ring: seconds left until the current 1m candle closes (the
@@ -46,10 +35,12 @@ export default function App() {
       meta =
         `更新于 ${new Date(status.at).toLocaleTimeString()}` +
         ` · 数据源 ${status.base}` +
-        ` · 高位=DEA≥${status.highRatio}×窗口峰值(${status.highWindow}m)` +
+        ` · 规则：连阳涨幅达标 + 无MA支撑 + 近30根1m绿柱>80%` +
         ` · 每分钟轮询（对齐1m收盘）`;
     }
   }
+
+  const alertCount = status?.gainers ? status.gainers.filter((r) => r.alert).length : 0;
 
   return (
     <>
@@ -64,55 +55,17 @@ export default function App() {
         </div>
       </header>
 
-      <div className="tabs">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            className={`tab${t.id === active ? " active" : ""}`}
-            type="button"
-            onClick={() => setActive(t.id)}
-          >
-            {t.label}
-            <span className={status ? (countAlerts(status, t.id) > 0 ? " alert-num" : "") : ""}>
-              ({status ? countAlerts(status, t.id) : 0})
-            </span>
-          </button>
-        ))}
-      </div>
-
       <div className="grid">
-        {status && !status.error ? (
-          <>
-            <GroupSection
-              id="s1"
-              title="24h 涨幅前十"
-              changeHeader="涨幅%"
-              rows={status.gainers}
-              changeKey="priceChangePercent"
-              active={active === "s1"}
-            />
-            <GroupSection
-              id="s2"
-              title="24h 跌幅前十"
-              changeHeader="跌幅%"
-              rows={status.losers}
-              changeKey="priceChangePercent"
-              active={active === "s2"}
-            />
-          </>
-        ) : (
-          // keep the two sections present (so narrow-screen CSS stays coherent) but empty
-          <>
-            <GroupSection id="s1" title="24h 涨幅前十" changeHeader="涨幅%" rows={[]} changeKey="priceChangePercent" active={active === "s1"} />
-            <GroupSection id="s2" title="24h 跌幅前十" changeHeader="跌幅%" rows={[]} changeKey="priceChangePercent" active={active === "s2"} />
-          </>
-        )}
+        <GroupSection
+          id="s1"
+          title="24h 涨幅榜"
+          changeHeader="24h涨幅%"
+          rows={status && !status.error ? status.gainers : []}
+          changeKey="priceChangePercent"
+          active={true}
+        />
       </div>
     </>
   );
 }
 
-function countAlerts(status: NonNullable<ReturnType<typeof useStatus>["status"]>, id: TabId): number {
-  const rows = id === "s1" ? status.gainers : status.losers;
-  return rows.filter((r) => r.alert).length;
-}

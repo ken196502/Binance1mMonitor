@@ -3,24 +3,31 @@ import { fmt, pct, colClass } from "../lib/format";
 
 interface RowProps {
   row: Row;
-  changeLabel: number; // priceChangePercent (gainers/losers) or quoteVolume/1e8 (volume)
+  changeLabel: number; // priceChangePercent (gainers) or quoteVolume/1e8 (volume)
   isPercentage?: boolean; // true for price change, false for volume
 }
 
-// Single table row. Replicates the original rowHtml() logic exactly:
-// alert row → red background; streak (连阳/连阴), bullish/bearish (多头/空头),
-// high/low (高位/低位) columns coloured accordingly.
+// Single table row: displays rank, shift, symbol, 24h change, streak count, streak gain, 1m30upR, support.
 export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
-  const isHigh = row.deaLevel === "high" || (row.deaLevel == null && row.high === true);
-  const isHighBull = isHigh && row.bullish === true;
   const isPinned = row.isPinned ?? (row.symbol === "BTCUSDT" || row.symbol === "SOLUSDT");
 
   const rowClasses = [
     row.alert ? "alert" : "",
-    isHighBull ? "high-bull" : "",
     isPinned ? "pinned-row" : "",
     row.isDropped ? "dropped-row" : "",
   ].filter(Boolean).join(" ");
+
+  const streakGainStr = row.streakGainPercent != null
+    ? `${row.streakGainPercent >= 0 ? "+" : ""}${row.streakGainPercent.toFixed(2)}%`
+    : "-";
+
+  const ratioStr = row.greenBarRatio30 != null
+    ? `${(row.greenBarRatio30 * 100).toFixed(1)}%`
+    : "-";
+
+  const ratioTitle = row.greenBarCount30 != null
+    ? `${row.greenBarCount30}/30 (${ratioStr})`
+    : undefined;
 
   return (
     <tr className={rowClasses}>
@@ -69,45 +76,22 @@ export function StatusRow({ row, changeLabel, isPercentage = true }: RowProps) {
         </a>
       </td>
       <td className={colClass(changeLabel)}>{isPercentage ? pct(changeLabel) : fmt(changeLabel, 2)}</td>
-      <td className="col-60d">
-        {row.change60d === "up" ? (
-          <span className="pos arrow-60d" title="60日趋势：上涨">▲</span>
-        ) : row.change60d === "down" ? (
-          <span className="neg arrow-60d" title="60日趋势：下跌">▼</span>
-        ) : (
-          <span className="muted">-</span>
-        )}
+      <td className={row.streakDir === "up" ? "pos" : row.streakDir === "down" ? "neg" : "muted"}>
+        {row.streakDir && row.streakCount > 0 ? `${row.streakCount}${row.streakDir === "up" ? "阳" : "阴"}` : "-"}
+      </td>
+      <td className={row.streakGainPercent != null && row.streakGainPercent > 0 ? "pos" : "muted"}>
+        {streakGainStr}
+      </td>
+      <td
+        className={row.greenBarRatio30 != null && row.greenBarRatio30 > 0.8 ? "yellow" : "muted"}
+        title={ratioTitle}
+      >
+        {ratioStr}
       </td>
       {row.supportMa ? (
         <td>{row.supportMa}</td>
       ) : (
-        <td className="pink">N/A</td>
-      )}
-      {row.streakDir && row.streakCount > 0 ? (
-        <td className={row.streakDir === "up" ? "pos" : "neg"}>
-          {row.streakCount}
-          {row.streakDir === "up" ? "阳" : "阴"}
-        </td>
-      ) : (
-        <td className="muted">-</td>
-      )}
-      {row.diff1mLevel == null ? (
-        <td className="muted" title={row.diff1m != null ? `1m DIFF: ${row.diff1m}` : undefined}>-</td>
-      ) : row.diff1mLevel === "high" ? (
-        <td className="yellow" title={`1m DIFF: ${row.diff1m != null ? row.diff1m.toFixed(4) : ""} (高)`}>高</td>
-      ) : row.diff1mLevel === "mid" ? (
-        <td className="white" title={`1m DIFF: ${row.diff1m != null ? row.diff1m.toFixed(4) : ""} (中)`}>中</td>
-      ) : (
-        <td className="muted" title={`1m DIFF: ${row.diff1m != null ? row.diff1m.toFixed(4) : ""} (低)`}>低</td>
-      )}
-      {row.diff5mLevel == null ? (
-        <td className="muted" title={row.diff5m != null ? `5m DIFF: ${row.diff5m}` : undefined}>-</td>
-      ) : row.diff5mLevel === "high" ? (
-        <td className="yellow" title={`5m DIFF: ${row.diff5m != null ? row.diff5m.toFixed(4) : ""} (高)`}>高</td>
-      ) : row.diff5mLevel === "mid" ? (
-        <td className="white" title={`5m DIFF: ${row.diff5m != null ? row.diff5m.toFixed(4) : ""} (中)`}>中</td>
-      ) : (
-        <td className="muted" title={`5m DIFF: ${row.diff5m != null ? row.diff5m.toFixed(4) : ""} (低)`}>低</td>
+        <td className="pink">无</td>
       )}
     </tr>
   );

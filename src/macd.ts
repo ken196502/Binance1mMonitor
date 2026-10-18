@@ -32,6 +32,7 @@ export interface MacdResult {
 export interface Streak {
   count: number;
   direction: "up" | "down" | null;
+  gainPercent?: number | null;
 }
 
 /**
@@ -54,7 +55,9 @@ export function consecutiveStreakAt(
   targetIndex: number,
   intervalMs = 60_000,
 ): Streak {
-  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= candles.length || !Number.isFinite(intervalMs) || intervalMs <= 0) return { count: 0, direction: null };
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= candles.length || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return { count: 0, direction: null };
+  }
   const last = candles[targetIndex];
   if (!last || last.close === last.open) return { count: 0, direction: null };
   const dir = last.close > last.open ? "up" : "down";
@@ -67,6 +70,58 @@ export function consecutiveStreakAt(
     count++;
   }
   return { count, direction: dir };
+}
+
+/**
+ * 计算连阳/连阴期间的累计涨跌幅百分比（以连阳为例：第一根阳线的 open 到最后一根已收盘阳线的 close）
+ */
+export function calculateStreakGain(
+  candles: readonly Pick<Candle, 'open' | 'close' | 'time'>[],
+  streak: Streak,
+  targetIndex = candles.length - 2,
+): number | null {
+  if (!streak.direction || streak.count <= 0) return null;
+  if (targetIndex < 0 || targetIndex >= candles.length) return null;
+  const startIdx = targetIndex - streak.count + 1;
+  if (startIdx < 0 || startIdx >= candles.length) return null;
+  const startOpen = candles[startIdx].open;
+  const endClose = candles[targetIndex].close;
+  if (startOpen <= 0) return null;
+  return ((endClose - startOpen) / startOpen) * 100;
+}
+
+export interface MacdGreenRatio {
+  greenCount: number;
+  total: number;
+  ratio: number;
+}
+
+/**
+ * 计算最近 windowSize 根（默认 30 根）已收盘 1m K 线的 MACD 绿柱 (hist > 0) 占比
+ */
+export function calculateMacdGreenBarRatio(
+  closes: number[],
+  targetIndex?: number,
+  windowSize = 30,
+): MacdGreenRatio | null {
+  if (closes.length < windowSize) return null;
+  const { hist } = computeMacd(closes);
+  const n = hist.length;
+  const end = targetIndex !== undefined ? targetIndex : n - 2;
+  const start = end - windowSize + 1;
+  if (start < 0 || end >= n) return null;
+
+  let greenCount = 0;
+  for (let i = start; i <= end; i++) {
+    if (hist[i] > 0) {
+      greenCount++;
+    }
+  }
+  return {
+    greenCount,
+    total: windowSize,
+    ratio: greenCount / windowSize,
+  };
 }
 export const SUPPORT_MA_PERIODS = [5, 7, 10, 20, 25, 30, 60, 99, 120] as const;
 

@@ -75,19 +75,18 @@ test('确保涨幅榜先同步；遇到429立即停止并开启已同步标的�
     assert.ok(!subscribedMid.includes('G1USDT'), '429 失败的 G1USDT 尚未同步完成，不应在初次订阅中');
     assert.ok(!subscribedMid.includes('L1USDT'), '429 期间不应提前订阅跌幅榜 L1USDT');
 
-    // 等待整个 buildBoards 完成（经历 1 秒冷静期后补齐 G1，并同步 L1，然后重新订阅全部）
+    // 等待整个 buildBoards 完成（经历 1 秒冷静期后补齐 G1，然后重新订阅全部涨幅榜标的）
     const boards = await boardPromise;
 
     // 验证最终数据结构
     assert.equal(boards.pinned.length, 1);
     assert.equal(boards.gainers.length, 1);
-    assert.equal(boards.losers.length, 1);
+    assert.equal(boards.losers.length, 0);
 
     // 验证最终已重新订阅全部标的
     const subscribedFinal = wsManager.getSubscribedSymbols();
     assert.ok(subscribedFinal.includes('BTCUSDT'), '最终应当包含 BTCUSDT');
     assert.ok(subscribedFinal.includes('G1USDT'), '最终应当包含 G1USDT');
-    assert.ok(subscribedFinal.includes('L1USDT'), '最终应当包含 L1USDT');
   } finally {
     resetBackoffForTest();
     resetCandleCacheForTest();

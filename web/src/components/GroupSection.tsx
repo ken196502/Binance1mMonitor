@@ -14,7 +14,7 @@ interface GroupSectionProps {
 // Sortable columns. Each header maps to a key whose value is extracted from a
 // row via sortValue below. The change column's value depends on the group's
 // changeKey (priceChangePercent for gainers/losers, quoteVolume for volume).
-type SortKey = "rank" | "shift" | "symbol" | "change" | "change60d" | "support" | "lastPrice" | "streak" | "diff1m" | "diff5m";
+type SortKey = "rank" | "shift" | "symbol" | "change" | "streak" | "streakGain" | "1m30upR" | "support" | "lastPrice";
 type SortDir = "asc" | "desc";
 
 export function GroupSection({
@@ -39,16 +39,13 @@ export function GroupSection({
     { key: "shift", label: "升跌", className: "col-shift" },
     { key: "symbol", label: "币种", className: "col-symbol" },
     { key: "change", label: changeHeader },
-    { key: "change60d", label: "60D", className: "col-60d" },
+    { key: "streak", label: "连阳数" },
+    { key: "streakGain", label: "连阳涨幅" },
+    { key: "1m30upR", label: "1m30upR" },
     { key: "support", label: "支撑" },
-    { key: "streak", label: "连续" },
-    { key: "diff1m", label: "1m" },
-    { key: "diff5m", label: "5m" },
   ];
 
   // Clicking a header: same key → toggle direction; new key → sensible default
-  // (rank and string column asc, numeric/boolean columns desc so biggest/most-notable
-  // land on top).
   const onSort = (key: SortKey) => {
     if (key === sortKey) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -58,8 +55,6 @@ export function GroupSection({
     }
   };
 
-  // Extract the sort value for a row under a given key. Returns number | string
-  // | null; nulls (missing data) always sort to the bottom regardless of dir.
   const valueAt = (r: Row, key: SortKey): number | string | null => {
     switch (key) {
       case "rank":
@@ -74,11 +69,12 @@ export function GroupSection({
         return r.symbol;
       case "change":
         return changeLabel(r);
-      case "change60d": {
-        if (r.change60d === "up") return 1;
-        if (r.change60d === "down") return -1;
-        return null;
-      }
+      case "streak":
+        return r.streakCount > 0 ? r.streakCount : null;
+      case "streakGain":
+        return r.streakGainPercent != null ? r.streakGainPercent : null;
+      case "1m30upR":
+        return r.greenBarRatio30 != null ? r.greenBarRatio30 : null;
       case "support": {
         if (!r.supportMa) return null;
         const num = parseInt(r.supportMa.replace(/^ma/i, ""), 10);
@@ -86,20 +82,6 @@ export function GroupSection({
       }
       case "lastPrice":
         return r.lastPrice;
-      case "streak":
-        return r.streakCount > 0 ? r.streakCount : null;
-      case "diff1m": {
-        if (r.diff1mLevel === "high") return 2;
-        if (r.diff1mLevel === "mid") return 1;
-        if (r.diff1mLevel === "low") return 0;
-        return null;
-      }
-      case "diff5m": {
-        if (r.diff5mLevel === "high") return 2;
-        if (r.diff5mLevel === "mid") return 1;
-        if (r.diff5mLevel === "low") return 0;
-        return null;
-      }
     }
   };
 
@@ -136,7 +118,7 @@ export function GroupSection({
       <h2>
         {title}{" "}
         <span className="count">
-          {alerts ? `⚠️ ${alerts} 个高位死叉` : "无高位死叉"}
+          {alerts ? `⚠️ ${alerts} 个命中` : "无告警命中"}
         </span>
       </h2>
       <div className="table-wrap">
