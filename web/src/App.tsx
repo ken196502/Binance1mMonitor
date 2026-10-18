@@ -87,6 +87,7 @@ export default function App() {
           symbol={chartSymbol}
           onSymbolChange={setChartSymbol}
           active={true}
+          markerTime={status && !status.error ? Date.parse(status.at) : null}
         />
       </div>
     </>

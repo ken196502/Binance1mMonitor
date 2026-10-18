@@ -75,14 +75,16 @@ interface ChartPanelProps {
   symbol: string; // 当前标的（受控：下拉与榜单点击都改它）
   onSymbolChange: (symbol: string) => void;
   active?: boolean; // 窄屏 tab 状态（与榜单保持一致，始终可见）
+  markerTime?: number | null; // 榜单快照时间(ms)：在时间轴上标出"榜单数据截至此刻"
 }
 
-export function ChartPanel({ symbols, symbol, onSymbolChange, active }: ChartPanelProps) {
+export function ChartPanel({ symbols, symbol, onSymbolChange, active, markerTime }: ChartPanelProps) {
   const [hiddenMa, setHiddenMa] = useState<ReadonlySet<number>>(() => new Set<number>());
   const [hoverTime, setHoverTime] = useState<number | null>(null);
 
   const { data, error, loading } = useKlines(symbol);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const markerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const maRef = useRef<Map<number, ISeriesApi<"Line">>>(new Map());
@@ -282,6 +284,49 @@ export function ChartPanel({ symbols, symbol, onSymbolChange, active }: ChartPan
     }
   }, [hiddenMa]);
 
+  // 榜单截止标记：把 status.at 映射到时间轴的横坐标，画一条竖线。
+  // 竖线右侧的 K 线是图表实时看到的、榜单还没纳入的部分（榜单是 60s 记忆快照）。
+  // lightweight-charts 没有"按时间画竖线"的原语（createPriceLine 只能画水平线），
+  // 所以这里用 timeToCoordinate + 一个绝对定位的 DOM 覆盖层，并跟随缩放/平移/改宽度重算。
+  useEffect(() => {
+    const chart = chartRef.current;
+    const el = markerRef.current;
+    if (!chart || !el) return;
+    const host = hostRef.current;
+
+    const place = () => {
+      if (markerTime == null || !host) {
+        el.style.display = "none";
+        return;
+      }
+      // 必须向下取整到整分钟：timeToCoordinate 对"不存在的时间点"返回 null，
+      // 而 status.at 是秒级时间戳（如 03:13:47），并不落在任何一根 K 线的开盘时刻上。
+      const barTime = Math.floor(markerTime / 60_000) * 60_000;
+      const x = chart.timeScale().timeToCoordinate(toTs(barTime));
+      const width = host.clientWidth;
+      // 落在可视区外（含左右留白）就隐藏，避免画到面板外面
+      if (x == null || x < 0 || x > width) {
+        el.style.display = "none";
+        return;
+      }
+      el.style.display = "block";
+      el.style.left = `${x}px`;
+      // 靠近右边缘时把标签翻到线的左侧，避免被面板裁掉
+      el.classList.toggle("flip", x > width - 78);
+    };
+
+    place();
+    const ts = chart.timeScale();
+    ts.subscribeVisibleTimeRangeChange(place);
+    // autoSize 会在容器变宽时重排，但可见时间区间不一定变化，所以另外监听尺寸
+    const ro = typeof ResizeObserver !== "undefined" && host ? new ResizeObserver(place) : null;
+    if (ro && host) ro.observe(host);
+    return () => {
+      ts.unsubscribeVisibleTimeRangeChange(place);
+      ro?.disconnect();
+    };
+  }, [markerTime, data]);
+
   const maPeriods = useMemo(() => data?.maPeriods ?? [], [data]);
 
   // 图例：默认显示最后一根 K 线，鼠标悬停时切到十字线所在的那根
@@ -374,6 +419,13 @@ export function ChartPanel({ symbols, symbol, onSymbolChange, active }: ChartPan
 
       <div className="chart-host-wrap">
         <div className="chart-host" ref={hostRef} />
+        {markerTime != null && (
+          <div className="chart-board-marker" ref={markerRef} style={{ display: "none" }}>
+            <span className="cbm-label">
+              榜单 {new Date(markerTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          </div>
+        )}
         {loading && <div className="chart-mask">加载中…</div>}
         {!loading && error && <div className="chart-mask err">K 线加载失败: {error}</div>}
       </div>

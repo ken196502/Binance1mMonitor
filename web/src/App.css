@@ -300,6 +300,34 @@ th.col-symbol, td.col-symbol {
   border-radius: 6px;
   overflow: hidden;
 }
+/* ---- 榜单截止标记：竖线标出榜单快照时刻，其右侧 K 线尚未进入榜单 ---- */
+.chart-board-marker {
+  position: absolute;
+  top: 0;
+  /* 停在时间轴上方，标签正好压在时间轴那一行上，一眼看出"榜单到哪" */
+  bottom: 22px;
+  width: 0;
+  border-left: 1px dashed rgba(245, 166, 35, 0.85);
+  pointer-events: none;
+  z-index: 3;
+}
+.chart-board-marker .cbm-label {
+  position: absolute;
+  bottom: -21px;
+  left: 3px;
+  background: var(--amber);
+  color: #12161f;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 0 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* 靠右时把标签翻到线的左侧，避免溢出面板被裁掉 */
+.chart-board-marker.flip .cbm-label { left: auto; right: 3px; }
+
 .chart-mask {
   position: absolute;
   inset: 0;
