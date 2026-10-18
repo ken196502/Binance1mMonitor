@@ -28,7 +28,7 @@ import {
 import { TelegramAlerter, isAlertMatch } from "./alert.ts";
 import { telegramConfigured } from "./telegram.ts";
 import { enrichRankChanges, type BoardSnapshot } from "./rank.ts";
-import { wsManager, applyTradeToCandles } from "./ws.ts";
+import { wsManager, applyTradeToCandles, sanitizeCandles } from "./ws.ts";
 import { buildChartPayload, parseChartQuery } from "./chart.ts";
 import type { Row, Status } from "./types.ts";
 
@@ -535,7 +535,9 @@ async function getChartCandles(
 ): Promise<{ candles: Candle[]; source: "monitor" | "rest" }> {
   const cached = candleCache.get(symbol);
   if (cached && cached.candles1m.length > 0) {
-    return { candles: cached.candles1m.slice(-limit), source: "monitor" };
+    // 缓存由 WS 实时推进，理论上每根都已由 applyTradeToCandles 清洗过；
+    // 这里再过一道，保证图表绝不会因为一根坏柱子（low/close=0）把价格轴拉到 0。
+    return { candles: sanitizeCandles(cached.candles1m).slice(-limit), source: "monitor" };
   }
 
   const now = Date.now();
