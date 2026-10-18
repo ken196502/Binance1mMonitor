@@ -107,6 +107,22 @@ npm start              # 起后端，托管 web/dist 静态资源 + /api/status
 
 面板每 5 秒轮询一次 `/api/status`，后端对 Binance 的请求有 ~20s 缓存 TTL，避免触发限频。
 
+## 1m K 线图表（TradingView Lightweight Charts）
+
+页面右栏常驻一张 1m 图表：主图 K 线叠加 **MA5/10/20/30/60**，副图 **MACD(12,26,9)**（DIF / DEA / 柱）。可下拉切换交易对，均线可逐条点击显隐，十字线悬停时顶部图例显示该根 K 线的 OHLC 与各指标数值。
+
+指标不在前端计算，而是由后端算好后随数据下发（`src/chart.ts` 复用 `macd.ts` 的 `ema`/`computeMacd`），因此**图上看到的 MACD / 均线与监控表格、告警逻辑是同一套数值、同一口径**。
+
+```bash
+GET /api/klines?symbol=BTCUSDT&limit=200
+# → { symbol, interval:"1m", source, maPeriods:[5,10,20,30,60], macd:{fast,slow,signal}, bars:[{time,open,high,low,close,volume,ma,dif,dea,hist}] }
+```
+
+- `time` 为 epoch 毫秒且对齐整分钟；`ma` 的键是周期字符串，预热不足的位置为 `null`（前端断线不画假线）。
+- `limit` 默认 200、上限 500、下限 60；`symbol` 仅允许字母数字（防注入）。
+- 数据来源：榜单内标的直接复用监控已在维护的 `candleCache`（含 WS 实时推进，**零额外请求**）；榜单外标的走 45s TTL 的 REST 兜底，`source` 字段会标明是 `monitor` 还是 `rest`。
+- 前端对齐整分钟边界轮询（`web/src/hooks/useKlines.ts`），K 线只在收盘时才定局，没必要一分钟请求多次。
+
 ### Docker 部署（容器内置 mihomo 代理）
 
 生产镜像内置 **mihomo（Clash.Meta）** 内核与 Geo 数据：容器启动时由 `docker/entrypoint.sh` 先在容器内拉起 mihomo，再把 `PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` 指向 `http://127.0.0.1:7890`，最后 `exec npm start`。因为 `src/binance.ts` 与 `src/telegram.ts` 都用 undici 的 `EnvHttpProxyAgent`，**Binance 行情监控、60D 趋势、Telegram 播报全部经由容器内 mihomo 出站**，宿主机不需要再开 Clash，也不必配 `host.docker.internal`。

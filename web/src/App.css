@@ -242,6 +242,76 @@ th.col-symbol, td.col-symbol {
 .tab.active { color: var(--text); border-color: var(--amber); }
 .tab .alert-num { color: var(--amber); font-weight: 600; }
 
+/* ---- 1m K 线图表（TradingView Lightweight Charts）---- */
+.chart-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chart-panel h2 { flex-wrap: wrap; row-gap: 6px; }
+.chart-symbol {
+  margin-left: auto;
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 140px;
+}
+.chart-symbol:hover { border-color: var(--amber); }
+.chart-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.ma-btn {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ma-btn.off { opacity: 0.32; }
+.chart-meta { color: var(--muted); font-size: 11px; margin-left: auto; }
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  min-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-legend b { font-weight: 600; color: var(--text); }
+.chart-legend b.pos { color: var(--green); }
+.chart-legend b.neg { color: var(--red); }
+.chart-legend .lg-time { color: var(--amber); font-weight: 600; }
+.chart-host-wrap { position: relative; width: 100%; }
+.chart-host {
+  width: 100%;
+  height: 560px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.chart-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(11, 14, 20, 0.72);
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+
 @media (min-width: 900px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -249,8 +319,16 @@ th.col-symbol, td.col-symbol {
   body { padding: 10px 8px; }
   .tabs { display: flex; }
   .grid section { display: none; }
+  /* 图表始终可见：它是榜单的上下文，不参与窄屏 tab 切换。
+     选择器要带上 .active 才能压过下面两条（.grid section.active / .grid section.active h2，
+     特异度分别相同 / 更高），否则图表会退化成 block，且标题里的 symbol 下拉被隐藏。 */
+  .grid section.chart-panel,
+  .grid section.chart-panel.active { display: flex; }
   .grid section.active { display: block; }
   .grid section.active h2 { display: none; }  /* the tab carries the title + count on mobile */
+  .chart-host { height: 420px; }
+  /* 图表没有 tab 承载标题，标题（连同 symbol 下拉）自己留着 */
+  .grid section.chart-panel.active h2 { display: flex; }
 }
 @media (max-width: 600px) {
   body { padding: 8px 6px; }
@@ -262,4 +340,7 @@ th.col-symbol, td.col-symbol {
   th { font-size: 11px; }
   th .sort-th { gap: 2px; }
   .tab { padding: 7px 2px; font-size: 11px; }
+  .chart-host { height: 360px; }
+  .chart-symbol { max-width: 110px; font-size: 11px; }
+  .chart-meta { width: 100%; margin-left: 0; }
 }

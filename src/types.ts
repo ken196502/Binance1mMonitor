@@ -90,3 +90,31 @@ export interface Status {
   volume?: Row[];
   error?: string;
 }
+
+// ---- 图表（前端 TradingView Lightweight Charts）----
+/** 一根 1m K 线及其叠加指标。前端只做渲染，指标口径全部由后端算好，
+ *  保证图表与监控表格里的 MACD / 均线是同一套数值。 */
+export interface ChartBar {
+  time: number; // 开盘时间（epoch 毫秒，对齐整分钟）
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  /** 各周期均线，键为周期的十进制字符串（如 "5"）；预热不足时为 null（前端断线不画） */
+  ma: Record<string, number | null>;
+  dif: number; // MACD 快线 DIF(EMA12-EMA26)
+  dea: number; // MACD 慢线 DEA(DIF 的 EMA9)
+  hist: number; // MACD 柱 = 2 × (DIF - DEA)
+}
+
+export interface ChartPayload {
+  symbol: string;
+  interval: "1m";
+  updatedAt: string;
+  /** 数据来源：monitor = 复用监控已维护的 K 线缓存（含 WS 实时推进）；rest = 独立 REST 拉取 */
+  source: "monitor" | "rest";
+  maPeriods: number[];
+  macd: { fast: number; slow: number; signal: number };
+  bars: ChartBar[];
+}

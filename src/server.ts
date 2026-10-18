@@ -1,5 +1,6 @@
-// Local HTTP server: serves a dashboard at / and JSON status at /api/status.
-// The status is refreshed on a short TTL so the page can poll without hammering Binance.
+// Local HTTP server: serves a dashboard at / and JSON status at /api/status
+// plus chart data at /api/klines. The status is refreshed on a short TTL so the
+// page can poll without hammering Binance.
 
 import http from "node:http";
 import { readFile } from "node:fs/promises";
@@ -28,6 +29,7 @@ import { TelegramAlerter, isAlertMatch } from "./alert.ts";
 import { telegramConfigured } from "./telegram.ts";
 import { enrichRankChanges, type BoardSnapshot } from "./rank.ts";
 import { wsManager, applyTradeToCandles } from "./ws.ts";
+import { buildChartPayload, parseChartQuery } from "./chart.ts";
 import type { Row, Status } from "./types.ts";
 
 // Directory the built React frontend is emitted to (web/dist). In dev you run
@@ -515,6 +517,61 @@ async function getStatus(): Promise<Status> {
   return promise;
 }
 
+// 图表用的 1m K 线：榜单内标的直接复用监控已在维护的 candleCache（含 WS 实时推进，
+// 零额外请求）；榜单外标的走带 TTL 的 REST 兜底，避免多个标签页把权重打爆。
+const CHART_KLINE_TTL_MS = 45_000;
+const chartKlineCache = new Map<string, { at: number; promise: Promise<Candle[]> }>();
+
+function pruneChartKlineCache(now: number): void {
+  if (chartKlineCache.size <= 32) return;
+  for (const [sym, entry] of chartKlineCache) {
+    if (now - entry.at > CHART_KLINE_TTL_MS * 10) chartKlineCache.delete(sym);
+  }
+}
+
+async function getChartCandles(
+  symbol: string,
+  limit: number,
+): Promise<{ candles: Candle[]; source: "monitor" | "rest" }> {
+  const cached = candleCache.get(symbol);
+  if (cached && cached.candles1m.length > 0) {
+    return { candles: cached.candles1m.slice(-limit), source: "monitor" };
+  }
+
+  const now = Date.now();
+  pruneChartKlineCache(now);
+  let entry = chartKlineCache.get(symbol);
+  if (!entry || now - entry.at >= CHART_KLINE_TTL_MS) {
+    const promise = fetch1mCandles(symbol, limit);
+    entry = { at: now, promise };
+    chartKlineCache.set(symbol, entry);
+    // 失败不缓存，让下一次请求重新拉（klines 的重量很小，重试代价可接受）
+    promise.catch(() => {
+      if (chartKlineCache.get(symbol) === entry) chartKlineCache.delete(symbol);
+    });
+  }
+  return { candles: await entry.promise, source: "rest" };
+}
+
+// GET /api/klines?symbol=BTCUSDT&limit=200 → 1m K 线 + 均线 + MACD（供页面图表渲染）
+async function serveKlines(u: URL, res: http.ServerResponse): Promise<void> {
+  const query = parseChartQuery(u.searchParams.get("symbol"), u.searchParams.get("limit"));
+  if (!query) {
+    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "symbol 参数无效" }));
+    return;
+  }
+  try {
+    const { candles, source } = await getChartCandles(query.symbol, query.limit);
+    const payload = buildChartPayload(query.symbol, candles, source);
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+    res.end(JSON.stringify(payload));
+  } catch (e) {
+    res.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+  }
+}
+
 // Background polling loop: keeps checking and alerting even if no browser client is connected.
 let isPolling = false;
 async function pollLoop() {
@@ -602,6 +659,11 @@ const server = http.createServer(async (req, res) => {
   }
   const reqUrl = req.url ?? "/";
   const u = new URL(reqUrl, `http://${req.headers.host ?? "localhost"}`);
+
+  if (u.pathname === "/api/klines") {
+    await serveKlines(u, res);
+    return;
+  }
 
   if (u.pathname.startsWith("/go/") || (u.pathname === "/go" && u.searchParams.has("symbol"))) {
     let symbol = "";

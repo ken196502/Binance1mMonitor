@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStatus } from "./hooks/useStatus";
 import { GroupSection } from "./components/GroupSection";
+import { ChartPanel } from "./components/KlineChart";
 import { Countdown } from "./components/Countdown";
 import "./App.css";
 
@@ -42,6 +43,11 @@ export default function App() {
 
   const alertCount = status?.gainers ? status.gainers.filter((r) => r.alert).length : 0;
 
+  // 图表可选标的：榜单在列的优先（含置顶的 BTC/SOL），保证点得到刚看到的币种
+  const chartSymbols = status?.gainers
+    ? status.gainers.map((r) => r.symbol)
+    : ["BTCUSDT", "SOLUSDT"];
+
   return (
     <>
       <header>
@@ -64,6 +70,7 @@ export default function App() {
           changeKey="priceChangePercent"
           active={true}
         />
+        <ChartPanel symbols={chartSymbols} active={true} />
       </div>
     </>
   );
