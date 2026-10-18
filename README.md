@@ -51,7 +51,7 @@ npm run research -- gainers --data data/research/hourly-initial --end 2026-10-11
 
 当 **24h 涨幅榜** 出现 **≥ `TG_ALERT_MIN`（默认 3）个**同时满足以下条件的币种时：
 
-1. **连阳且涨幅达到阈值**：1m 连续收阳（`streakCount ≥ 2`），且连阳期间累计涨幅 ≥ `STREAK_GAIN_THRESHOLD`（默认 1.0%）
+1. **连阳且涨幅达到阈值**：1m 连续收阳（`streakCount ≥ 2`），且连阳期间累计涨幅达到阈值（阈值为 **`24h涨幅 / 10`**，即 `streakGainPercent >= priceChangePercent / 10`）
 2. **无任何 MA 支撑**：`supportMa` 为无（均线 MA 5/7/10/20/25/30/60/99/120 均未形成有效支撑）
 3. **近 30 根 1m MACD 绿柱占比 > 80%**：最近 30 根已收盘 1m K 线中，MACD 差离柱（`2 × (DIF − DEA) > 0`）绿柱占比 > 80%（字段 `1m30upR`）
 

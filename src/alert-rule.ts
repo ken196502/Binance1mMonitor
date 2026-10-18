@@ -8,6 +8,7 @@ export type AlertCandidate = Partial<
     | 'streakDir'
     | 'streakCount'
     | 'streakGainPercent'
+    | 'priceChangePercent'
     | 'greenBarRatio30'
     | 'change60d'
     | 'max1500'
@@ -35,10 +36,12 @@ export function isAlertMatch(
   // 1. 无任何 MA 支撑
   if (r.supportMa) return false;
 
-  // 新规则：连阳且涨幅达到阈值 + 无任何MA支撑 + 近30根1mMACD绿柱>80%
+  // 新规则：连阳且涨幅达到阈值(24h涨幅/10) + 无任何MA支撑 + 近30根1mMACD绿柱>80%
   if (r.greenBarRatio30 !== undefined || r.streakGainPercent !== undefined) {
     const minStreakCount = opts?.minStreakCount ?? Number(process.env.STREAK_MIN_COUNT ?? 2);
-    const minStreakGain = opts?.minStreakGain ?? Number(process.env.STREAK_GAIN_THRESHOLD ?? 1.0);
+    // 阈值是 24h 涨幅 / 10
+    const dynamicMinGain = r.priceChangePercent != null ? r.priceChangePercent / 10 : null;
+    const minStreakGain = opts?.minStreakGain ?? dynamicMinGain ?? Number(process.env.STREAK_GAIN_THRESHOLD ?? 1.0);
     const minGreenRatio = opts?.minGreenRatio ?? Number(process.env.MACD_GREEN_RATIO_THRESHOLD ?? 0.8);
 
     if (r.streakDir !== 'up') return false;

@@ -16,7 +16,7 @@ COPY web/ ./
 RUN npm run build
 
 # ==========================================
-# 阶段 2：生产运行镜像
+# 阶段 2：生产运行镜像（仅包含监控面板与实时播报服务，不含回测与研究模块）
 # ==========================================
 FROM node:22-slim
 
@@ -32,11 +32,11 @@ ENV NODE_ENV=production \
     PORT=4111 \
     TZ=Asia/Shanghai
 
-# 安装服务端生产依赖（排除开发依赖）
+# 安装服务端生产依赖（排除开发依赖与测试工具）
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# 复制服务端源码与配置
+# 仅复制服务端核心源码与配置（不复制 research、reports、data 等回测研究模块）
 COPY tsconfig.json ./
 COPY src/ ./src/
 

@@ -88,16 +88,16 @@ assert.equal(formatStreak(0, "up"), "");
 assert.equal(formatStreak(3, null), "");
 console.log("0. formatStreak 阳阴连数文案 (≥2 才展示) ✓");
 
-// --- 1. pickHighBull: filter !supportMa && streak=up && streakCount>=2 && streakGainPercent>=1.0 && greenBarRatio30>0.8
+// --- 1. pickHighBull: filter !supportMa && streak=up && streakCount>=2 && streakGainPercent>=24h涨幅/10 && greenBarRatio30>0.8
 const testList = [
-  row("MATCH_UP_1", 3, "up", 1.5, 0.85, null, 10),      // match: no support, up, 3 bars, +1.5%, green 85%
-  row("MATCH_UP_2", 2, "up", 2.0, 0.90, null, 15),      // match: no support, up, 2 bars, +2.0%, green 90%
-  row("MISMATCH_DOWN", 3, "down", 1.5, 0.85, null),     // no: 连阴
-  row("MISMATCH_STREAK_1", 1, "up", 1.5, 0.85, null),   // no: 只有1根
-  row("MISMATCH_LOW_GAIN", 2, "up", 0.5, 0.85, null),   // no: 涨幅只有0.5% < 1.0%
-  row("MISMATCH_HAS_MA", 2, "up", 1.5, 0.85, "ma10"),   // no: has support
-  row("MISMATCH_LOW_GREEN", 2, "up", 1.5, 0.75, null),  // no: green ratio 75% <= 80%
-  row("MISMATCH_EQUAL_GREEN", 2, "up", 1.5, 0.80, null),// no: green ratio 80% <= 80% (>80% required)
+  row("MATCH_UP_1", 3, "up", 1.5, 0.85, null, 10),      // match: 24h=10% (minGain=1.0%), up, 3 bars, +1.5%, green 85%
+  row("MATCH_UP_2", 2, "up", 2.0, 0.90, null, 15),      // match: 24h=15% (minGain=1.5%), up, 2 bars, +2.0%, green 90%
+  row("MISMATCH_DOWN", 3, "down", 1.5, 0.85, null, 10), // no: 连阴
+  row("MISMATCH_STREAK_1", 1, "up", 1.5, 0.85, null, 10),// no: 只有1根
+  row("MISMATCH_LOW_GAIN", 2, "up", 1.2, 0.85, null, 20),// no: 24h=20% (minGain=2.0%), 连阳涨幅 1.2% < 2.0%
+  row("MISMATCH_HAS_MA", 2, "up", 1.5, 0.85, "ma10", 10),// no: has support
+  row("MISMATCH_LOW_GREEN", 2, "up", 1.5, 0.75, null, 10),// no: green ratio 75% <= 80%
+  row("MISMATCH_EQUAL_GREEN", 2, "up", 1.5, 0.80, null, 10),// no: green ratio 80% <= 80% (>80% required)
   row("MATCH_UP_1", 3, "up", 1.5, 0.85, null, 10),      // dupe
 ];
 assert.deepEqual(pickHighBull(testList), ["MATCH_UP_1", "MATCH_UP_2"]);
@@ -109,7 +109,7 @@ assert.equal(items[0].streakDir, "up");
 assert.equal(items[0].streakGainPercent, 1.5);
 assert.equal(items[0].greenBarRatio30, 0.85);
 assert.equal(items[1].symbol, "MATCH_UP_2");
-console.log("1. pickHighBull + pickHighBullItems filter (连阳且涨幅达标 + 无MA支撑 + 近30根1m绿柱>80%) + dedupe ✓");
+console.log("1. pickHighBull + pickHighBullItems filter (连阳且涨幅达标(24h涨幅/10) + 无MA支撑 + 近30根1m绿柱>80%) + dedupe ✓");
 
 // --- 2. below threshold on gainers (< 3) → no alert --------------------------
 const a = new TelegramAlerter();

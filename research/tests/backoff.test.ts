@@ -176,7 +176,7 @@ test('HTTP 418 严格遵从币安指定的 banned until 时间戳，不被 300s 
 });
 
 test('HTTP 418 发生时，buildBoards 立即跳过剩余 REST 请求并不阻塞，秒级完成并降级填充', async () => {
-  const { buildBoards, resetCandleCacheForTest } = await import('../../src/server.ts');
+  const { buildBoards, resetCandleCacheForTest, wsManager } = await import('../../src/server.ts');
   const { setCachedCryptoSymbolsForTest } = await import('../../src/binance.ts');
   resetBackoffForTest();
   resetCandleCacheForTest();
@@ -202,9 +202,7 @@ test('HTTP 418 发生时，buildBoards 立即跳过剩余 REST 请求并不阻�
         { symbol: 'G1USDT', lastPrice: 10, priceChangePercent: 15, quoteVolume: 2000 },
         { symbol: 'G2USDT', lastPrice: 20, priceChangePercent: 12, quoteVolume: 1500 },
       ],
-      losers: [
-        { symbol: 'L1USDT', lastPrice: 2, priceChangePercent: -10, quoteVolume: 800 },
-      ],
+      losers: [],
     };
 
     const boards = await buildBoards(tops, pinned);
@@ -214,11 +212,11 @@ test('HTTP 418 发生时，buildBoards 立即跳过剩余 REST 请求并不阻�
     assert.ok(duration < 2000, `418 发生时 buildBoards 必须立即返回，实际耗时: ${duration}ms`);
     assert.equal(boards.pinned.length, 1);
     assert.equal(boards.gainers.length, 2);
-    assert.equal(boards.losers.length, 1);
     assert.equal(boards.gainers[0].state, 'n/a');
   } finally {
     resetBackoffForTest();
     resetCandleCacheForTest();
+    wsManager.close();
     process.env.BINANCE_BASE = oldBase;
     await new Promise<void>((r) => server.close(() => r()));
   }

@@ -5,15 +5,48 @@ services:
       dockerfile: Dockerfile
     container_name: binance-macd-monitor
     restart: unless-stopped
-    ports:
-      - "${PORT:-4111}:4111"
     env_file:
       - path: .env
         required: false
     environment:
       - PORT=4111
       - TZ=Asia/Shanghai
-    # 宿主机网关映射：若在宿主机开启了代理（如 Clash 端口 7890），
-    # 可在 .env 中设置 PROXY=http://host.docker.internal:7890
+      - DASHBOARD_URL=https://${DOMAIN}
+    # 宿主机网关映射：如需通过宿主机本地代理（如 Clash 端口 7890），
+    # 可在 .env 中配置 PROXY=http://host.docker.internal:7890
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    expose:
+      - "4111"
+    # 可选：如果除 Traefik 代理外还需要直接在宿主机端口访问，可解开以下注释
+    # ports:
+    #   - "${HOST_PORT:-4111}:4111"
+    networks:
+      - default
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      # 指定 Traefik 使用的 Docker 网络名称，避免多网络环境下的路由寻址歧义
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
+
+      # HTTPS 路由器（使用 Let's Encrypt 证书解析器与 env.DOMAIN）
+      - "traefik.http.routers.binance-macd-monitor.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.binance-macd-monitor.entrypoints=websecure"
+      - "traefik.http.routers.binance-macd-monitor.tls=true"
+      - "traefik.http.routers.binance-macd-monitor.tls.certresolver=letsencrypt"
+
+      # 内部服务端口负载均衡指向容器内 4111 端口
+      - "traefik.http.services.binance-macd-monitor.loadbalancer.server.port=4111"
+
+      # HTTP 自动强制重定向至 HTTPS
+      - "traefik.http.routers.binance-macd-monitor-http.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.binance-macd-monitor-http.entrypoints=web"
+      - "traefik.http.routers.binance-macd-monitor-http.middlewares=binance-macd-monitor-redirect"
+      - "traefik.http.middlewares.binance-macd-monitor-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.binance-macd-monitor-redirect.redirectscheme.permanent=true"
+
+networks:
+  default:
+  traefik:
+    name: ${TRAEFIK_NETWORK:-traefik}
+    external: true

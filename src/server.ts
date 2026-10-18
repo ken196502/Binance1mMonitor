@@ -171,6 +171,7 @@ async function fetchRowData(t: Ticker24h, options: FetchRowOptions = {}): Promis
       streakDir: streak.direction,
       streakCount: streak.count,
       streakGainPercent,
+      priceChangePercent: t.priceChangePercent,
       greenBarRatio30: macdGreen?.ratio ?? null,
     });
 
@@ -654,4 +655,4 @@ if (isMainModule) {
   });
 }
 
-export { server };
+export { server, wsManager };

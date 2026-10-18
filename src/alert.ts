@@ -1,7 +1,7 @@
-// "连阳且涨幅达到阈值 + 无任何MA支撑 + 近30根1mMACD绿柱>80%" 监控告警（仅播报24h涨幅榜）
+// "连阳且涨幅达到阈值(24h涨幅/10) + 无任何MA支撑 + 近30根1mMACD绿柱>80%" 监控告警（仅播报24h涨幅榜）
 //
 // 判定规则（必须同时满足以下所有条件）：
-//   1. 连阳且涨幅达到阈值（streakDir === 'up' && streakCount >= STREAK_MIN_COUNT && streakGainPercent >= STREAK_GAIN_THRESHOLD）
+//   1. 连阳且涨幅达到阈值（streakDir === 'up' && streakCount >= STREAK_MIN_COUNT && streakGainPercent >= priceChangePercent / 10）
 //   2. 无任何MA支撑 (!row.supportMa)
 //   3. 近30根1m MACD绿柱占比 > 80% (greenBarRatio30 > 0.8)
 //
@@ -133,7 +133,7 @@ export function formatAlertMessage(params: {
 }): string {
   const { min, boards, pinned } = params;
 
-  const header = `🚨 <b>24h涨幅榜告警：连阳涨幅达标 + 无MA支撑 + 近30根1mMACD绿柱&gt;80%</b>（触发阈值 ≥ ${min}）`;
+  const header = `🚨 <b>24h涨幅榜告警：连阳涨幅≥24h涨幅/10 + 无MA支撑 + 近30根1mMACD绿柱&gt;80%</b>（触发阈值 ≥ ${min}）`;
   const dashboardUrl = getDashboardUrl();
 
   let pinnedBlock = "";
