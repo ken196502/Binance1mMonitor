@@ -9,9 +9,13 @@ import { BOARDS, HOUR, type Board, type Manifest, type SearchOptions } from "./t
 
 const HELP = `独立做空策略研究 CLI
 
-用法：npm run research -- <gainers|fetch|backtest|run> [选项]
+用法：npm run research -- <wick|gainers|fetch|backtest|run> [选项]
 
-gainers   当前研究：历史涨幅榜 + 1m DEA高位/DIF多头/无MA支撑做空，小止损大止盈
+wick      最新研究：涨幅榜 + 连阳涨幅达标 + 无MA支撑 + 30根1m绿柱>80%
+          信号直接市价开空，先平50%再平剩余全部，按整笔统计胜率、盈亏比及成交率
+          npm run research -- wick --help 查看配置与缓存选项
+
+gainers   旧版研究：历史涨幅榜 + 1m DEA高位/DIF多头/无MA支撑做空，小止损大止盈
           这三个 1m 条件同时满足才入场，不要求死叉、阴线、量比或周线过滤
           必填 --data；自动补分钟数据后回测。--offline 可仅用缓存
           默认3轮×20组；止损0.2/0.3/0.5%，止盈1.5/2/3/5%，至少3R
@@ -61,6 +65,11 @@ function date(value: string): number {
   return n;
 }
 async function main() {
+  if (process.argv[2] === 'wick') {
+    const { runWickCommand } = await import('./wick.ts');
+    await runWickCommand(process.argv.slice(3));
+    return;
+  }
   const strings = ["board", "top", "days", "start", "end", "data", "out", "rounds", "trials", "grid", "seed", "min-trades", "step", "train-ratio", "validation-ratio", "fee-bps", "slippage-bps", "minutes-data", "minute-source", "high-window"];
   const { values, positionals } = parseArgs({ allowPositionals: true, strict: true,
     options: Object.fromEntries([...strings.map((name) => [name, { type: "string" as const }]), ...["help", "offline", "fetch-only"].map((name) => [name, { type: "boolean" as const }])]) });

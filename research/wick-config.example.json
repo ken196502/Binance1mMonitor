@@ -1,0 +1,40 @@
+{
+  "topN": 10,
+  "indicatorWindow": 199,
+  "minStreakCount": 2,
+  "gainMode": "day-fraction",
+  "dayGainFraction": 0.1,
+  "minStreakGainPercent": 1,
+  "minDayChangePercent": 0,
+  "minGreenRatio": 0.8,
+  "takerFeeBps": 5,
+  "slippageBps": 2,
+  "minTrades": 100,
+  "trainRatio": 0.6,
+  "validationRatio": 0.2,
+  "holdMinutes": [
+    5,
+    15,
+    60
+  ],
+  "exitPlans": [
+    {
+      "firstTakeProfitPercent": 0.1,
+      "firstStopLossPercent": 0.1,
+      "finalTakeProfitPercent": 0.5,
+      "finalStopLossPercent": 0.2
+    },
+    {
+      "firstTakeProfitPercent": 0.2,
+      "firstStopLossPercent": 0.2,
+      "finalTakeProfitPercent": 1,
+      "finalStopLossPercent": 0.3
+    },
+    {
+      "firstTakeProfitPercent": 0.3,
+      "firstStopLossPercent": 0.3,
+      "finalTakeProfitPercent": 2,
+      "finalStopLossPercent": 0.5
+    }
+  ]
+}

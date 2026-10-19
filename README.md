@@ -1,63 +1,65 @@
-# Binance 1m MACD 高位死叉监控（u本位合约）
+# Binance 1m MACD 连阳涨幅监控（u本位合约）
 
-监控 Binance **u本位永续合约（USDM Futures）** 24h **涨幅前十 / 跌幅前十 / 成交额前十** 的 **1 分钟 MACD** 是否出现**高位死叉**，命中则高亮显示。
+监控 Binance **u本位永续合约（USDM Futures）** 24h **涨幅榜** 的 **1 分钟 MACD**，当币种同时满足「连阳涨幅达标 + 无 MA 支撑 + 近 30 根 1m MACD 绿柱 > 80%」时触发告警。
 
-## 独立 CLI 做空策略研究
+## 信号直接做空与两段平仓研究
 
-当前新维度入口：`npm run mine:monitor -- --fetch --board all`。搜索交易币种自身的 **1m/5m DIFF柱体档位**、连续K线、距近1500根高点回撤，固定要求60D上涨及1m无MA支撑；涨跌榜独立选参，预先固定当前播报条件作为基线。默认使用小时缓存中最近7个完整UTC日，每榜从96,040组有效参数分层抽取20,000组，Apple Metal计算退出，CPU核对账户。详见[新维度研究](research/README.md#同币-1m5m-diff-新维度挖掘)。
+新增 `npm run research:wick -- --help`：历史24h涨幅榜、连阳涨幅达标、无MA支撑、近30根1m绿柱>80%，信号确认后直接市价开空；第一段平50%，第二段平剩余全部，按整笔统计扣费胜率和实际盈亏比，并核对信号与开仓数量。配置、数据准备和报告说明见[研究模块](research/README.md#连阳信号直接做空与两段平仓)。
 
-此前的独立研究 **涨幅榜 1m + BTC 5m** 仍保留：`npm run mine:btc5m -- --fetch-btc-five --batch 128 --no-telegram`。两周期独立搜索 DEA/DIF、连续K线条件及高位比例，结果保存至 `reports/research/gainers-gpu-margin-no-ma-btc5m/`。详见 [研究说明](research/README.md#新增独立研究涨幅榜-1m--btc-5m)。
+## 监控规则变更
 
-旧版 `research gainers` 通过 CLI 单独运行，与监控服务、页面和 Telegram 无依赖，规则是 **gainers 涨幅榜：1m DEA 高位 + DIF ≥ DEA 直接做空，小止损、大止盈，不要求死叉**。全市场 USDT 永续小时数据用于重建每个历史整点的 24h 涨幅榜，分钟数据用于信号和成交回测。
+### 已移除的逻辑
 
-```bash
-# 首次获取全市场小时数据（已有缓存可复用）
-npm run research -- fetch --data data/hourly
+- **1500 分钟逻辑全部移除**：去除了 max1500 最高价统计、lastPrice < max1500 * 0.96 过滤条件，以及初始拉取/滚动的 1500 根限制（冷启动降为拉取 200 根以满足 MA120 及 MACD 绿柱稳定计算）。
+- **5 分钟逻辑全部移除**：去除了 1m 合成 5m K 线（update5mFrom1m / aggregate1mTo5m）、diff5m 判定及 5m DIFF 中的告警门槛。
+- **小时 K 逻辑全部移除**：去除了整点极值与首分钟价格计算（maxHour / hourFirstLow / hourFirstClose）及价格回撤比例限制。
+- **60D 日 K 上涨过滤移除**：去除了非置顶币种必须 60D 上涨的要求，同时去除了日 K 与周 K 网络请求，大幅减轻 API 权重与延迟。
+- **跌幅榜全部移除**：
+  - 服务端与同步模块完全剔除跌幅榜的 K 线拉取、冷启动调度与 WS 订阅，仅保留置顶标的（BTC、SOL）及 24h 涨幅榜。
+  - 前端面板移除了跌幅前十 Tab 与展示区域。
+  - Telegram 告警仅监控并播报 24h 涨幅榜。
 
-# 先研究一个完整 UTC 日；官方历史归档可用于公共 API 无法访问时
-npm run research -- gainers --data data/research/hourly-initial --end 2026-10-11 --days 1 --minute-source archive --minutes-data data/research/gainers-1m-archive-1day --out reports/gainers-day1
+### 新的告警过滤规则
 
-# 缓存完成后离线重放（报告使用新目录）
-npm run research -- gainers --data data/research/hourly-initial --end 2026-10-11 --days 1 --minutes-data data/research/gainers-1m-archive-1day --offline --out reports/gainers-day1-replay
-```
+必须同时满足以下三项条件（非置顶币种触发，置顶标的固定随行展示）：
 
-输出 `report.md`、`result.json`、`trials.csv`、`test-trades.csv`、`board-history.csv`。默认 3 轮 × 20 组，止损 0.2/0.3/0.5%，止盈 1.5/2/3/5%；按时间使用 60% 训练、20% 验证、20% 最终测试。原三榜小时级实验仍可通过 `backtest --board all` 复现。
+1. **连阳且涨幅达到阈值**：
+   - 1m K 线连续收阳（`streakCount ≥ 2`，可由环境变量 `STREAK_MIN_COUNT` 配置，默认 2）；
+   - 该段连阳累计涨幅 ≥ `STREAK_GAIN_THRESHOLD`（默认 1.0%，可由环境变量配置）。
 
-完整参数、收益计算和数据边界见 [research/README.md](research/README.md)。当前合约池不包含已退市币种，报告会注明历史覆盖与存活偏差。
+2. **无任何 MA 支撑**：
+   - `supportMa === null`（MA 5/7/10/20/25/30/60/99/120 均未形成有效支撑）。
 
-## 高位死叉定义
-
-- **死叉**：最近一根已收盘 1m K 线上，MACD 的 DIF 下穿 DEA（前一根 `DIF ≥ DEA`，当前 `DIF < DEA`）。
-- **高位**：当前 `DEA` **接近或达到指定观察周期内的最高值**，即 `DEA ≥ HIGH_RATIO × max(DEA in window)`。默认 `HIGH_RATIO=0.9`、`HIGH_WINDOW=100`（1m K 线，即观察窗口约 100 分钟）。
-- 同时满足（死叉 + 高位）即为「高位死叉」告警，面板以红底高亮。
-
-> 只有当窗口内 DEA 曾达到正值峰值时才判定为"高位"，避免全程为负时把"最不低"的值误判为高位。
-
-> [!IMPORTANT]
-> ### 术语严格区分：DIF vs DIFF（切勿混淆！）
-> - **DIF（单个 F，快线）**：$EMA(12) - EMA(26)$，快慢均线之差。在 MACD 中为平滑曲线。
-> - **DEA（慢线 / 信号线）**：$EMA(DIF, 9)$。
-> - **DIFF（两个 F，红绿柱 / 差离柱）**：$2 \times (DIF - DEA)$（Binance 官方口径柱状图）。
->   - **绿柱（$DIFF > 0$）**：
->     - 若 $DIFF \ge 0.8 \times \text{窗口峰值} \implies$ **高**（亮黄）；
->     - 其余 $DIFF \ge 0 \implies$ **中**（白色）；
->   - **红柱（$DIFF < 0$）**：**严格判定为低（灰色），绝不允许任何负值判定为中或高**。
->
-> 页面表头与告警中展示的 `1m DIFF`、`5m DIFF` **全部严格指代红绿柱（两个 F）**，绝不可与快线 DIF 混淆！
+3. **近 30 根 1m MACD 绿柱 > 80%**：
+   - 最近 30 根已收盘 1m K 线中，MACD 差离柱（`hist = 2 * (DIF - DEA) > 0`）绿柱占比 `strictly > 80%`（即至少 25 根为绿柱）。
 
 ## Telegram 计数告警（24h 涨幅榜：连阳涨幅达标 + 无 MA 支撑 + 近 30 根 1m MACD 绿柱 > 80%）
 
-在面板高亮之外，后端进行**榜单实时告警判定**（仅播报 24h 涨幅榜，跌幅榜已彻底去掉）：
+在面板展示之外，后端进行**榜单实时告警判定**（仅播报 24h 涨幅榜，跌幅榜已彻底移除）：
 
-当 **24h 涨幅榜** 出现 **≥ `TG_ALERT_MIN`（默认 3）个**同时满足以下条件的币种时：
+当 **24h 涨幅榜** 出现 **≥ `TG_ALERT_MIN`（默认 1）个**同时满足上述三项条件的币种时：
 
-1. **连阳且涨幅达到阈值**：1m 连续收阳（`streakCount ≥ 2`），且连阳期间累计涨幅达到阈值（阈值为 **`24h涨幅 / 10`**，即 `streakGainPercent >= priceChangePercent / 10`）
-2. **无任何 MA 支撑**：`supportMa` 为无（均线 MA 5/7/10/20/25/30/60/99/120 均未形成有效支撑）
-3. **近 30 根 1m MACD 绿柱占比 > 80%**：最近 30 根已收盘 1m K 线中，MACD 差离柱（`2 × (DIF − DEA) > 0`）绿柱占比 > 80%（字段 `1m30upR`）
+- **币种 (symbol)**
+- **24h涨幅 (24h: +xx.xx%)**
+- **连阳数 (连阳数: N)**
+- **连阳涨幅 (连阳涨幅: +x.xx%)**
+- **1m30upR (1m30upR: 26/30 (86.7%))**
+- **保留榜单排名变动标签**（如 `#1 ↑+2`）与**置顶标的提示**。
 
-播报字段包含：**币种、24h涨幅、连阳数、连阳涨幅、1m30upR**（如 `BTCUSDT 24h: +3.12% | 连阳数: 3 | 连阳涨幅: +1.45% | 1m30upR: 26/30 (86.7%)`）。
+### Telegram 播报样例
 
-发出 Telegram 通知：
+```
+🚨 <b>24h涨幅榜告警：连阳涨幅达标 + 无MA支撑 + 近30根1mMACD绿柱>80%</b>（触发阈值 ≥ 1）
+
+📌 <b>置顶标的</b>：
+• <a href="https://www.binance.com/zh-CN/futures/BTCUSDT"><b>BTCUSDT</b></a> 24h: +3.12% | 连阳数: 3 | 连阳涨幅: +1.45% | 1m30upR: 27/30 (90.0%)
+• <a href="https://www.binance.com/zh-CN/futures/SOLUSDT"><b>SOLUSDT</b></a> 24h: +4.20% | 连阳数: 2 | 连阳涨幅: +1.10% | 1m30upR: 25/30 (83.3%)
+
+📈 <b>↑↑涨幅榜(24h)↑↑</b>：<b>1</b> 个
+• <a href="https://www.binance.com/zh-CN/futures/ETHUSDT"><b>ETHUSDT</b></a> 24h: +12.34% | 连阳数: 4 | 连阳涨幅: +2.50% | 1m30upR: 27/30 (90.0%) [#1 ↑+2]
+
+🔗 <a href="https://macd.reluv.xyz">点击查看监控面板</a>
+```
 
 - **防骚扰**：当且仅当命中榜单达标且币种列表发生变动时才播报，榜币未变绝不重复骚扰；若榜单归零重置状态。
 - **后台常驻监测**：服务端启动后自动常驻后台轮询（默认每 20s 刷新），即使没有打开浏览器也会持续监控并推送通知。
@@ -182,7 +184,6 @@ docker compose logs -f binance-macd-monitor   # 可见 [entrypoint] 与 mihomo �
 - **改端口**：`MIHOMO_PROXY_PORT=7890`（raw 模式会自动对齐配置里的 `mixed-port`）。
 - **升级内核**：`MIHOMO_VERSION` 默认 `v1.19.32`，可在构建时覆盖：`docker compose build --build-arg MIHOMO_VERSION=v1.19.40`；国内网络拉不动 GitHub 时用镜像前缀 `--build-arg MIHOMO_DOWNLOAD_BASE=https://gh-proxy.com/https://github.com/MetaCubeX/mihomo/releases/download`。
 - **挂载整个配置目录**会覆盖镜像内置的 `geoip.metadb` / `geosite.dat`，含 `GEOIP`/`GEOSITE` 规则的配置首次启动会尝试联网下载；建议只挂载单个 `config.yaml` 文件。
-
 ## 配置（环境变量）
 
 | 变量 | 默认 | 说明 |
@@ -191,29 +192,19 @@ docker compose logs -f binance-macd-monitor   # 可见 [entrypoint] 与 mihomo �
 | `TOP_N` | `10` | 每个榜单取前 N |
 | `REFRESH_TTL_MS` | `20000` | 快照缓存时长 |
 | `KLINE_LIMIT` | `100` | 1m K 线取多少根（≥35 才能稳定算 MACD） |
-| `HIGH_RATIO` | `0.9` | "高位"阈值：DEA ≥ 该比例 × 窗口峰值即算接近 |
-| `HIGH_WINDOW` | `100` | "高位"观察窗口（1m 根数） |
+| `HIGH_RATIO` | `0.9` | "高位"阈值：DEA ≥ 该比例 × 窗口峰值即算接近（旧规则，当前不再使用） |
+| `HIGH_WINDOW` | `100` | "高位"观察窗口（1m 根数，旧规则，当前不再使用） |
 | `BINANCE_BASE` | `https://fapi.binance.com` | 合约行情基址 |
 | `FALLBACK_BASE` | _(空)_ | 主基址网络不可达时自动重试的回退地址（仅对连接级失败生效，HTTP 错误如 429/451 不重试）。合约无公开镜像，默认空；仅在自建反代时设置 |
 | `TELEGRAM_BOT_TOKEN` | _(空)_ | Telegram Bot Token（@BotFather 创建）。**不配则不推送**（启动与命中时都会显式警告，不静默） |
 | `TELEGRAM_CHAT_ID` | _(空)_ | 接收告警的 chat id（个人：向 @userinfobot 查询；群：把 bot 拉入后用 getUpdates 拿） |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | Telegram Bot API 基址（自建反代时可改） |
-| `TG_ALERT_MIN` | `3` | Telegram 告警阈值：任意一个榜单出现 ≥ N 个「DEA 高位 + DIFF 多头」时推送 |
+| `TG_ALERT_MIN` | `1` | Telegram 告警阈值：任意一个榜单出现 ≥ N 个「连阳涨幅达标 + 无MA支撑 + 近30根1mMACD绿柱>80%」时推送 |
 | `TG_REPEAT_MINUTES` | `0` | 持续命中时的重发间隔（分钟），0 = 仅在首次触发时通知 |
 | `DASHBOARD_URL` | `https://macd.reluv.xyz` | Telegram 提醒中附带的面板链接地址 |
-| `PROXY` | _(空)_ | 本应用专用的代理地址（如 `http://127.0.0.1:7890`），**设置后强制走该代理**；未设置则回退到标准 `HTTPS_PROXY`/`HTTP_PROXY`（`NO_PROXY` 同样生效），都未设置则直连。由 undici `ProxyAgent`/`EnvHttpProxyAgent` 应用到所有 fetch（**含 Telegram API**）。Docker 部署时由 entrypoint 自动指向容器内 mihomo |
-| `MIHOMO_ENABLE` | `1` | Docker 部署：是否在容器内启动 mihomo（`0` 关闭） |
-| `MIHOMO_SUBSCRIPTION_URL` | _内置两个公共订阅_ | Docker 部署：Clash/Mihomo YAML 订阅地址（可多个，逗号/空格/换行分隔），默认每个都作为 proxy-provider 加载；留空则用挂载配置或内置直连默认配置 |
-| `MIHOMO_CONFIG_MODE` | `provider` | `provider`：订阅作为 proxy-provider + PROXY(fallback) 组按 Binance 健康检查自动选点；`raw`：订阅直接作为完整配置 |
-| `MIHOMO_HEALTHCHECK_URL` | `https://fapi.binance.com/fapi/v1/ping` | provider 模式选点用的健康检查地址 |
-| `MIHOMO_HEALTHCHECK_INTERVAL` | `180` | 健康检查周期（秒） |
-| `MIHOMO_EXCLUDE_FILTER` | 内置正则 | 按名称剔除订阅里的「说明/剩余流量/到期/官网」等假节点（它们的 server 常是 `127.0.0.1:443`，会让面板直接 `fetch failed`） |
-| `MIHOMO_SUBSCRIPTION_PROXY` | _(空)_ | raw 模式下下载订阅本身所走的代理（如 `http://host.docker.internal:7890`） |
-| `MIHOMO_PROXY_PORT` | `7890` | 容器内 mihomo 混合端口（raw 模式会自动对齐配置里的 `mixed-port`） |
-| `MIHOMO_API_URL` | `http://127.0.0.1:9090` | mihomo 控制接口地址，`src/proxyNode.ts` 用它切换节点 |
-| `MIHOMO_PROXY_GROUP` | `ACTIVE` | 应用实际使用的出口组名 |
-| `PROXY_ROTATE_MAX` | `3` | 单次请求最多因 451 / 网络错误换几次节点 |
-| `PROXY_PROBE_TRIES` | `6` | 换节点时最多探测多少个候选（探测通过才采用） |
+| `PROXY` | _(空)_ | 本应用专用的代理地址（如 `http://127.0.0.1:7890`），**设置后强制走该代理**；未设置则回退到标准 `HTTPS_PROXY`/`HTTP_PROXY`（`NO_PROXY` 同样生效），都未设置则直连。由 undici `ProxyAgent`/`EnvHttpProxyAgent` 应用到所有 fetch（**含 Telegram API**） |
+| `STREAK_MIN_COUNT` | `2` | 连阳最低根数（`streakCount ≥ N` 才触发告警） |
+| `STREAK_GAIN_THRESHOLD` | `1.0` | 连阳累计涨幅阈值（`≥ N%` 才触发告警） |
 
 示例：
 
@@ -229,39 +220,34 @@ npm start
 
 均为 Binance 合约公开行情接口（无需鉴权）：
 
-- `GET /fapi/v1/ticker/24hr` — 全市场 USDM 合约 24h 行情，用于排序涨幅/跌幅/成交额；
+- `GET /fapi/v1/ticker/24hr` — 全市场 USDM 合约 24h 行情，用于排序涨幅榜；
 - `GET /fapi/v1/klines?interval=1m&limit=100` — 1m K 线，用于计算 MACD。
 
-已过滤：仅保留 `*USDT` **永续合约**，剔除交割合约（带 `_YYMMDD` 后缀，如 `BTCUSDT_240329`）。币本位合约（`*USD_PERP`）因不以 `USDT` 结尾自动排除。合约市场无杠杆代币、无法币/稳定币计价，故无需现货那一套过滤。
+已过滤：仅保留 `*USDT` **永续合约**，剔除交割合约（带 `_YYMMDD` 后缀，如 `BTCUSDT_240329`）。币本位合约（`*USD_PERP`）因不以 `USDT` 结尾自动排除。
 
 ## 结构
 
 ```
 src/
   types.ts     # 共享类型（Row / Status / HighBearSummary），server 与 web 都用，纯类型无副作用
-  macd.ts      # EMA / MACD 计算 + 高位死叉判定
+  macd.ts      # EMA / MACD 计算 + 连阳统计 + 绿柱占比计算
   binance.ts   # Binance REST 客户端（24h 行情 + 1m K 线）
   telegram.ts  # Telegram Bot API 发送（走全局代理）
-  alert.ts     # 「DEA 高位 + DIFF 空头」计数 + 边沿触发 Telegram 告警状态机
+  alert.ts     # 「连阳涨幅达标 + 无MA支撑 + 近30根1mMACD绿柱>80%」计数 + 边沿触发 Telegram 告警状态机
   server.ts    # 本地 HTTP 服务 + 托管 web/dist 静态资源 + /api/status
 research/      # 独立 CLI：小时数据、历史三榜、多轮参数回测与报告
 web/           # React 前端（Vite + TypeScript）
   src/
-    App.tsx          # 面板布局：header / 窄屏 tab / 三个榜单
+    App.tsx          # 面板布局：header / 窄屏 tab / 涨幅榜
     App.css          # 暗色主题 + 响应式 tab
     components/      # GroupSection / Row
     hooks/useStatus.ts  # 每 5s 轮询 /api/status
     lib/format.ts    # fmt / pct / colClass
-docker/
-  entrypoint.sh              # 容器入口：拉起 mihomo → 注入 PROXY → exec npm start
-  mihomo/config.default.yaml # 无节点时的兜底配置（全部直连）
-Dockerfile     # 多阶段构建：前端产物 + 生产依赖 + mihomo 内核与 Geo 数据
-docker-compose.yml  # Traefik 反代 + 容器内 mihomo 代理
 ```
 
 开发验证：`npm run typecheck`、`npm test`、`npm run build`。测试使用本地模拟数据与模拟 Telegram 服务，不请求真实通知服务。
 
-> 仅用于研究/观察，不构成交易建议。MACD 1m 信号噪声大，高位死叉需结合其他条件判断。
+> 仅用于研究/观察，不构成交易建议。MACD 1m 信号噪声大，连阳涨幅达标需结合其他条件判断。
 
 ### M1 Pro GPU 策略挖掘
 
@@ -276,4 +262,4 @@ npm run mine -- --resume --batch 128
 
 两个周期分别配置、交叉组合：1m连续根数1/2/3/5/8，15m为1/2/3/4/6，各含连阳、连阴和不限。默认从58,063,544组有效参数中按状态和连续条件分层抽取400,000组（`--max-trials`），固定种子、无放回，完成只表示预定清单跑完。
 
-默认输出 `reports/research/gainers-gpu-margin-no-ma-streak/report.md`。训练发现会明确标注“尚未留出验证”；复用原报告的一天数据不构成新独立验证。完整选项、验证流程、新数据获取及 Telegram 补发见 [GPU 挖掘说明](research/README.md#m1-pro-gpu-超短线挖掘与-telegram-成果播报)。
+默认输出 `reports/research/gainers-gpu-margin-no-ma-streak/report.md`。训练发现会明确标注"尚未留出验证"；复用原报告的一天数据不构成新独立验证。完整选项、验证流程、新数据获取及 Telegram 补发见 [GPU 挖掘说明](research/README.md#m1-pro-gpu-超短线挖掘与-telegram-成果播报)。

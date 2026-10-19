@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "test": "tsx --test research/tests/*.test.ts && tsx scripts/test-alert.ts && tsx scripts/test-ws-candles.ts",
     "research": "tsx --env-file-if-exists=.env research/cli.ts",
+    "research:wick": "tsx --env-file-if-exists=.env research/cli.ts wick",
     "mine": "tsx --env-file-if-exists=.env research/miner.ts",
     "mine:btc5m": "tsx --env-file-if-exists=.env research/miner.ts --study btc5m",
     "mine:monitor": "tsx --env-file-if-exists=.env research/monitor-miner.ts",
