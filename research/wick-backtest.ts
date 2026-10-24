@@ -55,19 +55,22 @@ export function wickReturn(entry: number, exit: number, reason: WickTrade['reaso
     netPercent: grossPercent - entryFeePercent - exitFeePercent - slippagePercent };
 }
 
-export function plannedWickReward(p: WickParameters, c: WickConfig) {
-  const firstWin = wickReturn(100, 100 - p.firstTakeProfitPercent, 'target', c).netPercent;
-  const firstLoss = wickReturn(100, 100 + p.firstStopLossPercent, 'stop', c).netPercent;
-  const finalWin = wickReturn(100, 100 - p.finalTakeProfitPercent, 'target', c).netPercent;
-  const finalLoss = wickReturn(100, 100 + p.finalStopLossPercent, 'stop', c).netPercent;
+export function plannedWickReward(p: WickParameters, c: WickConfig, dayChangePercent = 20) {
+  const tp1 = p.exitX != null ? (dayChangePercent / p.exitX) : (p.firstTakeProfitPercent ?? 0.1);
+  const sl1 = p.exitX != null ? (dayChangePercent / p.exitX) : (p.firstStopLossPercent ?? 0.1);
+  const sl2 = p.exitX != null && p.exitN != null ? (dayChangePercent * p.exitN / p.exitX) : (p.finalStopLossPercent ?? 0.2);
+  const tp2 = p.exitX != null && p.exitM != null ? (dayChangePercent * p.exitM / p.exitX) : (p.finalTakeProfitPercent ?? 0.5);
+  const firstWin = wickReturn(100, 100 - tp1, 'target', c).netPercent;
+  const firstLoss = wickReturn(100, 100 + sl1, 'stop', c).netPercent;
+  const finalWin = wickReturn(100, 100 - tp2, 'target', c).netPercent;
+  const finalLoss = wickReturn(100, 100 + sl2, 'stop', c).netPercent;
   const f = WICK_FIRST_CLOSE_FRACTION;
   const bothTargets = f * firstWin + (1 - f) * finalWin;
   const bothStops = f * firstLoss + (1 - f) * finalLoss;
   return { bothTargetsNetPercent: bothTargets, bothStopsNetPercent: bothStops,
     firstTargetFinalStopNetPercent: f * firstWin + (1 - f) * finalLoss,
     firstStopFinalTargetNetPercent: f * firstLoss + (1 - f) * finalWin,
-    nominalRewardRisk: (f * p.firstTakeProfitPercent + (1 - f) * p.finalTakeProfitPercent)
-      / (f * p.firstStopLossPercent + (1 - f) * p.finalStopLossPercent),
+    nominalRewardRisk: (f * tp1 + (1 - f) * tp2) / (f * sl1 + (1 - f) * sl2),
     netRewardRisk: bothTargets > 0 ? bothTargets / -bothStops : null };
 }
 
@@ -103,12 +106,21 @@ export function summarizeWick(trades: WickTrade[], orders: WickOrder[], purged =
 }
 export type WickMetrics = ReturnType<typeof summarizeWick>;
 
+export function matchesWickSignal(signal: WickSignal, p: WickParameters): boolean {
+  if (p.dayGainFraction != null && signal.streakGainPercent < signal.dayChangePercent * p.dayGainFraction) return false;
+  if (p.minGreenRatio != null && signal.greenRatio <= p.minGreenRatio) return false;
+  if (p.minConsecutiveGreenBars != null && signal.consecutiveGreenBars !== undefined && signal.consecutiveGreenBars < p.minConsecutiveGreenBars) return false;
+  if (p.maxUpperShadowRatio != null && signal.upperShadowRatio !== undefined && signal.upperShadowRatio >= p.maxUpperShadowRatio) return false;
+  return true;
+}
+
 export function backtestWick(data: MinuteDataset, signals: WickSignal[], p: WickParameters, c: WickConfig, start: number, end: number) {
   const trades: WickTrade[] = [], orders: WickOrder[] = [];
   const available = new Map<string, number>();
   let purged = 0, skippedBusy = 0, signalCount = 0;
   for (const signal of signals) {
     if (signal.time < start || signal.time >= end) continue;
+    if (!matchesWickSignal(signal, p)) continue;
     signalCount++;
     if ((available.get(signal.symbol) ?? -Infinity) > signal.time) { skippedBusy++; continue; }
     // Purge the full holding horizon before reading any future prices.
@@ -124,9 +136,14 @@ export function backtestWick(data: MinuteDataset, signals: WickSignal[], p: Wick
     const entry = entryBar[1];
     order.entryTime = signal.time; order.entryPrice = entry; order.remainingFraction = 1;
     order.entryFeePercent = c.takerFeeBps / 100;
+    const sl1 = p.exitX != null ? (signal.dayChangePercent / p.exitX) : (p.firstStopLossPercent ?? 0.1);
+    const tp1 = p.exitX != null ? (signal.dayChangePercent / p.exitX) : (p.firstTakeProfitPercent ?? 0.1);
+    const sl2 = p.exitX != null && p.exitN != null ? (signal.dayChangePercent * p.exitN / p.exitX) : (p.finalStopLossPercent ?? 0.2);
+    const tp2 = p.exitX != null && p.exitM != null ? (signal.dayChangePercent * p.exitM / p.exitX) : (p.finalTakeProfitPercent ?? 0.5);
+
     const levels = [
-      { stop: entry * (1 + p.firstStopLossPercent / 100), target: entry * (1 - p.firstTakeProfitPercent / 100) },
-      { stop: entry * (1 + p.finalStopLossPercent / 100), target: entry * (1 - p.finalTakeProfitPercent / 100) },
+      { stop: entry * (1 + sl1 / 100), target: entry * (1 - tp1 / 100) },
+      { stop: entry * (1 + sl2 / 100), target: entry * (1 - tp2 / 100) },
     ].map(v => ({ ...v, targetTouch: v.target }));
     {
       let ignoredUnorderedTarget = false, ambiguous = false;
@@ -175,7 +192,7 @@ export function backtestWick(data: MinuteDataset, signals: WickSignal[], p: Wick
             order.exits.reduce((sum, e) => sum + e[key], 0);
           order.status = 'closed'; order.resolvedAt = time + MINUTE;
           const netPercent = total('netPercent');
-          const initialRisk = WICK_FIRST_CLOSE_FRACTION * p.firstStopLossPercent + (1 - WICK_FIRST_CLOSE_FRACTION) * p.finalStopLossPercent;
+          const initialRisk = WICK_FIRST_CLOSE_FRACTION * sl1 + (1 - WICK_FIRST_CLOSE_FRACTION) * sl2;
           trades.push({ signal, entryTime: order.entryTime!, exitTime: order.resolvedAt, entryPrice: entry,
             exitPrice: order.exits.reduce((sum, e) => sum + e.exitPrice * e.fraction, 0), reason: order.exits[1].reason,
             exits: order.exits, ambiguous, ignoredUnorderedTarget, grossPercent: total('grossPercent'),

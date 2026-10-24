@@ -8,7 +8,7 @@ import type { Frame } from './types.ts';
 const fmt = (n: number | null | undefined, digits = 3) => n == null ? '—' : n.toFixed(digits);
 const iso = (n: number) => new Date(n).toISOString();
 const csv = (rows: unknown[][]) => rows.map(r => r.map(v => `"${String(v ?? '').replaceAll('"', '""')}"`).join(',')).join('\n') + '\n';
-const parameterKeys = ['holdMinutes', 'firstTakeProfitPercent', 'firstStopLossPercent', 'finalTakeProfitPercent', 'finalStopLossPercent'] as const;
+const parameterKeys = ['holdMinutes', 'dayGainFraction', 'minGreenRatio', 'minConsecutiveGreenBars', 'maxUpperShadowRatio', 'exitX', 'exitN', 'exitM', 'firstTakeProfitPercent', 'firstStopLossPercent', 'finalTakeProfitPercent', 'finalStopLossPercent'] as const;
 const metricKeys = ['signalCount', 'submitted', 'filled', 'fillRate', 'trades', 'wins', 'losses', 'breakevens', 'winRate', 'meanWinPercent', 'meanLossPercent', 'realizedRewardRisk', 'profitFactor', 'meanNetPercent', 'meanNetR', 'sumNetPercent', 'maxDrawdownPoints', 'missing', 'missingAfterFill', 'partialOrders', 'purged', 'skippedBusy', 'ambiguous', 'ignoredUnorderedTargets', 'firstTargetFinalStop', 'firstStopFinalTarget'] as const;
 
 export async function writeWickReport(s: WickStudy, frames: Frame[], directory: string) {
@@ -23,8 +23,8 @@ export async function writeWickReport(s: WickStudy, frames: Frame[], directory: 
     '第一段按极小止盈/极小止损退出；第一段完成后，剩余仓位按大止盈/小止损退出。两段止盈止损均相对原始入场价，不重置入场价，不自动移到保本。胜率和盈亏比按整笔合并净收益计算。', '',
     `区间 [${iso(s.split.start)}, ${iso(s.split.end)})；候选信号 ${s.signals.length}；预定参数 ${s.trials.length} 组。`, '',
     '## 信号与直接开仓', '',
-    `历史24h涨幅榜前 ${c.topN} 名，24h涨幅 >0 且 ≥${c.minDayChangePercent}%；至少 ${c.minStreakCount} 连阳。连阳累计涨幅=(最后close/连阳第一根open−1)×100%，阈值 ${c.gainMode === 'day-fraction' ? `当时24h涨幅×${c.dayGainFraction}` : `${c.minStreakGainPercent}%`}。`,
-    `MA5/7/10/20/25/30/60/99/120 均不满足已收盘信号线 low < MA < close；最近30根已收盘1m的 hist=2×(DIF−DEA)>0 占比严格 >${c.minGreenRatio * 100}%。默认至少25/30。每分钟仅使用最近${c.indicatorWindow}根已收盘线，与监控默认200根缓存含一根形成线的口径对应；缺口后重新预热；无额外死叉或柱体衰减过滤。`,
+    `历史24h涨幅榜前 ${c.topN} 名，24h涨幅 >0 且 ≥${c.minDayChangePercent}%；至少 ${c.minStreakCount} 连阳。连阳累计涨幅=(最后close/连阳第一根open−1)×100%，阈值 ${c.gainMode === 'day-fraction' ? `当时24h涨幅×${(c.dayGainFractions ?? [c.dayGainFraction ?? 0.05]).join('/')}` : `${c.minStreakGainPercent}%`}。`,
+    `MA${(c.supportMaPeriods ?? [3, 5, 10, 15, 20]).join('/')} 均不满足已收盘信号线 low < MA < close；最后一根阳线上影短于柱体${(c.maxUpperShadowRatios ?? [c.maxUpperShadowRatio ?? 0.3]).map(r => (r * 100).toFixed(0) + '%').join('/')}；最近30根已收盘1m的 hist=2×(DIF−DEA)>0 占比严格 >${(c.minGreenRatios ?? [c.minGreenRatio ?? 0.5]).map(r => (r * 100).toFixed(0) + '%').join('/')}，且末尾${(c.consecutiveGreenBars ?? [c.minConsecutiveGreenBars ?? 7]).join('/')}根MACD柱全绿(hist>0)。每分钟仅使用最近${c.indicatorWindow}根已收盘线，与监控默认200根缓存含一根形成线的口径对应；缺口后重新预热；无额外死叉或柱体衰减过滤。`,
     '信号收盘确认后立即市价开空，分钟回测按下一分钟开盘价入场；不等待价格上冲，没有挂单偏移、有效期或撤单过滤。开盘跳空仍正常开仓，止盈止损以实际入场基准价计算。',
     '同币只持一笔，第一段平仓后剩余仓位继续占用，全部退出后可再次入场。持仓期间每个满足条件的分钟仍计为信号，单独记录未重复开仓数量。', '',
     '## 两段执行和费用', '',
@@ -44,20 +44,39 @@ export async function writeWickReport(s: WickStudy, frames: Frame[], directory: 
     w ? (!w.sufficientTest ? '留出样本不足或有数据缺失，不能评价策略有效。' : w.test.meanNetPercent! > 0 ? '本段净期望为正，仍需新时期验证。' : '本段净期望不为正，本次结果不支持该参数盈利。')
       : `训练/验证样本不足或存在缺失，没有参数通过门槛，未评价候选参数的留出；全区间固定基准仅用于此次试跑。训练至少要求${c.minTrades}笔完整交易且无缺失，当前探索结果不能作为策略有效的证据。`);
   lines.push('', '## 信号筛选数量核对', '',
-    `按顺序筛选：榜内且历史足够的分钟 ${s.signalAudit.rankedMinutes} → 连阳达标 ${s.signalAudit.bullishStreakMinutes} → 连阳涨幅达标 ${s.signalAudit.gainQualifiedMinutes} → 无MA支撑 ${s.signalAudit.noMaMinutes} → 绿柱比例达标 ${s.signalAudit.matchedMinutes}。`,
+    `按顺序筛选：榜内且历史足够的分钟 ${s.signalAudit.rankedMinutes} → 连阳达标 ${s.signalAudit.bullishStreakMinutes} → 连阳涨幅达标 ${s.signalAudit.gainQualifiedMinutes} → 无MA支撑 ${s.signalAudit.noMaMinutes} → 满足最宽阈值的基础候选池 ${s.signalAudit.matchedMinutes}。各参数组合在此候选池上动态过滤（24h涨幅比例、30根绿柱占比、末尾连续绿柱数及上影线比例）。`,
     '以上按币种×已收盘分钟计数，同一分钟监控刷新多次只算一次；这与Telegram发送次数、榜内实时排名变化并不等价。');
   const baseline = s.baseline.metrics;
   lines.push('', `全区间固定基准：第一段止盈 ${baseline.firstExits.target}、止损 ${baseline.firstExits.stop}、超时 ${baseline.firstExits.timeout}；第二段止盈 ${baseline.exits.target}、止损 ${baseline.exits.stop}、超时 ${baseline.exits.timeout}。`,
     `基准 ${baseline.trades} 笔完整交易中有 ${baseline.ambiguous} 笔存在同分钟止盈止损双触，按止损优先；${baseline.ignoredUnorderedTargets} 笔忽略先后不明的有利触价。该结果是保守分钟回测，需更细粒度数据判定真实先后。`);
   const m = w?.test ?? training.metrics;
   lines.push('', `${w ? '留出' : '探索训练'}第一段：止盈 ${m.firstExits.target}，止损 ${m.firstExits.stop}，超时 ${m.firstExits.timeout}；第二段：止盈 ${m.exits.target}，止损 ${m.exits.stop}，超时 ${m.exits.timeout}。先止盈后止损 ${m.firstTargetFinalStop} 笔，先止损后止盈 ${m.firstStopFinalTarget} 笔。`,
-    `缺失 ${m.missing}（成交后 ${m.missingAfterFill}，仅完成第一段 ${m.partialOrders}），跨段剔除 ${m.purged}；双触 ${m.ambiguous}，忽略先后不明的有利触价 ${m.ignoredUnorderedTargets}。`, '',
-    '## 预定退出方案与四种净结果', '',
-    '| 第一段TP/SL%（平50%） | 第二段TP/SL%（平剩余全部） | 两段止盈% | 两段止损% | 先盈后损% | 先损后盈% |',
-    '|---|---|---|---|---|---|');
-  for (const e of c.exitPlans) {
-    const r = plannedWickReward({ ...e, holdMinutes: c.holdMinutes[0] }, c);
-    lines.push(`| ${e.firstTakeProfitPercent}/${e.firstStopLossPercent} | ${e.finalTakeProfitPercent}/${e.finalStopLossPercent} | ${fmt(r.bothTargetsNetPercent)} | ${fmt(r.bothStopsNetPercent)} | ${fmt(r.firstTargetFinalStopNetPercent)} | ${fmt(r.firstStopFinalTargetNetPercent)} |`);
+    `缺失 ${m.missing}（成交后 ${m.missingAfterFill}，仅完成第一段 ${m.partialOrders}），跨段剔除 ${m.purged}；双触 ${m.ambiguous}，忽略先后不明的有利触价 ${m.ignoredUnorderedTargets}。`);
+  if (c.exitXs && c.exitNs && c.exitMs) {
+    lines.push('', '## 预定动态退出方案（按典型24h涨幅20%基准测算四种净结果）', '',
+      '| x（第一段分母） | n（第二段止损倍数） | m（第二段止盈倍数） | 基准TP1/SL1% | 基准SL2% | 基准TP2% | 两段止盈% | 两段止损% | 先盈后损% | 先损后盈% |',
+      '|---|---|---|---|---|---|---|---|---|---|');
+    const seen = new Set<string>();
+    for (const exitX of c.exitXs) {
+      for (const exitN of c.exitNs) {
+        for (const exitM of c.exitMs) {
+          const key = `${exitX}/${exitN}/${exitM}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const r = plannedWickReward({ holdMinutes: c.holdMinutes[0], exitX, exitN, exitM }, c, 20);
+          const sl1 = 20 / exitX, sl2 = 20 * exitN / exitX, tp2 = 20 * exitM / exitX;
+          lines.push(`| ${exitX} | ${exitN} | ${exitM} | ${fmt(sl1, 2)} | ${fmt(sl2, 2)} | ${fmt(tp2, 2)} | ${fmt(r.bothTargetsNetPercent)} | ${fmt(r.bothStopsNetPercent)} | ${fmt(r.firstTargetFinalStopNetPercent)} | ${fmt(r.firstStopFinalTargetNetPercent)} |`);
+        }
+      }
+    }
+  } else if (c.exitPlans) {
+    lines.push('', '## 预定退出方案与四种净结果', '',
+      '| 第一段TP/SL%（平50%） | 第二段TP/SL%（平剩余全部） | 两段止盈% | 两段止损% | 先盈后损% | 先损后盈% |',
+      '|---|---|---|---|---|---|');
+    for (const e of c.exitPlans) {
+      const r = plannedWickReward({ ...e, holdMinutes: c.holdMinutes[0] }, c);
+      lines.push(`| ${e.firstTakeProfitPercent}/${e.firstStopLossPercent} | ${e.finalTakeProfitPercent}/${e.finalStopLossPercent} | ${fmt(r.bothTargetsNetPercent)} | ${fmt(r.bothStopsNetPercent)} | ${fmt(r.firstTargetFinalStopNetPercent)} | ${fmt(r.firstStopFinalTargetNetPercent)} |`);
+    }
   }
   lines.push('', '四种结果以初始仓位名义金额计算，含费用、不含跳空和超时。第一段止盈并不保证整笔盈利；分批退出不能套用单一止盈/止损两结果的保本胜率。', '',
     '## 统计与样本', '',
@@ -92,8 +111,8 @@ export async function writeWickReport(s: WickStudy, frames: Frame[], directory: 
   await ledger('baseline', s.baseline.trades, s.baseline.orders);
   await ledger('train', training.trades, training.orders);
   await ledger('test', w?.testTrades ?? [], w?.testOrders ?? []);
-  const signals: unknown[][] = [['symbol', 'signal_utc', 'rank', 'board_utc', 'day_change_pct', 'close', 'streak_count', 'streak_gain_pct', 'required_gain_pct', 'green_count_30', 'green_ratio_30', 'hist', 'previous_hist', 'support_ma']];
-  for (const v of s.signals) signals.push([v.symbol, iso(v.time), v.rank, iso(v.boardTime), v.dayChangePercent, v.close, v.streakCount, v.streakGainPercent, v.requiredGainPercent, v.greenCount, v.greenRatio, v.hist, v.previousHist, v.supportMa]);
+  const signals: unknown[][] = [['symbol', 'signal_utc', 'rank', 'board_utc', 'day_change_pct', 'close', 'streak_count', 'streak_gain_pct', 'required_gain_pct', 'green_count_30', 'green_ratio_30', 'consecutive_green_bars', 'upper_shadow_ratio', 'hist', 'previous_hist', 'support_ma']];
+  for (const v of s.signals) signals.push([v.symbol, iso(v.time), v.rank, iso(v.boardTime), v.dayChangePercent, v.close, v.streakCount, v.streakGainPercent, v.requiredGainPercent, v.greenCount, v.greenRatio, v.consecutiveGreenBars, v.upperShadowRatio, v.hist, v.previousHist, v.supportMa]);
   const boards: unknown[][] = [['time_utc', 'rank', 'symbol', 'day_change_pct', 'eligible_symbols']];
   for (const f of frames) for (const r of f.boards.gainers) boards.push([iso(f.time), r.rank, r.symbol, r.dayChange, f.eligibleSymbols]);
   for (const [name, rows] of Object.entries({ trials, summary, signals, 'board-history': boards })) await writeFile(path.join(directory, `${name}.csv`), csv(rows));

@@ -30,6 +30,7 @@ import { telegramConfigured } from "./telegram.ts";
 import { enrichRankChanges, type BoardSnapshot } from "./rank.ts";
 import { wsManager, applyTradeToCandles, sanitizeCandles } from "./ws.ts";
 import { buildChartPayload, parseChartQuery } from "./chart.ts";
+import { paperTrading } from "./paper-trading.ts";
 import type { Row, Status } from "./types.ts";
 
 // Directory the built React frontend is emitted to (web/dist). In dev you run
@@ -72,12 +73,13 @@ onAnomalyRecovered(() => {
   }
 });
 
-// 监听 WebSocket 成交流，实时推进当前 1m K 线
+// 监听 WebSocket 成交流，实时推进当前 1m K 线并驱动模拟交易撮合
 wsManager.onTrade((tick) => {
   const symCache = candleCache.get(tick.symbol);
   if (symCache && symCache.initialized && symCache.candles1m.length > 0) {
     symCache.candles1m = applyTradeToCandles(symCache.candles1m, tick, KLINE_ROLLING_LIMIT);
   }
+  paperTrading.onTick(tick);
 });
 
 export function getCandleCacheForTest(): Map<string, SymbolCandleCache> {
@@ -418,11 +420,15 @@ async function refresh(): Promise<Status> {
     [],
   );
 
-  // 动态同步 WebSocket 订阅列表：确保置顶与涨幅榜币种全部在 WS 监听中
-  const allSymbols = [
-    ...pinned.map((r) => r.symbol),
-    ...gainers.map((r) => r.symbol),
-  ];
+  // 动态同步 WebSocket 订阅列表：确保置顶、涨幅榜币种及当前处于模拟持仓中的币种全部在 WS 监听中
+  const activePaperSymbols = paperTrading.getActiveSymbols();
+  const allSymbols = Array.from(
+    new Set([
+      ...pinned.map((r) => r.symbol),
+      ...gainers.map((r) => r.symbol),
+      ...activePaperSymbols,
+    ]),
+  );
   wsManager.setSymbols(allSymbols);
 
   // 计算排名对比与位移标记
@@ -447,6 +453,13 @@ async function refresh(): Promise<Status> {
     losers: [],
   };
 
+  // 触发模拟交易扫描（基于最新已收盘 1m K 线检测最高胜率做空信号）
+  try {
+    await paperTrading.onScan(tops.gainers, candleCache);
+  } catch (err) {
+    console.warn(`[paper-trading] 扫描信号异常:`, (err as any)?.message ?? err);
+  }
+
   // Telegram alert runs only on fresh snapshots
   const { summary: highBull } = await alerter.check({
     gainers: [...rankedGainers.rankedTop, ...rankedGainers.rankedDropped],
@@ -468,6 +481,7 @@ async function refresh(): Promise<Status> {
     gainers: fullGainers,
     losers: [],
     volume: [],
+    paperTrading: paperTrading.getSummary(),
   };
 }
 
@@ -580,6 +594,7 @@ async function pollLoop() {
   if (isPolling) return;
   isPolling = true;
   try {
+    paperTrading.checkTimeouts();
     const backoff = getBackoffStatus();
     if (backoff.active) {
       const waitSec = Math.ceil((backoff.backoffUntil - Date.now()) / 1000);
@@ -661,6 +676,15 @@ const server = http.createServer(async (req, res) => {
   }
   const reqUrl = req.url ?? "/";
   const u = new URL(reqUrl, `http://${req.headers.host ?? "localhost"}`);
+
+  if (u.pathname === "/api/paper-trading") {
+    res.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify(paperTrading.getState()));
+    return;
+  }
 
   if (u.pathname === "/api/klines") {
     await serveKlines(u, res);

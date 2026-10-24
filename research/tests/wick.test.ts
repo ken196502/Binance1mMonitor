@@ -34,12 +34,14 @@ function data(bars: Bar[], end = START + 10 * HOUR): MinuteDataset {
 function signal(time = START, index = 0): WickSignal {
   return { symbol: SYMBOL, time, index, close: 100, rank: 1, boardTime: Math.floor(time / HOUR) * HOUR,
     dayChangePercent: 5, streakCount: 3, streakGainPercent: 1, requiredGainPercent: 0.5,
-    greenCount: 25, greenRatio: 25 / 30, hist: 1, previousHist: 2, supportMa: null };
+    greenCount: 25, greenRatio: 25 / 30, consecutiveGreenBars: 7, upperShadowRatio: 0.1, hist: 1, previousHist: 2, supportMa: null };
 }
 function accelerating(count = 900): Bar[] {
   return Array.from({ length: count }, (_, i) => {
-    const open = 100 + i ** 2 * 0.00001, close = 100 + (i + 1) ** 2 * 0.00001;
-    return bar(START + (i - 300) * MINUTE, open, close * 1.004, open - 0.00001, close);
+    const prevClose = 100 + i ** 2 * 0.00001;
+    const open = prevClose + 0.00002;
+    const close = 100 + (i + 1) ** 2 * 0.00001;
+    return bar(START + (i - 300) * MINUTE, open, close + (close - open) * 0.1, open, close);
   });
 }
 const simulate = (bars: Bar[], p = parameters, c = config(), signals = [signal()], end = START + HOUR) =>
@@ -50,30 +52,82 @@ test('config defines one two-stage position, rejects legacy profiles and invalid
   const c = validateWickConfig({ takerFeeBps: 0 });
   assert.equal(c.takerFeeBps, 0);
   assert.equal(WICK_CONFIG.takerFeeBps, 5);
-  assert.equal(wickCombinations(c).length, 9);
+  assert.equal(wickCombinations(c).length, 864);
   for (const invalid of [{ profiles: [] }, { entryOffsetPercent: [0.1] }, { holdMinutes: [1, 1] },
-    { trainRatio: 0.9, validationRatio: 0.2 }, { exitPlans: [{ ...c.exitPlans[0], finalTakeProfitPercent: 0.05 }] },
-    { exitPlans: [{ ...c.exitPlans[0], finalStopLossPercent: 0.05 }] }]) assert.throws(() => validateWickConfig(invalid));
+    { trainRatio: 0.9, validationRatio: 0.2 }, { exitPlans: [{ ...c.exitPlans![0], finalTakeProfitPercent: 0.05 }] },
+    { exitPlans: [{ ...c.exitPlans![0], finalStopLossPercent: 0.05 }] }]) assert.throws(() => validateWickConfig(invalid));
+});
+
+test('dynamic exit levels scale by dayChange: stage1=dayChange/x, stage2_stop=dayChange*n/x, stage2_target=dayChange*m/x', () => {
+  const p: WickParameters = { holdMinutes: 5, exitX: 100, exitN: 1.5, exitM: 5 };
+  // dayChangePercent = 20 -> sl1 = 0.2%, tp1 = 0.2%, sl2 = 0.3%, tp2 = 1.0%
+  const sig: WickSignal = { ...signal(), dayChangePercent: 20 };
+  const d = data([
+    bar(START - MINUTE),
+    bar(START, 100, 100.05, 99.75, 99.78), // triggers target1 at 99.8 (tp1 = 0.2%)
+    bar(START + MINUTE, 99.8, 99.85, 98.9, 98.95), // triggers target2 at 99.0 (tp2 = 1.0%)
+  ]);
+  const res = backtestWick(d, [sig], p, config(), START, START + HOUR);
+  assert.equal(res.metrics.trades, 1);
+  const trade = res.trades[0];
+  assert.deepEqual(trade.exits.map(e => e.reason), ['target', 'target']);
+  near(trade.exits[0].exitPrice, 99.8);
+  near(trade.exits[1].exitPrice, 99.0);
+  near(trade.grossPercent, 0.6); // 50% * 0.2% + 50% * 1.0% = 0.6%
 });
 
 test('signals require 25 of 30 positive hist bars; 24 of 30 is excluded', () => {
   const bars = Array.from({ length: 330 }, (_, i) => {
-    const open = 100 + Math.max(0, i - 280) ** 2 * 0.001;
+    const open = 100 + Math.max(0, i - 280) ** 2 * 0.001 + (i >= 280 ? 0.001 : 0);
     const close = 100 + Math.max(0, i - 279) ** 2 * 0.001;
     return bar(START + (i - 300) * MINUTE, open, close + 0.001, open, close);
   });
-  const c = validateWickConfig({ gainMode: 'fixed', minStreakGainPercent: 0 });
+  const c = validateWickConfig({ gainMode: 'fixed', minStreakGainPercent: 0, minGreenRatio: 0.8 });
   const signals = buildWickSignals(data(bars), [frame()], c);
   assert.equal(signals[0].time, START + 5 * MINUTE);
   assert.equal(signals[0].greenCount, 25);
   assert.ok(!signals.some(s => s.time === START + 4 * MINUTE));
 });
 
+test('signals require last N MACD hist bars to be all green', () => {
+  const bars = accelerating(), d = data(bars), frames = [frame()];
+  const defaultSignals = buildWickSignals(d, frames, config());
+  assert.ok(defaultSignals.length > 0);
+  // Setting minConsecutiveGreenBars to 30 will fail if not all 30 are green,
+  // while requiring 7 passes on clean acceleration
+  const c7 = validateWickConfig({ ...config(), minConsecutiveGreenBars: 7 });
+  assert.equal(buildWickSignals(d, frames, c7).length, defaultSignals.length);
+  // If one of the last 7 bars has non-positive hist, signal is rejected
+  const dipBars = structuredClone(bars);
+  // At index 298 (2nd last closed candle before START at 299), sharply drop close to force hist <= 0
+  dipBars[298][4] = dipBars[298][1] * 0.95;
+  const dipSignals = buildWickSignals(data(dipBars), frames, c7);
+  assert.ok(!dipSignals.some(s => s.time === START));
+});
+
+test('signals require last bullish candle upper shadow to be shorter than 30% of body', () => {
+  const bars = accelerating(), frames = [frame()];
+  const c = validateWickConfig({ maxUpperShadowRatios: [0.3] });
+  assert.equal(buildWickSignals(data(bars), frames, c).length, 60);
+
+  // If last candle has upper shadow >= 30% of body, signal is rejected
+  const longUpperShadow = structuredClone(bars);
+  const open = longUpperShadow[299][1], close = longUpperShadow[299][4];
+  const body = close - open;
+  longUpperShadow[299][2] = close + body * 0.35; // upper shadow = 35% of body
+  assert.ok(!buildWickSignals(data(longUpperShadow), frames, c).some(s => s.time === START));
+
+  // If upper shadow < 30% of body (e.g. 25%), signal passes
+  const shortUpperShadow = structuredClone(bars);
+  shortUpperShadow[299][2] = close + body * 0.25;
+  assert.ok(buildWickSignals(data(shortUpperShadow), frames, c).some(s => s.time === START));
+});
+
 test('signals share inclusive streak gain and MA rules, without future or stale board membership', () => {
   const bars = accelerating(), d = data(bars), frames = [frame()];
   const ss = buildWickSignals(d, frames, config());
   assert.equal(ss[0].time, START);
-  near(ss[0].requiredGainPercent, 0.5);
+  near(ss[0].requiredGainPercent, 0.15);
   near(ss[0].streakGainPercent, (bars[299][4] / bars[101][1] - 1) * 100);
   assert.equal(ss.length, 60);
   const fixed = { ...config(), gainMode: 'fixed' as const, minStreakGainPercent: ss[0].streakGainPercent };
@@ -95,6 +149,19 @@ test('signals share inclusive streak gain and MA rules, without future or stale 
   const reset = buildWickSignals(broken, Array.from({ length: 10 }, (_, i) => frame(START + i * HOUR)), config());
   assert.ok(!reset.some(s => s.time > START && s.time < START + 200 * MINUTE));
   assert.ok(reset.some(s => s.time === START + 200 * MINUTE));
+});
+
+test('support MA periods [3] and [3, 15] filter supported candles as expected', () => {
+  const bars = accelerating(), d = data(bars), frames = [frame()];
+  const c3 = validateWickConfig({ supportMaPeriods: [3] });
+  const c3_15 = validateWickConfig({ supportMaPeriods: [3, 15] });
+  assert.equal(buildWickSignals(d, frames, c3).length, 60);
+  assert.equal(buildWickSignals(d, frames, c3_15).length, 60);
+
+  const supported3 = structuredClone(bars);
+  supported3[299][3] = supported3[299][1] - 0.00005;
+  assert.ok(!buildWickSignals(data(supported3), frames, c3).some(s => s.time === START));
+  assert.ok(!buildWickSignals(data(supported3), frames, c3_15).some(s => s.time === START));
 });
 
 test('every free signal directly opens at next open, without waiting for a wick or rejecting gaps', () => {

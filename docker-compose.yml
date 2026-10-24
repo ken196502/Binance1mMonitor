@@ -39,9 +39,11 @@ services:
     # 可在 .env 中显式配置 PROXY=http://host.docker.internal:7890（显式设置后 entrypoint 不再指向容器内 mihomo）
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # 可选：挂载你自己的 mihomo 配置（含代理节点），优先级高于 MIHOMO_SUBSCRIPTION_URL
-    # volumes:
-    #   - ./docker/mihomo/config.yaml:/etc/mihomo/config.yaml:ro
+    volumes:
+      # 持久化模拟交易账户资产、持仓与历史订单（重启或更新容器不丢失数据）
+      - ./data:/app/data
+      # 可选：挂载你自己的 mihomo 配置（含代理节点），优先级高于 MIHOMO_SUBSCRIPTION_URL
+      # - ./docker/mihomo/config.yaml:/etc/mihomo/config.yaml:ro
     expose:
       - "4111"
     # 可选：如果除 Traefik 代理外还需要直接在宿主机端口访问，可解开以下注释

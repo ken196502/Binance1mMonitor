@@ -3,6 +3,7 @@ import { useStatus } from "./hooks/useStatus";
 import { GroupSection } from "./components/GroupSection";
 import { ChartPanel } from "./components/KlineChart";
 import { Countdown } from "./components/Countdown";
+import { PaperTradingPanel } from "./components/PaperTradingPanel";
 import "./App.css";
 
 
@@ -70,6 +71,12 @@ export default function App() {
           <span>{meta}</span>
         </div>
       </header>
+
+      <PaperTradingPanel
+        summary={status && !status.error ? status.paperTrading : undefined}
+        onSelectSymbol={selectSymbol}
+        selectedSymbol={chartSymbol}
+      />
 
       <div className="grid">
         <GroupSection

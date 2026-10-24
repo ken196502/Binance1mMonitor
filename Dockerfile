@@ -107,8 +107,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
 # 从阶段 1 复制前端静态构建产物至 web/dist
 COPY --from=web-builder /app/web/dist ./web/dist
 
-# 修正目录归属并切换到内置非 root 用户 node（mihomo 需要在配置目录写 cache.db）
-RUN chown -R node:node /app /etc/mihomo
+# 修正目录归属并切换到内置非 root 用户 node（mihomo 需要在配置目录写 cache.db，模拟盘持久化写入 /app/data）
+RUN mkdir -p /app/data && chown -R node:node /app /etc/mihomo
 USER node
 
 EXPOSE 4111

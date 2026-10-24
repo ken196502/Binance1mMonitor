@@ -351,6 +351,308 @@ tbody tr.chart-selected:not(.alert) { background: rgba(77, 157, 255, 0.12); }
 tbody tr.chart-selected:not(.alert) > td:first-child { box-shadow: inset 3px 0 0 #4d9dff; }
 tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
 
+/* ---- Paper Trading Styles ---- */
+.paper-trading-section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 18px;
+  width: 100%;
+}
+
+.paper-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.paper-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.badge-strategy {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--amber);
+  background: rgba(245, 166, 35, 0.12);
+  border: 1px solid rgba(245, 166, 35, 0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.badge-leverage {
+  font-size: 11px;
+  font-weight: 700;
+  color: #ff4d4f;
+  background: rgba(255, 77, 79, 0.15);
+  border: 1px solid rgba(255, 77, 79, 0.4);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.badge-margin {
+  font-size: 10px;
+  color: #4d9dff;
+  background: rgba(77, 157, 255, 0.12);
+  border: 1px solid rgba(77, 157, 255, 0.3);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.paper-stats-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.chip {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.chip b {
+  font-weight: 700;
+}
+
+.chip-winrate {
+  border-color: rgba(46, 204, 113, 0.5);
+  background: rgba(46, 204, 113, 0.08);
+}
+.chip-winrate b {
+  color: var(--green);
+}
+
+.chip-pos b { color: var(--green); }
+.chip-neg b { color: var(--red); }
+.chip-active-count { border-color: rgba(77, 157, 255, 0.4); }
+.chip-active-count b { color: #4d9dff; }
+.sub-counts { color: var(--muted); font-size: 10px; }
+
+.btn-history-toggle {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-history-toggle:hover {
+  background: var(--border);
+  border-color: var(--muted);
+}
+
+.empty-paper-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel2);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.empty-paper-state .empty-icon {
+  font-size: 16px;
+}
+
+.paper-positions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 12px;
+}
+
+.paper-pos-card {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.paper-pos-card:hover {
+  border-color: #4d9dff;
+}
+.paper-pos-card.pos-card-selected {
+  border-color: #4d9dff;
+  box-shadow: 0 0 0 1px #4d9dff inset;
+}
+
+.pos-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  padding-bottom: 6px;
+}
+
+.pos-card-symbol {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pos-card-symbol a {
+  color: var(--text);
+  text-decoration: none;
+  font-size: 14px;
+}
+.pos-card-symbol a:hover {
+  text-decoration: underline;
+  color: #4d9dff;
+}
+
+.badge-short {
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(255, 77, 79, 0.8);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.pos-rank {
+  font-size: 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.pos-card-timer {
+  font-size: 11px;
+  color: var(--amber);
+}
+
+.pos-card-main {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.15);
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.pos-info-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pos-info-col .label {
+  font-size: 10px;
+  color: var(--muted);
+}
+.pos-info-col .val {
+  font-size: 12px;
+  font-weight: 600;
+}
+.pos-info-col .current-val {
+  color: #4d9dff;
+}
+.pos-info-col .pos-gain {
+  color: var(--green);
+}
+
+.pos-card-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stage-block {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.stage-block.stage-active {
+  border-color: rgba(77, 157, 255, 0.4);
+  background: rgba(77, 157, 255, 0.04);
+}
+.stage-block.stage-done {
+  border-color: rgba(46, 204, 113, 0.3);
+  background: rgba(46, 204, 113, 0.03);
+}
+
+.stage-title {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.stage-status {
+  font-weight: 600;
+}
+.stage-done .stage-status {
+  color: var(--green);
+}
+.stage-active .stage-status {
+  color: #4d9dff;
+}
+
+.stage-targets {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+}
+.target-green { color: var(--green); }
+.target-red { color: var(--red); }
+
+.paper-history-drawer {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.history-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.history-header h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.loading-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.empty-history {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 10px 0;
+}
+.paper-history-table {
+  width: 100%;
+}
+.paper-history-table tr {
+  cursor: pointer;
+}
+
 @media (min-width: 900px) {
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

@@ -3,19 +3,69 @@
   "indicatorWindow": 199,
   "minStreakCount": 2,
   "gainMode": "day-fraction",
-  "dayGainFraction": 0.1,
+  "dayGainFraction": 0.05,
+  "dayGainFractions": [
+    0.03,
+    0.05,
+    0.08,
+    0.1
+  ],
   "minStreakGainPercent": 1,
   "minDayChangePercent": 0,
-  "minGreenRatio": 0.8,
+  "minGreenRatio": 0.5,
+  "minGreenRatios": [
+    0.5,
+    0.6,
+    0.7,
+    0.8
+  ],
+  "minConsecutiveGreenBars": 7,
+  "consecutiveGreenBars": [
+    3,
+    5,
+    7,
+    9
+  ],
+  "maxUpperShadowRatio": 0.3,
+  "maxUpperShadowRatios": [
+    0.2,
+    0.3,
+    0.4,
+    0.5
+  ],
+  "supportMaPeriods": [
+    3,
+    5,
+    10,
+    15,
+    20
+  ],
   "takerFeeBps": 5,
   "slippageBps": 2,
   "minTrades": 100,
   "trainRatio": 0.6,
   "validationRatio": 0.2,
   "holdMinutes": [
-    5,
-    15,
-    60
+    15
+  ],
+  "exitX": 80,
+  "exitXs": [
+    60,
+    80,
+    100
+  ],
+  "exitN": 1.5,
+  "exitNs": [
+    1.2,
+    1.5,
+    2.0
+  ],
+  "exitM": 6,
+  "exitMs": [
+    4,
+    6,
+    8,
+    10
   ],
   "exitPlans": [
     {

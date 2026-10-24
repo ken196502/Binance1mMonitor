@@ -77,6 +77,112 @@ export interface HighBearState extends HighBullSummary {
   since?: string;
 }
 
+// ---- 模拟交易 (Paper Trading) ----
+export type PaperExitReason = "target" | "stop" | "timeout";
+
+export interface PaperExit {
+  stage: 1 | 2;
+  fraction: number; // 0.5 of initial notional
+  exitTime: number; // timestamp ms
+  exitPrice: number;
+  reason: PaperExitReason;
+  grossPnlUsdt: number;
+  feeUsdt: number;
+  slippageUsdt: number;
+  netPnlUsdt: number;
+  netPercent: number; // Net return % relative to stage notional
+}
+
+export interface PaperPosition {
+  id: string; // e.g. `${symbol}-${entryTime}`
+  symbol: string;
+  side: "SHORT";
+  leverage: number;     // 10x
+  marginUsdt: number;   // 10 USDT
+  notionalUsdt: number; // 100 USDT (margin * leverage)
+  status: "OPEN" | "PARTIAL" | "CLOSED";
+  entryTime: number;
+  entryPrice: number;
+  currentPrice: number;
+  dayChangePercent: number;
+  rank?: number | null;
+  amp30Percent: number; // 30分钟振幅%
+  streakCount: number;
+  upperShadowRatio: number;
+  greenRatio: number;
+  consecutiveGreenBars: number;
+
+  tp1Percent: number;
+  sl1Percent: number;
+  tp1Price: number;
+  sl1Price: number;
+
+  sl2Percent: number;
+  tp2Percent: number;
+  sl2Price: number;
+  tp2Price: number;
+
+  timeoutAt: number;
+
+  exits: PaperExit[];
+  remainingFraction: number; // 1.0 -> 0.5 -> 0.0
+
+  realizedNetPnlUsdt: number;
+  unrealizedNetPnlUsdt: number;
+  totalNetPnlUsdt: number;
+  roePercent: number; // (totalNetPnlUsdt / marginUsdt) * 100%
+  closedAt?: number;
+  finalReason?: PaperExitReason;
+}
+
+export interface PaperAccount {
+  initialBalanceUsdt: number; // 100 USDT
+  balanceUsdt: number;        // 已实现余额
+  equityUsdt: number;         // 净值 (余额 + 浮动盈亏)
+  usedMarginUsdt: number;     // 已占用保证金
+  availableMarginUsdt: number;// 可用保证金
+  totalPnlUsdt: number;       // 累计总净盈亏
+  accountRoiPercent: number;  // 账户总回报率%
+}
+
+export interface PaperTradingStats {
+  initialBalanceUsdt: number;
+  balanceUsdt: number;
+  equityUsdt: number;
+  accountRoiPercent: number;
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  breakevenTrades: number;
+  winRate: number; // 0..100
+  totalNetPnlUsdt: number;
+  grossGainsUsdt: number;
+  grossLossesUsdt: number;
+  profitFactor: number;
+  avgTradePnlUsdt: number;
+  realizedRewardRisk: number | null;
+}
+
+export interface PaperTradingState {
+  account: PaperAccount;
+  activePositions: PaperPosition[];
+  closedPositions: PaperPosition[];
+  stats: PaperTradingStats;
+  updatedAt: string;
+}
+
+export interface PaperTradingSummary {
+  account: PaperAccount;
+  activeCount: number;
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  winRate: number;
+  totalNetPnlUsdt: number;
+  profitFactor: number;
+  activePositions: PaperPosition[];
+}
+
 export interface Status {
   at: string; // ISO time of last successful refresh
   base: string;
@@ -88,6 +194,7 @@ export interface Status {
   gainers: Row[];
   losers: Row[];
   volume?: Row[];
+  paperTrading?: PaperTradingSummary;
   error?: string;
 }
 
