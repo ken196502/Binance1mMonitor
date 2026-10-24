@@ -1,5 +1,10 @@
 import { useState, useEffect } from "react";
-import type { PaperTradingSummary, PaperPosition, PaperExitReason } from "../../../src/types.ts";
+import type {
+  PaperTradingSummary,
+  PaperPosition,
+  PaperPendingOrder,
+  PaperExitReason,
+} from "../../../src/types.ts";
 
 interface PaperTradingPanelProps {
   summary?: PaperTradingSummary;
@@ -14,11 +19,19 @@ interface ClosedTradeItem extends PaperPosition {
 
 function formatCountdown(targetTime: number): string {
   const remainingMs = targetTime - Date.now();
-  if (remainingMs <= 0) return "超时平仓中";
+  if (remainingMs <= 0) return "已到期/处理中";
   const totalSeconds = Math.floor(remainingMs / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}分${seconds < 10 ? "0" : ""}${seconds}秒`;
+}
+
+function formatHoldDuration(closedAt?: number, entryTime?: number): string {
+  if (!closedAt || !entryTime) return "15.0 分钟";
+  const durationMs = Math.max(0, closedAt - entryTime);
+  if (durationMs < 1000) return "<1 秒";
+  if (durationMs < 60000) return `${Math.floor(durationMs / 1000)} 秒`;
+  return `${(durationMs / 60000).toFixed(1)} 分钟`;
 }
 
 export function PaperTradingPanel({
@@ -29,6 +42,7 @@ export function PaperTradingPanel({
   const [showHistory, setShowHistory] = useState(false);
   const [historyList, setHistoryList] = useState<ClosedTradeItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [, setTick] = useState(0);
 
   // Update timer every second for countdowns
@@ -38,6 +52,31 @@ export function PaperTradingPanel({
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  const handleReset = async () => {
+    const ok = window.confirm(
+      "⚠️ 确定要重置模拟交易账户吗？\n\n这将清空当前所有活跃持仓、挂单与历史平仓明细，账户余额将恢复为初始 100 USDT。",
+    );
+    if (!ok) return;
+
+    setIsResetting(true);
+    try {
+      const res = await fetch("/api/paper-trading/reset", { method: "POST" });
+      if (res.ok) {
+        setHistoryList([]);
+        setShowHistory(false);
+        // 自动重新加载页面状态
+        window.location.reload();
+      } else {
+        alert("重置失败，请检查后端服务连接");
+      }
+    } catch (err) {
+      console.warn("重置模拟交易失败:", err);
+      alert("请求异常: " + String(err));
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   const loadHistory = async () => {
     if (showHistory) {
@@ -72,6 +111,7 @@ export function PaperTradingPanel({
   const winRate = summary ? summary.winRate : 0;
   const pf = summary ? summary.profitFactor : 1;
   const activePositions = summary?.activePositions ?? [];
+  const pendingOrders = summary?.pendingOrders ?? [];
 
   return (
     <section className="paper-trading-section">
@@ -80,7 +120,7 @@ export function PaperTradingPanel({
           <h2 style={{ margin: 0 }}>
             <span>⚡ 模拟实盘交易</span>
             <span className="badge-leverage">10x 杠杆 · 保证金 10U</span>
-            <span className="badge-strategy">30m振幅&gt;24h/12 · 上影0.5%~30% · 两段做空 (历史胜率 100% · PF ∞)</span>
+            <span className="badge-strategy">30m振幅&gt;24h/12 · 上影0.5%~30% · 挂单冲高接针 (N=100) · 两段止盈止损</span>
           </h2>
           <div className="paper-stats-chips">
             <span className={`chip ${account.totalPnlUsdt >= 0 ? "chip-pos" : "chip-neg"}`}>
@@ -101,6 +141,11 @@ export function PaperTradingPanel({
               成交: <b>{summary?.totalTrades ?? 0}</b> 笔
               <span className="sub-counts"> (胜 {summary?.winningTrades ?? 0} / 负 {summary?.losingTrades ?? 0})</span>
             </span>
+            {pendingOrders.length > 0 && (
+              <span className="chip" style={{ background: "rgba(245, 166, 35, 0.15)", color: "#f5a623" }}>
+                挂单中: <b>{pendingOrders.length}</b> 笔
+              </span>
+            )}
             <span className="chip chip-active-count">
               持仓中: <b>{activePositions.length}</b> 笔
             </span>
@@ -114,18 +159,107 @@ export function PaperTradingPanel({
           >
             {showHistory ? "收起历史记录" : "历史成交明细"}
           </button>
+          <button
+            type="button"
+            className="btn-reset-paper"
+            onClick={handleReset}
+            disabled={isResetting}
+            title="清空所有模拟持仓、挂单与历史平仓明细，账户恢复为初始 100 USDT"
+          >
+            {isResetting ? "重置中…" : "重置模拟仓位"}
+          </button>
         </div>
       </div>
 
-      {/* 活跃持仓列表 */}
       <div className="paper-body">
-        {activePositions.length === 0 ? (
-          <div className="empty-paper-state">
-            <span className="empty-icon">📡</span>
-            <span className="empty-text">
-              当前暂无活跃持仓 · 账户资金 100 USDT · 单笔保证金 10 USDT (10x 杠杆, 名义 100 USDT) · 每分钟收盘扫描 Top 10 (命中 30m振幅&gt;24h/8 + MA[3,7,15]无支撑 + 上影&lt;30% + 绿柱&gt;70% + 连绿7 即时开空)
-            </span>
+        {/* 限价做空挂单列表 */}
+        {pendingOrders.length > 0 && (
+          <div className="paper-pending-wrap" style={{ marginBottom: "14px" }}>
+            <div style={{ fontSize: "12px", fontWeight: "bold", color: "#f5a623", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
+              <span>⏳ 限价挂单等待冲高撮合 (N=100 · 向上溢价做空接针)</span>
+              <span style={{ fontSize: "11px", opacity: 0.8 }}>({pendingOrders.length} 笔等待触碰)</span>
+            </div>
+            <div className="paper-positions-grid">
+              {pendingOrders.map((order) => {
+                const isSelected = selectedSymbol === order.symbol;
+                const remainingTime = formatCountdown(order.expireAt);
+                const distPercent = ((order.limitPrice - order.currentPrice) / order.currentPrice) * 100;
+                return (
+                  <div
+                    key={order.id}
+                    className={`paper-pos-card ${isSelected ? "pos-card-selected" : ""}`}
+                    style={{ borderLeft: "3px solid #f5a623", background: "rgba(245, 166, 35, 0.05)" }}
+                    onClick={() => onSelectSymbol?.(order.symbol)}
+                    title="点击在右侧查看该标的实时图表"
+                  >
+                    <div className="pos-card-header">
+                      <div className="pos-card-symbol">
+                        <a
+                          href={`https://www.binance.com/zh-CN/futures/${order.symbol}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <b>{order.symbol}</b>
+                        </a>
+                        <span className="badge-short" style={{ background: "rgba(245, 166, 35, 0.2)", color: "#f5a623" }}>
+                          10x 限价挂单
+                        </span>
+                        <span className="badge-margin">保 {order.marginUsdt}U</span>
+                        {order.rank && <span className="pos-rank">#{order.rank}</span>}
+                      </div>
+                      <div className="pos-card-timer" title="有效期内冲针触碰即成交，超时自动撤单">
+                        ⏱️ 有效期: <b>{remainingTime}</b>
+                      </div>
+                    </div>
+
+                    <div className="pos-card-main">
+                      <div className="pos-info-col">
+                        <span className="label">做空挂单价</span>
+                        <span className="val" style={{ color: "#f5a623", fontWeight: "bold" }}>
+                          {order.limitPrice.toFixed(4)}
+                          <small style={{ fontSize: "10px", marginLeft: "2px" }}>(+{order.limitOffsetPercent.toFixed(2)}%)</small>
+                        </span>
+                      </div>
+                      <div className="pos-info-col">
+                        <span className="label">最新价 (距离)</span>
+                        <span className="val current-val">
+                          {order.currentPrice.toFixed(4)}
+                          <small style={{ fontSize: "10px", color: distPercent > 0 ? "#2ecc71" : "#e74c3c", marginLeft: "2px" }}>
+                            (还差 {distPercent > 0 ? "+" : ""}{distPercent.toFixed(2)}%)
+                          </small>
+                        </span>
+                      </div>
+                      <div className="pos-info-col">
+                        <span className="label">基准价 (24h涨幅)</span>
+                        <span className="val pos-gain">
+                          {order.basePrice.toFixed(4)} (+{order.dayChangePercent.toFixed(1)}%)
+                        </span>
+                      </div>
+                      <div className="pos-info-col">
+                        <span className="label">撮合状态</span>
+                        <span className="val" style={{ color: "#f5a623", fontSize: "11px" }}>
+                          等待冲针撮合 ⏳
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
+        )}
+
+        {/* 活跃持仓列表 */}
+        {activePositions.length === 0 ? (
+          pendingOrders.length === 0 ? (
+            <div className="empty-paper-state">
+              <span className="empty-icon">📡</span>
+              <span className="empty-text">
+                当前暂无活跃持仓与挂单 · 账户资金 100 USDT · 单笔保证金 10 USDT (10x 杠杆, 名义 100 USDT) · 每分钟收盘扫描 Top 10 (命中条件后以 24h涨幅/100 向上挂单做空接针)
+              </span>
+            </div>
+          ) : null
         ) : (
           <div className="paper-positions-grid">
             {activePositions.map((pos) => {
@@ -250,9 +384,7 @@ export function PaperTradingPanel({
                         : item.currentPrice;
                     const pnl = item.totalNetPnlUsdt;
                     const roe = item.roePercent ?? (pnl / item.marginUsdt) * 100;
-                    const holdMins = item.closedAt
-                      ? ((item.closedAt - item.entryTime) / 60000).toFixed(1)
-                      : "15.0";
+                    const holdDuration = formatHoldDuration(item.closedAt, item.entryTime);
                     const reasonMap: Record<string, string> = {
                       target: "两段全部止盈 🎯",
                       stop: "触发止损 🛑",
@@ -283,7 +415,7 @@ export function PaperTradingPanel({
                         <td>{item.amp30Percent ? `${item.amp30Percent.toFixed(2)}%` : "-"}</td>
                         <td>{item.entryPrice.toFixed(4)}</td>
                         <td>{avgExit.toFixed(4)}</td>
-                        <td>{holdMins} 分钟</td>
+                        <td>{holdDuration}</td>
                         <td>{reasonText}</td>
                         <td className={pnl >= 0 ? "pos" : "neg"}>
                           <b>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} U</b>

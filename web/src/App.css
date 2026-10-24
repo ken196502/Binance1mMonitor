@@ -460,6 +460,30 @@ tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
   border-color: var(--muted);
 }
 
+.paper-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn-reset-paper {
+  background: rgba(231, 76, 60, 0.1);
+  color: #e74c3c;
+  border: 1px solid rgba(231, 76, 60, 0.3);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-reset-paper:hover {
+  background: rgba(231, 76, 60, 0.2);
+  border-color: #e74c3c;
+}
+.btn-reset-paper:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .empty-paper-state {
   display: flex;
   align-items: center;

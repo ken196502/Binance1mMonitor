@@ -93,6 +93,29 @@ export interface PaperExit {
   netPercent: number; // Net return % relative to stage notional
 }
 
+export interface PaperPendingOrder {
+  id: string; // e.g. `pending-${symbol}-${createdAt}`
+  symbol: string;
+  side: "SHORT";
+  leverage: number;     // 10x
+  marginUsdt: number;   // 10 USDT
+  notionalUsdt: number; // 100 USDT
+  basePrice: number;    // 信号产生时的基准价
+  limitPrice: number;   // 做空挂单价 = basePrice * (1 + offsetPercent / 100)
+  limitOffsetPercent: number; // 上浮比例% = dayChangePercent / N
+  currentPrice: number; // 最新市价
+  dayChangePercent: number;
+  rank?: number | null;
+  amp30Percent: number;
+  streakCount: number;
+  upperShadowRatio: number;
+  greenRatio: number;
+  consecutiveGreenBars: number;
+  createdAt: number;
+  expireAt: number;     // 超时未成交自动撤单
+  cancelBelowPrice?: number; // 若行情直接跌破该价格（如跌穿预估TP1），提前撤销挂单
+}
+
 export interface PaperPosition {
   id: string; // e.g. `${symbol}-${entryTime}`
   symbol: string;
@@ -103,6 +126,7 @@ export interface PaperPosition {
   status: "OPEN" | "PARTIAL" | "CLOSED";
   entryTime: number;
   entryPrice: number;
+  limitPrice?: number;  // 若来自限价挂单成交，记录挂单价格
   currentPrice: number;
   dayChangePercent: number;
   rank?: number | null;
@@ -165,6 +189,7 @@ export interface PaperTradingStats {
 
 export interface PaperTradingState {
   account: PaperAccount;
+  pendingOrders: PaperPendingOrder[];
   activePositions: PaperPosition[];
   closedPositions: PaperPosition[];
   stats: PaperTradingStats;
@@ -173,6 +198,8 @@ export interface PaperTradingState {
 
 export interface PaperTradingSummary {
   account: PaperAccount;
+  pendingOrders: PaperPendingOrder[];
+  pendingCount: number;
   activeCount: number;
   totalTrades: number;
   winningTrades: number;

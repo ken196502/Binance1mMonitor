@@ -305,3 +305,158 @@ test("PaperTradingEngine: 15-minute timeout closes remaining position at market"
   assert.equal(closed.exits[0].reason, "timeout");
   assert.equal(closed.exits[1].reason, "timeout");
 });
+
+test("PaperTradingEngine: pending limit order placement (N=100) and fill on upward spike", () => {
+  const engine = new PaperTradingEngine({
+    initialBalanceUsdt: 100,
+    leverage: 10,
+    marginUsdt: 10,
+    limitDivisor: 100, // N = 100
+    limitExpireMinutes: 3,
+    storageFile: null,
+  });
+
+  const now = 1700000000000;
+  const basePrice = 100.0;
+  const dayChangePercent = 40.0; // 40% -> offset = 40 / 100 = 0.40%
+  // limitPrice = 100 * (1 + 0.004) = 100.4
+
+  const order = engine.createPendingOrder({
+    symbol: "LIMITUSDT",
+    dayChangePercent,
+    basePrice,
+    now,
+    signal: {
+      candle: { time: now - 60000, open: 98, high: 100.05, low: 97.9, close: 100, volume: 100 },
+      streakCount: 3,
+      amp30Percent: 8.0,
+      upperShadowRatio: 0.1,
+      greenRatio: 0.8,
+      consecutiveGreenBars: 8,
+    },
+  });
+
+  assert.equal(order.limitPrice, 100.4);
+  assert.equal(order.limitOffsetPercent, 0.4);
+  assert.equal(engine.hasPendingOrder("LIMITUSDT"), true);
+  assert.equal(engine.hasActivePosition("LIMITUSDT"), false);
+
+  // Tick 1: price is 100.2, does not hit limit price (100.4)
+  engine.onTick({
+    symbol: "LIMITUSDT",
+    price: 100.2,
+    qty: 10,
+    time: now + 10_000,
+  });
+  assert.equal(engine.hasPendingOrder("LIMITUSDT"), true);
+  assert.equal(engine.hasActivePosition("LIMITUSDT"), false);
+
+  // Tick 2: upward spike hits 100.4 -> fills as active short position
+  engine.onTick({
+    symbol: "LIMITUSDT",
+    price: 100.45,
+    qty: 10,
+    time: now + 20_000,
+  });
+  assert.equal(engine.hasPendingOrder("LIMITUSDT"), false, "Pending order should be removed after fill");
+  assert.equal(engine.hasActivePosition("LIMITUSDT"), true, "Should have active position after fill");
+
+  const pos = engine.getPosition("LIMITUSDT")!;
+  assert.equal(pos.entryPrice, 100.4, "Entry price must be the limit order price");
+  assert.equal(pos.entryTime, now + 20_000, "Entry time must be fill tick time");
+  // TP1 based on 100.4: tp1Percent = 40 / 50 = 0.8% -> 100.4 * (1 - 0.008) = 99.5968
+  // SL1 based on 100.4: sl1Percent = 40 / 50 = 0.8% -> 100.4 * (1 + 0.008) = 101.2032
+  assert.ok(Math.abs(pos.tp1Price - 100.4 * (1 - 0.008)) < 1e-4);
+  assert.ok(Math.abs(pos.sl1Price - 100.4 * (1 + 0.008)) < 1e-4);
+});
+
+test("PaperTradingEngine: pending limit order expires after limitExpireMinutes", () => {
+  const engine = new PaperTradingEngine({
+    initialBalanceUsdt: 100,
+    limitDivisor: 100,
+    limitExpireMinutes: 3,
+    storageFile: null,
+  });
+
+  const now = 1700000000000;
+  engine.createPendingOrder({
+    symbol: "EXPIREUSDT",
+    dayChangePercent: 30.0,
+    basePrice: 50.0,
+    now,
+    signal: {
+      candle: { time: now - 60000, open: 49, high: 50.02, low: 48.9, close: 50, volume: 100 },
+      streakCount: 2,
+      amp30Percent: 5.0,
+      upperShadowRatio: 0.1,
+      greenRatio: 0.75,
+      consecutiveGreenBars: 7,
+    },
+  });
+
+  assert.equal(engine.hasPendingOrder("EXPIREUSDT"), true);
+
+  // Advance time past 3 minutes
+  engine.onTick({
+    symbol: "EXPIREUSDT",
+    price: 50.05,
+    qty: 1,
+    time: now + 3 * 60_000 + 1000,
+  });
+
+  assert.equal(engine.hasPendingOrder("EXPIREUSDT"), false, "Order should expire and be canceled");
+  assert.equal(engine.hasActivePosition("EXPIREUSDT"), false);
+});
+
+test("PaperTradingEngine: reset restores account balance and clears all orders/positions", () => {
+  const engine = new PaperTradingEngine({
+    initialBalanceUsdt: 100,
+    storageFile: null,
+  });
+
+  const now = 1700000000000;
+  // 1. Create a pending order
+  engine.createPendingOrder({
+    symbol: "PENDING1",
+    dayChangePercent: 25,
+    basePrice: 10,
+    now,
+    signal: {
+      candle: { time: now - 60000, open: 9.8, high: 10.01, low: 9.7, close: 10, volume: 100 },
+      streakCount: 2,
+      amp30Percent: 5.0,
+      upperShadowRatio: 0.1,
+      greenRatio: 0.8,
+      consecutiveGreenBars: 7,
+    },
+  });
+
+  // 2. Open an active position
+  engine.openPosition({
+    symbol: "ACTIVE1",
+    dayChangePercent: 30,
+    entryPrice: 20,
+    entryTime: now,
+    signal: {
+      candle: { time: now - 60000, open: 19.5, high: 20.02, low: 19.4, close: 20, volume: 100 },
+      streakCount: 2,
+      amp30Percent: 6.0,
+      upperShadowRatio: 0.1,
+      greenRatio: 0.8,
+      consecutiveGreenBars: 7,
+    },
+  });
+
+  assert.equal(engine.getPendingOrders().length, 1);
+  assert.equal(engine.hasActivePosition("ACTIVE1"), true);
+
+  // 3. Reset
+  engine.reset();
+
+  assert.equal(engine.getPendingOrders().length, 0, "Pending orders should be empty after reset");
+  assert.equal(engine.hasActivePosition("ACTIVE1"), false, "Active positions should be empty after reset");
+  assert.equal(engine.getState().closedPositions.length, 0, "Closed positions should be empty after reset");
+  assert.equal(engine.getAccount().balanceUsdt, 100, "Account balance should be restored to initial 100 USDT");
+  assert.equal(engine.getAccount().totalPnlUsdt, 0);
+  assert.equal(engine.getSummary().totalTrades, 0);
+});

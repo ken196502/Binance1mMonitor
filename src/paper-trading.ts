@@ -15,6 +15,7 @@ import { sendTelegramMessage } from "./telegram.ts";
 import type {
   PaperAccount,
   PaperPosition,
+  PaperPendingOrder,
   PaperExit,
   PaperExitReason,
   PaperTradingStats,
@@ -44,6 +45,8 @@ export interface PaperStrategyConfig {
   marginUsdt: number;         // 10 USDT 单笔保证金 (名义本金 100 USDT)
   takerFeeBps: number;
   slippageBps: number;
+  limitDivisor: number; // 挂单上浮幅度分母 N: 挂单上浮 = dayChangePercent / limitDivisor (默认 100)
+  limitExpireMinutes: number; // 挂单有效期分钟数 (默认 3 分钟)
   storageFile?: string | null;
 }
 
@@ -70,6 +73,8 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   marginUsdt: Number(process.env.PAPER_MARGIN_USDT ?? 10),
   takerFeeBps: 5,   // 0.05%
   slippageBps: 2,   // 0.02%
+  limitDivisor: Number(process.env.PAPER_LIMIT_N ?? 100), // 默认 N = 100
+  limitExpireMinutes: Number(process.env.PAPER_LIMIT_EXPIRE_MINUTES ?? 3), // 默认 3 分钟
   storageFile: STATE_FILE,
 };
 
@@ -155,6 +160,7 @@ export function checkPaperSignal(
 
 export class PaperTradingEngine {
   private config: PaperStrategyConfig;
+  private pendingOrders = new Map<string, PaperPendingOrder>(); // key: symbol
   private activePositions = new Map<string, PaperPosition>(); // key: symbol
   private closedPositions: PaperPosition[] = [];
   private account: PaperAccount;
@@ -201,15 +207,101 @@ export class PaperTradingEngine {
   }
 
   public getActiveSymbols(): string[] {
-    return Array.from(this.activePositions.keys());
+    return Array.from(new Set([...this.activePositions.keys(), ...this.pendingOrders.keys()]));
   }
 
   public hasActivePosition(symbol: string): boolean {
     return this.activePositions.has(symbol);
   }
 
+  public hasPendingOrder(symbol: string): boolean {
+    return this.pendingOrders.has(symbol);
+  }
+
   public getPosition(symbol: string): PaperPosition | undefined {
     return this.activePositions.get(symbol);
+  }
+
+  public getPendingOrder(symbol: string): PaperPendingOrder | undefined {
+    return this.pendingOrders.get(symbol);
+  }
+
+  public getPendingOrders(): PaperPendingOrder[] {
+    return Array.from(this.pendingOrders.values());
+  }
+
+  /**
+   * 创建限价做空挂单：以 basePrice * (1 + 24h涨幅/limitDivisor/100) 向上挂单，
+   * 等待价格惯性冲高触碰成交，建立容错垫。
+   */
+  public createPendingOrder(params: {
+    symbol: string;
+    dayChangePercent: number;
+    rank?: number | null;
+    basePrice: number;
+    signal: SignalMatchDetails;
+    now?: number;
+  }): PaperPendingOrder {
+    const { symbol, dayChangePercent, rank, basePrice, signal } = params;
+    const now = params.now ?? Date.now();
+    const divisor = this.config.limitDivisor > 0 ? this.config.limitDivisor : 100;
+    const limitOffsetPercent = dayChangePercent / divisor;
+    const limitPrice = basePrice * (1 + limitOffsetPercent / 100);
+    const expireAt = now + this.config.limitExpireMinutes * 60 * 1000;
+
+    // 保护位：若行情直接下杀跌破预估的阶段一止盈位，说明行情已直接跌完，不再接单
+    const tp1OffsetPercent = dayChangePercent / this.config.exitX;
+    const cancelBelowPrice = basePrice * (1 - tp1OffsetPercent / 100);
+
+    const notionalUsdt = this.config.marginUsdt * this.config.leverage;
+
+    const order: PaperPendingOrder = {
+      id: `pending-${symbol}-${now}`,
+      symbol,
+      side: "SHORT",
+      leverage: this.config.leverage,
+      marginUsdt: this.config.marginUsdt,
+      notionalUsdt,
+      basePrice,
+      limitPrice,
+      limitOffsetPercent,
+      currentPrice: basePrice,
+      dayChangePercent,
+      rank,
+      amp30Percent: signal.amp30Percent,
+      streakCount: signal.streakCount,
+      upperShadowRatio: signal.upperShadowRatio,
+      greenRatio: signal.greenRatio,
+      consecutiveGreenBars: signal.consecutiveGreenBars,
+      createdAt: now,
+      expireAt,
+      cancelBelowPrice,
+    };
+
+    this.pendingOrders.set(symbol, order);
+    this.scheduleSave();
+
+    console.log(
+      `[paper-trading] ⏳ 提交限价做空挂单 ${symbol} @ ${limitPrice.toFixed(4)} ` +
+      `(基准价: ${basePrice.toFixed(4)}, 上浮 +${limitOffsetPercent.toFixed(2)}%, 有效期 ${this.config.limitExpireMinutes}分钟)`,
+    );
+
+    this.notifyPendingOrder(order).catch((e) =>
+      console.warn(`[paper-trading] 发送挂单通知异常:`, (e as any)?.message ?? e),
+    );
+
+    return order;
+  }
+
+  /**
+   * 取消挂单
+   */
+  public cancelPendingOrder(symbol: string, reason = "已取消"): void {
+    const order = this.pendingOrders.get(symbol);
+    if (!order) return;
+    this.pendingOrders.delete(symbol);
+    this.scheduleSave();
+    console.log(`[paper-trading] ⏱️ 撤销限价做空挂单 ${symbol} @ ${order.limitPrice.toFixed(4)}: ${reason}`);
   }
 
   /**
@@ -231,14 +323,15 @@ export class PaperTradingEngine {
       const ticker = gainers[i];
       if (pinnedSymbols.has(ticker.symbol)) continue;
       if (ticker.priceChangePercent <= 0) continue;
-      if (this.hasActivePosition(ticker.symbol)) continue;
+      if (this.hasActivePosition(ticker.symbol) || this.hasPendingOrder(ticker.symbol)) continue;
 
-      // Check available margin
-      const usedMargin = this.activePositions.size * this.config.marginUsdt;
+      // Check available margin (including reserved pending orders)
+      const reservedCount = this.activePositions.size + this.pendingOrders.size;
+      const usedMargin = reservedCount * this.config.marginUsdt;
       const availableMargin = this.account.balanceUsdt - usedMargin;
       if (availableMargin < this.config.marginUsdt) {
         console.warn(
-          `[paper-trading] 可用保证金不足 (${availableMargin.toFixed(2)} USDT < ${this.config.marginUsdt} USDT)，跳过开仓 ${ticker.symbol}`,
+          `[paper-trading] 可用保证金不足 (${availableMargin.toFixed(2)} USDT < ${this.config.marginUsdt} USDT)，跳过扫描 ${ticker.symbol}`,
         );
         break;
       }
@@ -254,21 +347,33 @@ export class PaperTradingEngine {
       );
 
       if (signal) {
-        // Entry price: use forming candle open if available, otherwise closed candle close
+        // 基准价格：优先取当前最新 K 线的最新 close（实时市价），否则用上一根已收盘的 close
         const forming = symCache.candles1m[symCache.candles1m.length - 1];
-        const entryPrice =
-          forming && forming.open > 0 ? forming.open : signal.candle.close;
+        const basePrice =
+          forming && forming.close > 0 ? forming.close : signal.candle.close;
 
-        const pos = this.openPosition({
-          symbol: ticker.symbol,
-          dayChangePercent: ticker.priceChangePercent,
-          rank: i + 1,
-          entryPrice,
-          entryTime: now,
-          signal,
-        });
-
-        openedList.push(pos);
+        if (this.config.limitDivisor > 0) {
+          // 挂单模式：以 24h涨幅/limitDivisor 向上挂单等待冲高撮合
+          this.createPendingOrder({
+            symbol: ticker.symbol,
+            dayChangePercent: ticker.priceChangePercent,
+            rank: i + 1,
+            basePrice,
+            signal,
+            now,
+          });
+        } else {
+          // 回退直接市价开仓模式
+          const pos = this.openPosition({
+            symbol: ticker.symbol,
+            dayChangePercent: ticker.priceChangePercent,
+            rank: i + 1,
+            entryPrice: basePrice,
+            entryTime: now,
+            signal,
+          });
+          openedList.push(pos);
+        }
       }
     }
 
@@ -281,9 +386,10 @@ export class PaperTradingEngine {
     rank?: number | null;
     entryPrice: number;
     entryTime: number;
+    limitPrice?: number;
     signal: SignalMatchDetails;
   }): PaperPosition {
-    const { symbol, dayChangePercent, rank, entryPrice, entryTime, signal } = params;
+    const { symbol, dayChangePercent, rank, entryPrice, entryTime, limitPrice, signal } = params;
 
     // Two-stage dynamic thresholds:
     // Stage 1: tp1 = dayChange / x, sl1 = dayChange / x
@@ -314,6 +420,7 @@ export class PaperTradingEngine {
       status: "OPEN",
       entryTime,
       entryPrice,
+      limitPrice,
       currentPrice: entryPrice,
       dayChangePercent,
       rank,
@@ -352,8 +459,10 @@ export class PaperTradingEngine {
       console.warn(`[paper-trading] 发送开仓通知异常:`, (e as any)?.message ?? e),
     );
 
+    const isLimit = limitPrice != null;
     console.log(
-      `[paper-trading] ⚡ 市价开空 ${symbol} @ ${entryPrice.toFixed(4)} (${this.config.leverage}x, 保证金 ${this.config.marginUsdt} USDT, 24h: +${dayChangePercent.toFixed(2)}%, 30m振幅: ${signal.amp30Percent.toFixed(2)}%) ` +
+      `[paper-trading] ⚡ ${isLimit ? "限价挂单成交做空" : "市价开空"} ${symbol} @ ${entryPrice.toFixed(4)} ` +
+      `(${this.config.leverage}x, 保证金 ${this.config.marginUsdt} USDT, 24h: +${dayChangePercent.toFixed(2)}%, 30m振幅: ${signal.amp30Percent.toFixed(2)}%) ` +
       `TP1: ${tp1Price.toFixed(4)} SL1: ${sl1Price.toFixed(4)} SL2: ${sl2Price.toFixed(4)} TP2: ${tp2Price.toFixed(4)}`,
     );
 
@@ -362,9 +471,54 @@ export class PaperTradingEngine {
 
   /**
    * Real-time trade tick processing.
-   * Evaluates take-profit, stop-loss and timeouts in milliseconds.
+   * Evaluates pending limit orders, take-profit, stop-loss and timeouts in milliseconds.
    */
   public onTick(tick: TradeTick): void {
+    // 0. 优先撮合限价做空挂单
+    const pending = this.pendingOrders.get(tick.symbol);
+    if (pending) {
+      pending.currentPrice = tick.price;
+      // 挂单超时
+      if (tick.time >= pending.expireAt) {
+        this.cancelPendingOrder(pending.symbol, "超时未触碰撤销");
+      }
+      // 价格直接下杀跌破预估TP1（行情已走完，撤单）
+      else if (pending.cancelBelowPrice && tick.price <= pending.cancelBelowPrice) {
+        this.cancelPendingOrder(pending.symbol, "行情已直接下行提前撤单");
+      }
+      // 价格向上冲高打到限价挂单：撮合成交！
+      else if (tick.price >= pending.limitPrice) {
+        this.pendingOrders.delete(pending.symbol);
+        console.log(
+          `[paper-trading] 🎯 挂单成交！${pending.symbol} 触及做空限价 @ ${pending.limitPrice.toFixed(4)} (成交Tick: ${tick.price.toFixed(4)})`,
+        );
+        this.openPosition({
+          symbol: pending.symbol,
+          dayChangePercent: pending.dayChangePercent,
+          rank: pending.rank,
+          entryPrice: pending.limitPrice,
+          entryTime: tick.time,
+          limitPrice: pending.limitPrice,
+          signal: {
+            candle: {
+              time: tick.time,
+              open: pending.basePrice,
+              high: tick.price,
+              low: pending.basePrice,
+              close: tick.price,
+              volume: 0,
+            },
+            streakCount: pending.streakCount,
+            amp30Percent: pending.amp30Percent,
+            upperShadowRatio: pending.upperShadowRatio,
+            greenRatio: pending.greenRatio,
+            consecutiveGreenBars: pending.consecutiveGreenBars,
+          },
+        });
+      }
+    }
+
+    // 1. 活跃持仓撮合处理
     const position = this.activePositions.get(tick.symbol);
     if (!position || position.status === "CLOSED") return;
 
@@ -413,9 +567,16 @@ export class PaperTradingEngine {
   }
 
   /**
-   * Sweeps all active positions for 15-minute timeout.
+   * Sweeps all pending orders and active positions for timeout.
    */
   public checkTimeouts(now = Date.now()): void {
+    // 检查挂单超时
+    for (const [sym, order] of this.pendingOrders) {
+      if (now >= order.expireAt) {
+        this.cancelPendingOrder(sym, "超时未触碰撤销");
+      }
+    }
+    // 检查持仓超时
     for (const [_, pos] of this.activePositions) {
       if (pos.status !== "CLOSED" && now >= pos.timeoutAt) {
         this.closeRemaining(pos, pos.currentPrice, now, "timeout");
@@ -637,13 +798,26 @@ export class PaperTradingEngine {
   }
 
   // --- Telegram Alerts ---
+  private async notifyPendingOrder(order: PaperPendingOrder): Promise<void> {
+    const rankStr = order.rank ? `(#${order.rank})` : "";
+    const msg =
+      `⏳ <b>[模拟交易] 发现做空信号，已提交限价做空挂单</b>\n` +
+      `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${order.symbol}"><b>${order.symbol}</b></a>\n` +
+      `• <b>挂单限价</b>: <code>${order.limitPrice.toFixed(4)}</code> (基准价: <code>${order.basePrice.toFixed(4)}</code>, 上浮: <b>+${order.limitOffsetPercent.toFixed(2)}%</b>)\n` +
+      `• <b>杠杆 / 保证金</b>: <b>${order.leverage}x / ${order.marginUsdt} USDT</b> (名义仓位: ${order.notionalUsdt} USDT)\n` +
+      `• <b>24h涨幅</b>: +${order.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${order.amp30Percent.toFixed(2)}%\n` +
+      `• <b>撮合机制</b>: 向上冲针触及挂单价即撮合成交 (有效期 ${this.config.limitExpireMinutes}分钟，未触碰或提前下跌自动撤单)`;
+    await sendTelegramMessage(msg);
+  }
+
   private async notifyEntry(pos: PaperPosition): Promise<void> {
     const rankStr = pos.rank ? `(#${pos.rank})` : "";
+    const isLimit = pos.limitPrice != null;
     const msg =
-      `⚡ <b>[模拟交易] 发现做空信号，10x 杠杆市价开空</b>\n` +
+      `⚡ <b>[模拟交易] ${isLimit ? "限价挂单冲高撮合成交" : "发现做空信号，市价开空"}</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
       `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt} USDT</b> (名义仓位: ${pos.notionalUsdt} USDT)\n` +
-      `• <b>开仓价</b>: <code>${pos.entryPrice.toFixed(4)}</code>\n` +
+      `• <b>成交开仓价</b>: <code>${pos.entryPrice.toFixed(4)}</code>\n` +
       `• <b>24h涨幅</b>: +${pos.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${pos.amp30Percent.toFixed(2)}%\n` +
       `• <b>阶段一目标 (平50%)</b>:\n` +
       `   - 止盈1: <b>${pos.tp1Price.toFixed(4)}</b> (-${pos.tp1Percent.toFixed(2)}%)\n` +
@@ -721,6 +895,7 @@ export class PaperTradingEngine {
       }
       const data: PaperTradingState = {
         account: this.account,
+        pendingOrders: Array.from(this.pendingOrders.values()),
         activePositions: Array.from(this.activePositions.values()),
         closedPositions: this.closedPositions,
         stats: this.stats,
@@ -741,6 +916,12 @@ export class PaperTradingEngine {
         if (data.account) {
           this.account = data.account;
         }
+        if (Array.isArray(data.pendingOrders)) {
+          this.pendingOrders.clear();
+          for (const o of data.pendingOrders) {
+            this.pendingOrders.set(o.symbol, o);
+          }
+        }
         if (Array.isArray(data.activePositions)) {
           this.activePositions.clear();
           for (const p of data.activePositions) {
@@ -754,7 +935,7 @@ export class PaperTradingEngine {
           this.stats = data.stats;
         }
         console.log(
-          `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
+          `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
         );
       }
     } catch (e) {
@@ -762,9 +943,45 @@ export class PaperTradingEngine {
     }
   }
 
+  public reset(): void {
+    this.pendingOrders.clear();
+    this.activePositions.clear();
+    this.closedPositions = [];
+    this.account = {
+      initialBalanceUsdt: this.config.initialBalanceUsdt,
+      balanceUsdt: this.config.initialBalanceUsdt,
+      equityUsdt: this.config.initialBalanceUsdt,
+      usedMarginUsdt: 0,
+      availableMarginUsdt: this.config.initialBalanceUsdt,
+      totalPnlUsdt: 0,
+      accountRoiPercent: 0,
+    };
+    this.stats = {
+      initialBalanceUsdt: this.config.initialBalanceUsdt,
+      balanceUsdt: this.config.initialBalanceUsdt,
+      equityUsdt: this.config.initialBalanceUsdt,
+      accountRoiPercent: 0,
+      totalTrades: 0,
+      winningTrades: 0,
+      losingTrades: 0,
+      breakevenTrades: 0,
+      winRate: 0,
+      totalNetPnlUsdt: 0,
+      grossGainsUsdt: 0,
+      grossLossesUsdt: 0,
+      profitFactor: 1.0,
+      avgTradePnlUsdt: 0,
+      realizedRewardRisk: null,
+    };
+    this.saveState();
+    console.log(`[paper-trading] 🔄 模拟交易账户、活跃持仓、挂单与历史明细已全部重置为初始状态 (100 USDT)`);
+  }
+
   public getSummary(): PaperTradingSummary {
     return {
       account: this.account,
+      pendingOrders: Array.from(this.pendingOrders.values()),
+      pendingCount: this.pendingOrders.size,
       activeCount: this.activePositions.size,
       totalTrades: this.stats.totalTrades,
       winningTrades: this.stats.winningTrades,
@@ -779,6 +996,7 @@ export class PaperTradingEngine {
   public getState(): PaperTradingState & { config: PaperStrategyConfig } {
     return {
       account: this.account,
+      pendingOrders: Array.from(this.pendingOrders.values()),
       activePositions: Array.from(this.activePositions.values()),
       closedPositions: this.closedPositions,
       stats: this.stats,

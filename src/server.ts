@@ -677,6 +677,16 @@ const server = http.createServer(async (req, res) => {
   const reqUrl = req.url ?? "/";
   const u = new URL(reqUrl, `http://${req.headers.host ?? "localhost"}`);
 
+  if (u.pathname === "/api/paper-trading/reset" || (u.pathname === "/api/paper-trading" && req.method === "POST")) {
+    paperTrading.reset();
+    res.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify({ ok: true, state: paperTrading.getState() }));
+    return;
+  }
+
   if (u.pathname === "/api/paper-trading") {
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
