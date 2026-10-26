@@ -460,3 +460,79 @@ test("PaperTradingEngine: reset restores account balance and clears all orders/p
   assert.equal(engine.getAccount().totalPnlUsdt, 0);
   assert.equal(engine.getSummary().totalTrades, 0);
 });
+
+test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 and 空弱反弹", () => {
+  const engine = new PaperTradingEngine({
+    initialBalanceUsdt: 100,
+    leverage: 10,
+    marginUsdt: 10,
+    storageFile: null,
+  });
+
+  const now = 1700000000000;
+
+  // 1. Open streak signal position
+  const streakPos = engine.openPosition({
+    symbol: "STRKUSDT",
+    dayChangePercent: 25.0,
+    rank: 2,
+    entryPrice: 50.0,
+    entryTime: now,
+    signalType: "streak",
+    signalLabel: "空连阳",
+    exitParams: { holdMinutes: 30, exitX: 60, exitN: 1.5, exitM: 4.0 },
+    signal: {
+      candle: { time: now - 60000, open: 49, high: 50.02, low: 48.9, close: 50, volume: 100 },
+      streakCount: 3,
+      amp30Percent: 5.0,
+      upperShadowRatio: 0.1,
+      greenRatio: 0.8,
+      consecutiveGreenBars: 8,
+    },
+  });
+
+  assert.equal(streakPos.signalType, "streak");
+  assert.equal(streakPos.signalLabel, "空连阳");
+  assert.equal(streakPos.exitParams?.holdMinutes, 30);
+  assert.equal(streakPos.exitParams?.exitX, 60);
+
+  // 2. Create rebound pending order
+  const reboundOrder = engine.createPendingOrder({
+    symbol: "REBUSDT",
+    dayChangePercent: 35.0,
+    rank: 1,
+    basePrice: 100.0,
+    signalType: "rebound",
+    signalLabel: "空弱反弹",
+    exitParams: { holdMinutes: 30, exitX: 35, exitN: 2.0, exitM: 1.5 },
+    now,
+    signal: {
+      candle: { time: now - 60000, open: 101, high: 101.5, low: 99.5, close: 100, volume: 100 },
+      streakCount: 1,
+      amp30Percent: 12.0,
+      upperShadowRatio: 0.35,
+      greenRatio: 0.7,
+      consecutiveGreenBars: 3,
+    },
+  });
+
+  assert.equal(reboundOrder.signalType, "rebound");
+  assert.equal(reboundOrder.signalLabel, "空弱反弹");
+  assert.equal(reboundOrder.exitParams?.exitX, 35);
+
+  // 3. Fill the rebound pending order
+  engine.onTick({
+    symbol: "REBUSDT",
+    price: reboundOrder.limitPrice,
+    qty: 1,
+    time: now + 30000,
+  });
+
+  const reboundPos = engine.getPosition("REBUSDT")!;
+  assert.ok(reboundPos != null);
+  assert.equal(reboundPos.signalType, "rebound");
+  assert.equal(reboundPos.signalLabel, "空弱反弹");
+  assert.equal(reboundPos.exitParams?.exitX, 35);
+  assert.equal(reboundPos.exitParams?.exitN, 2.0);
+  assert.equal(reboundPos.exitParams?.exitM, 1.5);
+});

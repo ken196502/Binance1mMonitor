@@ -27,7 +27,7 @@ function formatCountdown(targetTime: number): string {
 }
 
 function formatHoldDuration(closedAt?: number, entryTime?: number): string {
-  if (!closedAt || !entryTime) return "15.0 分钟";
+  if (!closedAt || !entryTime) return "-";
   const durationMs = Math.max(0, closedAt - entryTime);
   if (durationMs < 1000) return "<1 秒";
   if (durationMs < 60000) return `${Math.floor(durationMs / 1000)} 秒`;
@@ -202,6 +202,9 @@ export function PaperTradingPanel({
                         >
                           <b>{order.symbol}</b>
                         </a>
+                        <span className={`badge-signal badge-${order.signalType || "streak"}`}>
+                          {order.signalLabel || (order.signalType === "rebound" ? "空弱反弹" : "空连阳")}
+                        </span>
                         <span className="badge-short" style={{ background: "rgba(245, 166, 35, 0.2)", color: "#f5a623" }}>
                           10x 限价挂单
                         </span>
@@ -285,6 +288,9 @@ export function PaperTradingPanel({
                       >
                         <b>{pos.symbol}</b>
                       </a>
+                      <span className={`badge-signal badge-${pos.signalType || "streak"}`}>
+                        {pos.signalLabel || (pos.signalType === "rebound" ? "空弱反弹" : "空连阳")}
+                      </span>
                       <span className="badge-short">{pos.leverage}x 做空</span>
                       <span className="badge-margin">保 {pos.marginUsdt}U</span>
                       {pos.rank && <span className="pos-rank">#{pos.rank}</span>}
@@ -366,6 +372,7 @@ export function PaperTradingPanel({
                   <tr>
                     <th style={{ textAlign: "left" }}>时间</th>
                     <th style={{ textAlign: "left" }}>标的</th>
+                    <th>信号</th>
                     <th>24h涨幅</th>
                     <th>30m振幅</th>
                     <th>开仓价</th>
@@ -388,7 +395,7 @@ export function PaperTradingPanel({
                     const reasonMap: Record<string, string> = {
                       target: "两段全部止盈 🎯",
                       stop: "触发止损 🛑",
-                      timeout: "15m 超时平仓 ⏱️",
+                      timeout: "超时平仓 ⏱️",
                     };
                     const reasonText = reasonMap[item.finalReason ?? ""] ?? item.finalReason ?? "-";
 
@@ -410,6 +417,11 @@ export function PaperTradingPanel({
                           >
                             <b>{item.symbol}</b>
                           </a>
+                        </td>
+                        <td>
+                          <span className={`badge-signal badge-${item.signalType || "streak"}`}>
+                            {item.signalLabel || (item.signalType === "rebound" ? "空弱反弹" : "空连阳")}
+                          </span>
                         </td>
                         <td className="pos">+{item.dayChangePercent.toFixed(2)}%</td>
                         <td>{item.amp30Percent ? `${item.amp30Percent.toFixed(2)}%` : "-"}</td>

@@ -79,6 +79,15 @@ export interface HighBearState extends HighBullSummary {
 
 // ---- 模拟交易 (Paper Trading) ----
 export type PaperExitReason = "target" | "stop" | "timeout";
+export type PaperSignalType = "streak" | "rebound";
+export type PaperSignalLabel = "空连阳" | "空弱反弹";
+
+export interface PaperExitParams {
+  holdMinutes: number;
+  exitX: number;
+  exitN: number;
+  exitM: number;
+}
 
 export interface PaperExit {
   stage: 1 | 2;
@@ -100,6 +109,9 @@ export interface PaperPendingOrder {
   leverage: number;     // 10x
   marginUsdt: number;   // 10 USDT
   notionalUsdt: number; // 100 USDT
+  signalType?: PaperSignalType;
+  signalLabel?: PaperSignalLabel;
+  exitParams?: PaperExitParams;
   basePrice: number;    // 信号产生时的基准价
   limitPrice: number;   // 做空挂单价 = basePrice * (1 + offsetPercent / 100)
   limitOffsetPercent: number; // 上浮比例% = dayChangePercent / N
@@ -124,6 +136,9 @@ export interface PaperPosition {
   marginUsdt: number;   // 10 USDT
   notionalUsdt: number; // 100 USDT (margin * leverage)
   status: "OPEN" | "PARTIAL" | "CLOSED";
+  signalType?: PaperSignalType;
+  signalLabel?: PaperSignalLabel;
+  exitParams?: PaperExitParams;
   entryTime: number;
   entryPrice: number;
   limitPrice?: number;  // 若来自限价挂单成交，记录挂单价格

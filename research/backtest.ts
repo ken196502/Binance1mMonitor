@@ -60,14 +60,6 @@ export function buildFrames(dataset: Dataset, topN: number, stepHours: number): 
   return frames;
 }
 
-export function matches(o: Observation, board: Board, p: Parameters): boolean {
-  if (!o.bearish || o.streak < p.minStreak || o.volumeRatio < p.volumeRatio) return false;
-  if (p.weekFilter && (o.weekChange == null || (board === "gainers" ? o.weekChange <= 0 : o.weekChange >= 0))) return false;
-  if (board === "gainers") return o.dayChange > 0 && o.dayChange >= p.dayMovePercent && o.freshCross && o.deaPeakRatio >= p.highRatio;
-  if (board === "losers") return o.dayChange < 0 && o.dayChange <= -p.dayMovePercent && o.breaksLow && o.change5h < 0;
-  return o.quoteVolume >= 1e8 && o.change5h < 0;
-}
-
 export function shortReturn(entry: number, exit: number, costBpsPerSide: number) {
   const grossPercent = (entry - exit) / entry * 100;
   return { grossPercent, netPercent: grossPercent - costBpsPerSide / 100 * (1 + exit / entry) };
@@ -93,48 +85,4 @@ export function summarize(trades: readonly Pick<Trade, "exitTime" | "netPercent"
     worstTradePercent: trades.length ? trades.reduce((worst, t) => Math.min(worst, t.netPercent), Infinity) : null,
     maxDrawdownPoints: drawdown,
   };
-}
-
-export function backtest(dataset: Dataset, frames: Frame[], board: Board, parameters: Parameters,
-  start: number, end: number, costBpsPerSide: number): { metrics: Metrics; trades: Trade[] } {
-  const trades: Trade[] = [];
-  const available = new Map<string, number>();
-  let missing = 0, purged = 0;
-  for (const frame of frames) {
-    if (frame.time < start || frame.time >= end) continue;
-    for (const o of frame.boards[board]) {
-      if (!matches(o, board, parameters) || (available.get(o.symbol) ?? 0) > frame.time) continue;
-      const deadline = frame.time + parameters.holdHours * HOUR;
-      // Purge by maximum holding period BEFORE examining exits: no split-boundary leakage.
-      if (deadline > end) { purged++; continue; }
-      const bars = dataset.candles.get(o.symbol)!;
-      const first = bars[o.index + 1];
-      available.set(o.symbol, deadline);
-      if (!first || first[0] !== frame.time) { missing++; continue; }
-      const entryPrice = first[1];
-      const stop = parameters.stopLossPercent > 0 ? entryPrice * (1 + parameters.stopLossPercent / 100) : Infinity;
-      const target = parameters.takeProfitPercent > 0 ? entryPrice * (1 - parameters.takeProfitPercent / 100) : -Infinity;
-      for (let minute = 0; minute < parameters.holdHours; minute++) {
-        const c = bars[o.index + 1 + minute];
-        if (!c || c[0] !== frame.time + minute * HOUR) { missing++; break; }
-        let exitPrice: number | null = null;
-        let reason: Trade["reason"] = "timeout";
-        // Opening gaps happen first. If both intrabar limits touch, assume stop first.
-        if (c[1] >= stop) { exitPrice = c[1]; reason = "stop"; }
-        else if (c[1] <= target) { exitPrice = c[1]; reason = "target"; }
-        else if (c[2] >= stop) { exitPrice = stop; reason = "stop"; }
-        else if (c[3] <= target) { exitPrice = target; reason = "target"; }
-        else if (minute === parameters.holdHours - 1) exitPrice = c[4];
-        if (exitPrice != null) {
-          const exitTime = c[0] + HOUR;
-          available.set(o.symbol, exitTime);
-          trades.push({ board, symbol: o.symbol, rank: o.rank,
-            signalTime: frame.time - HOUR, entryTime: frame.time, exitTime, entryPrice, exitPrice, reason,
-            ...shortReturn(entryPrice, exitPrice, costBpsPerSide), observation: o });
-          break;
-        }
-      }
-    }
-  }
-  return { metrics: summarize(trades, missing, purged), trades };
 }

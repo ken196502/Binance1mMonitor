@@ -547,6 +547,26 @@ tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
   color: #4d9dff;
 }
 
+.badge-signal {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.badge-signal.badge-streak {
+  background: rgba(235, 87, 87, 0.18);
+  color: #ff6b6b;
+  border: 1px solid rgba(235, 87, 87, 0.35);
+}
+
+.badge-signal.badge-rebound {
+  background: rgba(165, 105, 189, 0.2);
+  color: #d7bde2;
+  border: 1px solid rgba(165, 105, 189, 0.4);
+}
+
 .badge-short {
   font-size: 10px;
   font-weight: 700;

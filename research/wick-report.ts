@@ -14,7 +14,7 @@ const metricKeys = ['signalCount', 'submitted', 'filled', 'fillRate', 'trades', 
 export async function writeWickReport(s: WickStudy, frames: Frame[], directory: string) {
   await mkdir(directory, { recursive: true });
   if ((await readdir(directory)).length) throw new Error(`报告目录非空，请使用新目录：${directory}`);
-  const files = ['wick-config.ts', 'wick-signals.ts', 'wick-backtest.ts', 'wick-study.ts', 'wick-report.ts', 'wick.ts', 'cli.ts', 'backtest.ts', 'types.ts', 'gainers-types.ts', 'gainers-config.ts', 'gainers-data.ts', 'gainers-archive.ts', 'data.ts', 'client.ts', '../src/macd.ts', '../src/alert-rule.ts'];
+  const files = ['wick-config.ts', 'wick-signals.ts', 'wick-backtest.ts', 'wick-study.ts', 'wick-report.ts', 'wick.ts', 'cli.ts', 'backtest.ts', 'types.ts', 'gainers-types.ts', 'gainers-data.ts', 'gainers-archive.ts', 'data.ts', 'client.ts', '../src/macd.ts', '../src/alert-rule.ts'];
   const sourceHashes = Object.fromEntries(await Promise.all(files.map(async f => [f, digest(await readFile(new URL(f, import.meta.url)))])));
   const engineSha256 = digest(Buffer.from(JSON.stringify(sourceHashes)));
   const c = s.config, w = s.winner, training = s.trainingReplay;

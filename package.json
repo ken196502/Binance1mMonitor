@@ -14,12 +14,8 @@
     "test": "tsx --test research/tests/*.test.ts && tsx scripts/test-alert.ts && tsx scripts/test-ws-candles.ts",
     "research": "tsx --env-file-if-exists=.env research/cli.ts",
     "research:wick": "tsx --env-file-if-exists=.env research/cli.ts wick",
-    "mine": "tsx --env-file-if-exists=.env research/miner.ts",
-    "mine:btc5m": "tsx --env-file-if-exists=.env research/miner.ts --study btc5m",
-    "mine:monitor": "tsx --env-file-if-exists=.env research/monitor-miner.ts",
     "mine:setup": "uv venv --python 3.12 .venv-gpu && uv pip install --python .venv-gpu/bin/python -r research/gpu/requirements.txt",
-    "mine:peak-rebound": "tsx --env-file-if-exists=.env research/peak-rebound-miner.ts",
-    "test:gpu": "GPU_REQUIRED=1 tsx --test research/tests/gpu.test.ts"
+    "mine:peak-rebound": "tsx --env-file-if-exists=.env research/peak-rebound-miner.ts"
   },
   "dependencies": {
     "@esbuild/linux-arm64": "^0.28.2",

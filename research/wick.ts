@@ -5,7 +5,6 @@ import { loadDataset } from './data.ts';
 import { buildFrames } from './backtest.ts';
 import { DAY, HOUR } from './types.ts';
 import type { MinuteManifest } from './gainers-types.ts';
-import { GAINERS_GRID } from './gainers-config.ts';
 import { fetchGainersMinutes, loadGainersMinutes, planGainersMinutes } from './gainers-data.ts';
 import { ARCHIVE_BASE } from './gainers-archive.ts';
 import { validateWickConfig } from './wick-config.ts';
@@ -66,7 +65,7 @@ export async function runWickCommand(args: string[]) {
   hourly.manifest = { ...hourly.manifest, start, end };
   const frames = buildFrames(hourly, c.topN, 1);
   const horizon = Math.max(...c.holdMinutes);
-  const makePlan = (hold: number) => planGainersMinutes(hourly, frames, { topN: c.topN, highWindow: Math.max(100, c.indicatorWindow - 100), grid: { ...GAINERS_GRID, holdMinutes: [hold] } });
+  const makePlan = (hold: number) => planGainersMinutes(hourly, frames, { topN: c.topN, highWindow: Math.max(100, c.indicatorWindow - 100), grid: { highRatio: [0.8], holdMinutes: [hold], stopLossPercent: [0.3], takeProfitPercent: [2] } });
   let plan = makePlan(horizon);
   if (cached) {
     // Reconstruct from the hourly pool; never trust a hand-edited cached membership plan.

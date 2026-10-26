@@ -1,13 +1,6 @@
-import { HOUR, type Bar, type Dataset, type Manifest, type Parameters, type SearchOptions } from "../types.ts";
-import { DEFAULT_GRID } from "../search.ts";
+import { HOUR, type Bar, type Dataset, type Manifest } from "../types.ts";
 
 export const START = Date.UTC(2025, 0, 6); // Monday, UTC.
-export const PARAMS: Parameters = { holdHours: 5, minStreak: 1, volumeRatio: 0, weekFilter: false,
-  dayMovePercent: 0, highRatio: 0.8, stopLossPercent: 0, takeProfitPercent: 0 };
-export const OPTIONS: SearchOptions = { topN: 1, stepHours: 1, rounds: 3, trialsPerRound: 4, seed: 42, minTrades: 1,
-  trainRatio: 0.6, validationRatio: 0.2, feeBps: 5, slippageBps: 2,
-  grid: { ...structuredClone(DEFAULT_GRID), holdHours: [5, 10], minStreak: [1, 2], volumeRatio: [0, 1], weekFilter: [false],
-    stopLossPercent: [0, 1], takeProfitPercent: [0, 2] } };
 
 export function history(start = START - 100 * HOUR, end = START + 600 * HOUR): Bar[] {
   return Array.from({ length: (end - start) / HOUR }, (_, i) => {

@@ -67,7 +67,10 @@ test('确保涨幅榜先同步；遇到429立即停止并开启已同步标的�
     const boardPromise = buildBoards(tops, pinned);
 
     // 等待 BTC 成功，G1 触发 429 并暂停
-    await new Promise((r) => setTimeout(r, 350));
+    const startWait = Date.now();
+    while (!wsManager.getSubscribedSymbols().includes('BTCUSDT') && Date.now() - startWait < 800) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
 
     // 验证：检测到 429 停止时，立即开启订阅已完成的 BTCUSDT
     const subscribedMid = wsManager.getSubscribedSymbols();

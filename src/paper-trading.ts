@@ -12,6 +12,14 @@ import {
   type Candle,
 } from "./macd.ts";
 import { sendTelegramMessage } from "./telegram.ts";
+import {
+  UnifiedShortStrategyTracker,
+  type StreakStrategyLiveConfig,
+  type UnifiedLiveConfig,
+} from "./unified-short-strategy.ts";
+import {
+  type PeakReboundLiveConfig,
+} from "./peak-rebound-strategy.ts";
 import type {
   PaperAccount,
   PaperPosition,
@@ -21,6 +29,9 @@ import type {
   PaperTradingStats,
   PaperTradingState,
   PaperTradingSummary,
+  PaperSignalType,
+  PaperSignalLabel,
+  PaperExitParams,
 } from "./types.ts";
 import type { Ticker24h } from "./binance.ts";
 import type { TradeTick } from "./ws.ts";
@@ -48,6 +59,8 @@ export interface PaperStrategyConfig {
   limitDivisor: number; // 挂单上浮幅度分母 N: 挂单上浮 = dayChangePercent / limitDivisor (默认 100)
   limitExpireMinutes: number; // 挂单有效期分钟数 (默认 3 分钟)
   storageFile?: string | null;
+  streakConfig?: Partial<StreakStrategyLiveConfig>;
+  reboundConfig?: Partial<PeakReboundLiveConfig>;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -166,9 +179,26 @@ export class PaperTradingEngine {
   private account: PaperAccount;
   private stats: PaperTradingStats;
   private saveTimeout: NodeJS.Timeout | null = null;
+  private unifiedTracker: UnifiedShortStrategyTracker;
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
     this.config = { ...PAPER_DEFAULT_CONFIG, ...config };
+    this.unifiedTracker = new UnifiedShortStrategyTracker({
+      streakConfig: {
+        topN: this.config.topN,
+        minStreakCount: this.config.minStreakCount,
+        maxUpperShadowRatio: this.config.maxUpperShadowRatio,
+        minGreenRatio: this.config.minGreenRatio,
+        minConsecutiveGreenBars: this.config.minConsecutiveGreenBars,
+        holdMinutes: this.config.holdMinutes,
+        exitX: this.config.exitX,
+        exitN: this.config.exitN,
+        exitM: this.config.exitM,
+        ...this.config.streakConfig,
+      },
+      reboundConfig: this.config.reboundConfig,
+      preventConflict: true,
+    });
     this.account = {
       initialBalanceUsdt: this.config.initialBalanceUsdt,
       balanceUsdt: this.config.initialBalanceUsdt,
@@ -196,6 +226,10 @@ export class PaperTradingEngine {
       realizedRewardRisk: null,
     };
     this.loadState();
+  }
+
+  public getUnifiedTracker(): UnifiedShortStrategyTracker {
+    return this.unifiedTracker;
   }
 
   public getConfig(): PaperStrategyConfig {
@@ -240,20 +274,27 @@ export class PaperTradingEngine {
     rank?: number | null;
     basePrice: number;
     signal: SignalMatchDetails;
+    signalType?: PaperSignalType;
+    signalLabel?: PaperSignalLabel;
+    exitParams?: PaperExitParams;
     now?: number;
   }): PaperPendingOrder {
-    const { symbol, dayChangePercent, rank, basePrice, signal } = params;
+    const { symbol, dayChangePercent, rank, basePrice, signal, exitParams } = params;
     const now = params.now ?? Date.now();
     const divisor = this.config.limitDivisor > 0 ? this.config.limitDivisor : 100;
     const limitOffsetPercent = dayChangePercent / divisor;
     const limitPrice = basePrice * (1 + limitOffsetPercent / 100);
     const expireAt = now + this.config.limitExpireMinutes * 60 * 1000;
 
+    const exitX = exitParams?.exitX ?? this.config.exitX;
     // 保护位：若行情直接下杀跌破预估的阶段一止盈位，说明行情已直接跌完，不再接单
-    const tp1OffsetPercent = dayChangePercent / this.config.exitX;
+    const tp1OffsetPercent = dayChangePercent / exitX;
     const cancelBelowPrice = basePrice * (1 - tp1OffsetPercent / 100);
 
     const notionalUsdt = this.config.marginUsdt * this.config.leverage;
+
+    const signalType = params.signalType ?? "streak";
+    const signalLabel = params.signalLabel ?? (signalType === "rebound" ? "空弱反弹" : "空连阳");
 
     const order: PaperPendingOrder = {
       id: `pending-${symbol}-${now}`,
@@ -262,6 +303,14 @@ export class PaperTradingEngine {
       leverage: this.config.leverage,
       marginUsdt: this.config.marginUsdt,
       notionalUsdt,
+      signalType,
+      signalLabel,
+      exitParams: exitParams ?? {
+        holdMinutes: this.config.holdMinutes,
+        exitX: this.config.exitX,
+        exitN: this.config.exitN,
+        exitM: this.config.exitM,
+      },
       basePrice,
       limitPrice,
       limitOffsetPercent,
@@ -282,7 +331,7 @@ export class PaperTradingEngine {
     this.scheduleSave();
 
     console.log(
-      `[paper-trading] ⏳ 提交限价做空挂单 ${symbol} @ ${limitPrice.toFixed(4)} ` +
+      `[paper-trading] ⏳ 提交限价做空挂单 [${signalLabel}] ${symbol} @ ${limitPrice.toFixed(4)} ` +
       `(基准价: ${basePrice.toFixed(4)}, 上浮 +${limitOffsetPercent.toFixed(2)}%, 有效期 ${this.config.limitExpireMinutes}分钟)`,
     );
 
@@ -300,13 +349,14 @@ export class PaperTradingEngine {
     const order = this.pendingOrders.get(symbol);
     if (!order) return;
     this.pendingOrders.delete(symbol);
+    this.unifiedTracker.closePosition(symbol);
     this.scheduleSave();
-    console.log(`[paper-trading] ⏱️ 撤销限价做空挂单 ${symbol} @ ${order.limitPrice.toFixed(4)}: ${reason}`);
+    console.log(`[paper-trading] ⏱️ 撤销限价做空挂单 [${order.signalLabel ?? "做空"}] ${symbol} @ ${order.limitPrice.toFixed(4)}: ${reason}`);
   }
 
   /**
    * Called on every scan/refresh at candle close.
-   * Scans Top 10 gainers for entry signals.
+   * Scans Top 10 gainers for entry signals using Unified Dual-Signal strategy (空连阳 / 空弱反弹).
    */
   public async onScan(
     gainers: Ticker24h[],
@@ -319,9 +369,15 @@ export class PaperTradingEngine {
     // Check timeouts first on scan
     this.checkTimeouts(now);
 
-    for (let i = 0; i < gainers.length && i < this.config.topN; i++) {
-      const ticker = gainers[i];
-      if (pinnedSymbols.has(ticker.symbol)) continue;
+    // 1. 同步非置顶榜首标的至弱反弹追踪器 (watch 24h gainers rank 1)
+    const nonPinnedGainers = gainers.filter((t) => !pinnedSymbols.has(t.symbol));
+    const topGainer = nonPinnedGainers[0];
+    if (topGainer && topGainer.priceChangePercent > 0) {
+      this.unifiedTracker.onRankUpdate(topGainer.symbol, topGainer.priceChangePercent, now);
+    }
+
+    for (let i = 0; i < nonPinnedGainers.length && i < this.config.topN; i++) {
+      const ticker = nonPinnedGainers[i];
       if (ticker.priceChangePercent <= 0) continue;
       if (this.hasActivePosition(ticker.symbol) || this.hasPendingOrder(ticker.symbol)) continue;
 
@@ -339,27 +395,65 @@ export class PaperTradingEngine {
       const symCache = candleMap.get(ticker.symbol);
       if (!symCache || !symCache.initialized || symCache.candles1m.length < 35) continue;
 
-      const signal = checkPaperSignal(
+      const rank = i + 1;
+      const liveSignal = this.unifiedTracker.checkCandles(
         ticker.symbol,
         ticker.priceChangePercent,
+        rank,
         symCache.candles1m,
-        this.config,
+        now,
       );
 
-      if (signal) {
-        // 基准价格：优先取当前最新 K 线的最新 close（实时市价），否则用上一根已收盘的 close
+      if (liveSignal) {
+        const targetIdx = symCache.candles1m.length - 2;
+        const window30 = symCache.candles1m.slice(Math.max(0, targetIdx - 29), targetIdx + 1);
+        const maxHigh = Math.max(...window30.map((c) => c.high));
+        const minLow = Math.min(...window30.map((c) => c.low));
+        const amp30Percent = minLow > 0 ? ((maxHigh - minLow) / minLow) * 100 : 0;
+
         const forming = symCache.candles1m[symCache.candles1m.length - 1];
         const basePrice =
-          forming && forming.close > 0 ? forming.close : signal.candle.close;
+          forming && forming.close > 0 ? forming.close : liveSignal.entryPrice;
+
+        const signalType = liveSignal.type;
+        const signalLabel = signalType === "streak" ? "空连阳" : "空弱反弹";
+        const exitParams = liveSignal.exitParams;
+
+        const streakCount =
+          liveSignal.details.streakSignal?.streakCount ??
+          liveSignal.details.reboundSignal?.reboundUpCandles ??
+          2;
+        const upperShadowRatio =
+          liveSignal.details.streakSignal?.upperShadowRatio ??
+          liveSignal.details.reboundSignal?.upperShadowRatio ??
+          0;
+        const greenRatio =
+          liveSignal.details.streakSignal?.greenRatio ??
+          liveSignal.details.reboundSignal?.greenRatio20 ??
+          0;
+        const consecutiveGreenBars =
+          liveSignal.details.streakSignal?.consecutiveGreenBars ?? 0;
+
+        const signalDetails: SignalMatchDetails = {
+          candle: symCache.candles1m[targetIdx],
+          streakCount,
+          amp30Percent,
+          upperShadowRatio,
+          greenRatio,
+          consecutiveGreenBars,
+        };
 
         if (this.config.limitDivisor > 0) {
           // 挂单模式：以 24h涨幅/limitDivisor 向上挂单等待冲高撮合
           this.createPendingOrder({
             symbol: ticker.symbol,
             dayChangePercent: ticker.priceChangePercent,
-            rank: i + 1,
+            rank,
             basePrice,
-            signal,
+            signal: signalDetails,
+            signalType,
+            signalLabel,
+            exitParams,
             now,
           });
         } else {
@@ -367,10 +461,13 @@ export class PaperTradingEngine {
           const pos = this.openPosition({
             symbol: ticker.symbol,
             dayChangePercent: ticker.priceChangePercent,
-            rank: i + 1,
+            rank,
             entryPrice: basePrice,
             entryTime: now,
-            signal,
+            signal: signalDetails,
+            signalType,
+            signalLabel,
+            exitParams,
           });
           openedList.push(pos);
         }
@@ -388,16 +485,33 @@ export class PaperTradingEngine {
     entryTime: number;
     limitPrice?: number;
     signal: SignalMatchDetails;
+    signalType?: PaperSignalType;
+    signalLabel?: PaperSignalLabel;
+    exitParams?: PaperExitParams;
   }): PaperPosition {
-    const { symbol, dayChangePercent, rank, entryPrice, entryTime, limitPrice, signal } = params;
+    const {
+      symbol,
+      dayChangePercent,
+      rank,
+      entryPrice,
+      entryTime,
+      limitPrice,
+      signal,
+      exitParams,
+    } = params;
+
+    const exitX = exitParams?.exitX ?? this.config.exitX;
+    const exitN = exitParams?.exitN ?? this.config.exitN;
+    const exitM = exitParams?.exitM ?? this.config.exitM;
+    const holdMinutes = exitParams?.holdMinutes ?? this.config.holdMinutes;
 
     // Two-stage dynamic thresholds:
     // Stage 1: tp1 = dayChange / x, sl1 = dayChange / x
     // Stage 2: sl2 = dayChange * n / x, tp2 = dayChange * m / x
-    const tp1Percent = dayChangePercent / this.config.exitX;
-    const sl1Percent = dayChangePercent / this.config.exitX;
-    const sl2Percent = (dayChangePercent * this.config.exitN) / this.config.exitX;
-    const tp2Percent = (dayChangePercent * this.config.exitM) / this.config.exitX;
+    const tp1Percent = dayChangePercent / exitX;
+    const sl1Percent = dayChangePercent / exitX;
+    const sl2Percent = (dayChangePercent * exitN) / exitX;
+    const tp2Percent = (dayChangePercent * exitM) / exitX;
 
     // Short direction price levels:
     // Target (profit): entry * (1 - tp / 100)
@@ -407,8 +521,11 @@ export class PaperTradingEngine {
     const sl2Price = entryPrice * (1 + sl2Percent / 100);
     const tp2Price = entryPrice * (1 - tp2Percent / 100);
 
-    const timeoutAt = entryTime + this.config.holdMinutes * 60 * 1000;
+    const timeoutAt = entryTime + holdMinutes * 60 * 1000;
     const notionalUsdt = this.config.marginUsdt * this.config.leverage; // 10 * 10 = 100 USDT
+
+    const signalType = params.signalType ?? "streak";
+    const signalLabel = params.signalLabel ?? (signalType === "rebound" ? "空弱反弹" : "空连阳");
 
     const position: PaperPosition = {
       id: `${symbol}-${entryTime}`,
@@ -418,6 +535,14 @@ export class PaperTradingEngine {
       marginUsdt: this.config.marginUsdt,
       notionalUsdt,
       status: "OPEN",
+      signalType,
+      signalLabel,
+      exitParams: {
+        holdMinutes,
+        exitX,
+        exitN,
+        exitM,
+      },
       entryTime,
       entryPrice,
       limitPrice,
@@ -451,6 +576,12 @@ export class PaperTradingEngine {
     };
 
     this.activePositions.set(symbol, position);
+    this.unifiedTracker.registerPosition(symbol, {
+      tradeId: position.id,
+      type: signalType,
+      entryTime,
+      maxExitTime: timeoutAt,
+    });
     this.recalculateStats();
     this.scheduleSave();
 
@@ -461,9 +592,9 @@ export class PaperTradingEngine {
 
     const isLimit = limitPrice != null;
     console.log(
-      `[paper-trading] ⚡ ${isLimit ? "限价挂单成交做空" : "市价开空"} ${symbol} @ ${entryPrice.toFixed(4)} ` +
+      `[paper-trading] ⚡ ${isLimit ? "限价挂单成交做空" : "市价开空"} [${signalLabel}] ${symbol} @ ${entryPrice.toFixed(4)} ` +
       `(${this.config.leverage}x, 保证金 ${this.config.marginUsdt} USDT, 24h: +${dayChangePercent.toFixed(2)}%, 30m振幅: ${signal.amp30Percent.toFixed(2)}%) ` +
-      `TP1: ${tp1Price.toFixed(4)} SL1: ${sl1Price.toFixed(4)} SL2: ${sl2Price.toFixed(4)} TP2: ${tp2Price.toFixed(4)}`,
+      `TP1: ${tp1Price.toFixed(4)} SL1: ${sl1Price.toFixed(4)} SL2: ${sl2Price.toFixed(4)} TP2: ${tp2Price.toFixed(4)} 持仓: ${holdMinutes}m`,
     );
 
     return position;
@@ -490,7 +621,7 @@ export class PaperTradingEngine {
       else if (tick.price >= pending.limitPrice) {
         this.pendingOrders.delete(pending.symbol);
         console.log(
-          `[paper-trading] 🎯 挂单成交！${pending.symbol} 触及做空限价 @ ${pending.limitPrice.toFixed(4)} (成交Tick: ${tick.price.toFixed(4)})`,
+          `[paper-trading] 🎯 挂单成交！[${pending.signalLabel ?? "做空"}] ${pending.symbol} 触及做空限价 @ ${pending.limitPrice.toFixed(4)} (成交Tick: ${tick.price.toFixed(4)})`,
         );
         this.openPosition({
           symbol: pending.symbol,
@@ -499,6 +630,9 @@ export class PaperTradingEngine {
           entryPrice: pending.limitPrice,
           entryTime: tick.time,
           limitPrice: pending.limitPrice,
+          signalType: pending.signalType,
+          signalLabel: pending.signalLabel,
+          exitParams: pending.exitParams,
           signal: {
             candle: {
               time: tick.time,
@@ -698,6 +832,7 @@ export class PaperTradingEngine {
 
   private finalizePosition(pos: PaperPosition): void {
     this.activePositions.delete(pos.symbol);
+    this.unifiedTracker.closePosition(pos.symbol);
     this.closedPositions.unshift(pos);
     if (this.closedPositions.length > 500) {
       this.closedPositions.length = 500;
@@ -711,8 +846,9 @@ export class PaperTradingEngine {
       console.warn(`[paper-trading] 发送结清通知异常:`, (e as any)?.message ?? e),
     );
 
+    const label = pos.signalLabel ?? (pos.signalType === "rebound" ? "空弱反弹" : "空连阳");
     console.log(
-      `[paper-trading] 🏆 ${pos.symbol} 订单结清 (${pos.finalReason}) | ` +
+      `[paper-trading] 🏆 ${pos.symbol} [${label}] 订单结清 (${pos.finalReason}) | ` +
       `整单净盈亏: ${pos.totalNetPnlUsdt >= 0 ? "+" : ""}${pos.totalNetPnlUsdt.toFixed(2)} USDT (ROE: ${pos.roePercent >= 0 ? "+" : ""}${pos.roePercent.toFixed(1)}%) | ` +
       `胜率: ${this.stats.winRate.toFixed(1)}% | 账户最新余额: ${this.account.balanceUsdt.toFixed(2)} USDT`,
     );
@@ -800,9 +936,11 @@ export class PaperTradingEngine {
   // --- Telegram Alerts ---
   private async notifyPendingOrder(order: PaperPendingOrder): Promise<void> {
     const rankStr = order.rank ? `(#${order.rank})` : "";
+    const label = order.signalLabel ?? (order.signalType === "rebound" ? "空弱反弹" : "空连阳");
     const msg =
-      `⏳ <b>[模拟交易] 发现做空信号，已提交限价做空挂单</b>\n` +
+      `⏳ <b>[模拟交易] 发现做空信号【${label}】，已提交限价做空挂单</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${order.symbol}"><b>${order.symbol}</b></a>\n` +
+      `• <b>信号类型</b>: <b>【${label}】</b>\n` +
       `• <b>挂单限价</b>: <code>${order.limitPrice.toFixed(4)}</code> (基准价: <code>${order.basePrice.toFixed(4)}</code>, 上浮: <b>+${order.limitOffsetPercent.toFixed(2)}%</b>)\n` +
       `• <b>杠杆 / 保证金</b>: <b>${order.leverage}x / ${order.marginUsdt} USDT</b> (名义仓位: ${order.notionalUsdt} USDT)\n` +
       `• <b>24h涨幅</b>: +${order.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${order.amp30Percent.toFixed(2)}%\n` +
@@ -813,9 +951,12 @@ export class PaperTradingEngine {
   private async notifyEntry(pos: PaperPosition): Promise<void> {
     const rankStr = pos.rank ? `(#${pos.rank})` : "";
     const isLimit = pos.limitPrice != null;
+    const label = pos.signalLabel ?? (pos.signalType === "rebound" ? "空弱反弹" : "空连阳");
+    const holdMin = pos.exitParams?.holdMinutes ?? this.config.holdMinutes;
     const msg =
-      `⚡ <b>[模拟交易] ${isLimit ? "限价挂单冲高撮合成交" : "发现做空信号，市价开空"}</b>\n` +
+      `⚡ <b>[模拟交易] ${isLimit ? "限价挂单冲高撮合成交" : "发现做空信号，市价开空"}【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
+      `• <b>信号类型</b>: <b>【${label}】</b>\n` +
       `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt} USDT</b> (名义仓位: ${pos.notionalUsdt} USDT)\n` +
       `• <b>成交开仓价</b>: <code>${pos.entryPrice.toFixed(4)}</code>\n` +
       `• <b>24h涨幅</b>: +${pos.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${pos.amp30Percent.toFixed(2)}%\n` +
@@ -826,7 +967,7 @@ export class PaperTradingEngine {
       `   - 止损2: <b>${pos.sl2Price.toFixed(4)}</b> (+${pos.sl2Percent.toFixed(2)}%)\n` +
       `   - 止盈2: <b>${pos.tp2Price.toFixed(4)}</b> (-${pos.tp2Percent.toFixed(2)}%)\n` +
       `• <b>模拟账户状态</b>: 可用保证金 <b>${this.account.availableMarginUsdt.toFixed(2)} USDT</b> (净值 <b>${this.account.equityUsdt.toFixed(2)} USDT</b>)\n` +
-      `• <b>最长持仓</b>: 15分钟超时市价平仓`;
+      `• <b>最长持仓</b>: ${holdMin}分钟超时市价平仓`;
     await sendTelegramMessage(msg);
   }
 
@@ -838,9 +979,11 @@ export class PaperTradingEngine {
           ? "止损减仓 🛑"
           : "超时平仓 ⏱️";
     const pnlSign = exit.netPnlUsdt >= 0 ? "+" : "";
+    const label = pos.signalLabel ?? (pos.signalType === "rebound" ? "空弱反弹" : "空连阳");
     const msg =
-      `🎯 <b>[模拟交易] 阶段一达成 (平仓 50%)</b>\n` +
+      `🎯 <b>[模拟交易] 阶段一达成 (平仓 50%) 【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
+      `• <b>信号类型</b>: <b>【${label}】</b>\n` +
       `• <b>动作</b>: ${action}\n` +
       `• <b>成交价</b>: <code>${exit.exitPrice.toFixed(4)}</code>\n` +
       `• <b>阶段净盈亏</b>: <b>${pnlSign}${exit.netPnlUsdt.toFixed(2)} USDT</b>\n` +
@@ -851,23 +994,25 @@ export class PaperTradingEngine {
   private async notifyFinal(pos: PaperPosition): Promise<void> {
     const holdMins = pos.closedAt
       ? ((pos.closedAt - pos.entryTime) / 60000).toFixed(1)
-      : "15.0";
+      : (pos.exitParams?.holdMinutes ?? this.config.holdMinutes).toFixed(1);
     const reasonStr =
       pos.finalReason === "target"
         ? "两阶段全部止盈 🎯"
         : pos.finalReason === "stop"
           ? "触发止损 🛑"
-          : "15分钟超时市价平仓 ⏱️";
+          : `${holdMins}分钟超时市价平仓 ⏱️`;
     const avgExitPrice =
       pos.exits.length > 0
         ? pos.exits.reduce((sum, e) => sum + e.exitPrice * e.fraction, 0)
         : pos.currentPrice;
     const pnlSign = pos.totalNetPnlUsdt >= 0 ? "+" : "";
     const totSign = this.account.totalPnlUsdt >= 0 ? "+" : "";
+    const label = pos.signalLabel ?? (pos.signalType === "rebound" ? "空弱反弹" : "空连阳");
 
     const msg =
-      `🏆 <b>[模拟交易] 订单全额结清</b>\n` +
+      `🏆 <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
+      `• <b>信号类型</b>: <b>【${label}】</b>\n` +
       `• <b>杠杆 / 保证金</b>: 10x / ${pos.marginUsdt} USDT\n` +
       `• <b>持仓耗时</b>: ${holdMins} 分钟\n` +
       `• <b>结算原因</b>: ${reasonStr}\n` +
@@ -919,17 +1064,37 @@ export class PaperTradingEngine {
         if (Array.isArray(data.pendingOrders)) {
           this.pendingOrders.clear();
           for (const o of data.pendingOrders) {
+            o.signalType = o.signalType ?? "streak";
+            o.signalLabel = o.signalLabel ?? (o.signalType === "rebound" ? "空弱反弹" : "空连阳");
             this.pendingOrders.set(o.symbol, o);
+            this.unifiedTracker.registerPosition(o.symbol, {
+              tradeId: o.id,
+              type: o.signalType,
+              entryTime: o.createdAt,
+              maxExitTime: o.expireAt,
+            });
           }
         }
         if (Array.isArray(data.activePositions)) {
           this.activePositions.clear();
           for (const p of data.activePositions) {
+            p.signalType = p.signalType ?? "streak";
+            p.signalLabel = p.signalLabel ?? (p.signalType === "rebound" ? "空弱反弹" : "空连阳");
             this.activePositions.set(p.symbol, p);
+            this.unifiedTracker.registerPosition(p.symbol, {
+              tradeId: p.id,
+              type: p.signalType,
+              entryTime: p.entryTime,
+              maxExitTime: p.timeoutAt,
+            });
           }
         }
         if (Array.isArray(data.closedPositions)) {
-          this.closedPositions = data.closedPositions;
+          this.closedPositions = data.closedPositions.map((p) => {
+            p.signalType = p.signalType ?? "streak";
+            p.signalLabel = p.signalLabel ?? (p.signalType === "rebound" ? "空弱反弹" : "空连阳");
+            return p;
+          });
         }
         if (data.stats) {
           this.stats = data.stats;
@@ -947,6 +1112,22 @@ export class PaperTradingEngine {
     this.pendingOrders.clear();
     this.activePositions.clear();
     this.closedPositions = [];
+    this.unifiedTracker = new UnifiedShortStrategyTracker({
+      streakConfig: {
+        topN: this.config.topN,
+        minStreakCount: this.config.minStreakCount,
+        maxUpperShadowRatio: this.config.maxUpperShadowRatio,
+        minGreenRatio: this.config.minGreenRatio,
+        minConsecutiveGreenBars: this.config.minConsecutiveGreenBars,
+        holdMinutes: this.config.holdMinutes,
+        exitX: this.config.exitX,
+        exitN: this.config.exitN,
+        exitM: this.config.exitM,
+        ...this.config.streakConfig,
+      },
+      reboundConfig: this.config.reboundConfig,
+      preventConflict: true,
+    });
     this.account = {
       initialBalanceUsdt: this.config.initialBalanceUsdt,
       balanceUsdt: this.config.initialBalanceUsdt,
