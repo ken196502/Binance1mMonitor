@@ -30,14 +30,10 @@ export const PEAK_REBOUND_LIVE_DEFAULT_CONFIG: PeakReboundLiveConfig = {
   longMaOffsetPercent: 0.5,
   minGreenRatio20: 0.65,
   requireMaSlopeDown: true,
-  minReboundUpCandles: 1,
-  maxFibRetracement: 0.50,
-  minUpperShadowRatio: 0.30,
-  requireBearishOrUpperShadow: true,
-  holdMinutes: 30,
+  holdMinutes: 45,
   exitX: 35,
   exitN: 2.0,
-  exitM: 1.5,
+  exitM: 3.0,
   watchWindowHours: 48,
 };
 
@@ -106,6 +102,14 @@ export class PeakReboundStrategyTracker {
 
   public getWatchlist(): WatchState[] {
     return Array.from(this.watchlist.values());
+  }
+
+  public isWatching(symbol: string): boolean {
+    return this.watchlist.has(symbol);
+  }
+
+  public getWatchlistSymbols(): string[] {
+    return Array.from(this.watchlist.keys());
   }
 
   /**
@@ -274,7 +278,7 @@ export class PeakReboundStrategyTracker {
         const pullback = ((item.peakPrice - item.troughPrice) / item.peakPrice) * 100;
         const rebound = ((candle.high - item.troughPrice) / item.troughPrice) * 100;
 
-        item.cooldownUntil = now + 30 * 60 * 1000;
+        item.cooldownUntil = now + this.config.holdMinutes * 60 * 1000;
         item.state = 'watching_peak';
         item.peakPrice = candle.high;
         item.troughPrice = candle.low;

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { UnifiedShortStrategyTracker } from '../../src/unified-short-strategy.ts';
+import {
+  UnifiedShortStrategyTracker,
+  STREAK_LIVE_DEFAULT_CONFIG,
+} from '../../src/unified-short-strategy.ts';
+import {
+  PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
+} from '../../src/peak-rebound-strategy.ts';
 import type { Candle } from '../../src/macd.ts';
 
 function createMockCandles(count: number, basePrice = 100): Candle[] {
@@ -18,6 +24,36 @@ function createMockCandles(count: number, basePrice = 100): Candle[] {
   }
   return candles;
 }
+
+test('Default strategy configurations match verified specifications', () => {
+  // 1. 空弱反弹
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.shortMa, 5);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.mediumMa, 15);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.longMa, 30);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.longMaOffsetPercent, 0.5);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.pullbackX, 10.0);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.reboundY, 4.0);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.65);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.requireMaSlopeDown, true);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.holdMinutes, 45);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitX, 35);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitN, 2.0);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitM, 3.0);
+
+  // 2. 空连阳
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.topN, 10);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.minStreakCount, 2);
+  assert.deepEqual(STREAK_LIVE_DEFAULT_CONFIG.supportMaPeriods, [3, 7, 15]);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.ampDivisor, 12);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.minUpperShadowRatio, 0.005);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.maxUpperShadowRatio, 0.30);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.minGreenRatio, 0.70);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.minConsecutiveGreenBars, 7);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.holdMinutes, 15);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitX, 50);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitN, 1.5);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitM, 3.0);
+});
 
 test('UnifiedShortStrategyTracker manages active positions and prevents double-entry conflicts', () => {
   const tracker = new UnifiedShortStrategyTracker({ preventConflict: true });
@@ -46,17 +82,28 @@ test('UnifiedShortStrategyTracker manages active positions and prevents double-e
   assert.equal(tracker.isSymbolBusy(symbol, now), false);
 });
 
-test('UnifiedShortStrategyTracker initializes with custom configs and dispatches rank updates', () => {
-  const tracker = new UnifiedShortStrategyTracker({
-    reboundConfig: { pullbackX: 12.0, reboundY: 5.0 },
-    streakConfig: { exitX: 70 },
-  });
+test('UnifiedShortStrategyTracker triggers streak signal with verified parameters', () => {
+  const tracker = new UnifiedShortStrategyTracker();
 
-  // onRankUpdate should not throw
-  tracker.onRankUpdate('ETHUSDT', 25.5, Date.now());
+  // Create 50 rising candles suitable for streak signal
+  const candles: Candle[] = [];
+  let basePrice = 100;
+  const now = 1700000000000;
+  for (let i = 0; i < 50; i++) {
+    const time = now + i * 60000;
+    const open = basePrice;
+    const close = basePrice + 1.0;
+    const high = close + 0.1; // upper shadow 0.1 / 1.0 = 10% (between 0.5% and 30%)
+    const low = open + 0.2;
+    basePrice = close;
+    candles.push({ time, open, high, low, close, volume: 1000 });
+  }
 
-  const mockCandles = createMockCandles(10);
-  const sig = tracker.checkCandles('ETHUSDT', 25.5, 1, mockCandles);
-  // Not enough candles, should cleanly return null
-  assert.equal(sig, null);
+  const sig = tracker.checkCandles('ALPHAUSDT', 20.0, 3, candles, now + 50 * 60000);
+  assert.ok(sig !== null, 'Streak signal should trigger');
+  assert.equal(sig.type, 'streak');
+  assert.equal(sig.exitParams.holdMinutes, 15);
+  assert.equal(sig.exitParams.exitX, 50);
+  assert.equal(sig.exitParams.exitN, 1.5);
+  assert.equal(sig.exitParams.exitM, 3.0);
 });

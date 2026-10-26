@@ -187,7 +187,11 @@ export class PaperTradingEngine {
       streakConfig: {
         topN: this.config.topN,
         minStreakCount: this.config.minStreakCount,
+        supportMaPeriods: this.config.supportMaPeriods,
+        ampDivisor: this.config.ampDivisor,
+        minUpperShadowRatio: this.config.minUpperShadowRatio,
         maxUpperShadowRatio: this.config.maxUpperShadowRatio,
+        greenWindow: this.config.greenWindow,
         minGreenRatio: this.config.minGreenRatio,
         minConsecutiveGreenBars: this.config.minConsecutiveGreenBars,
         holdMinutes: this.config.holdMinutes,
@@ -376,8 +380,28 @@ export class PaperTradingEngine {
       this.unifiedTracker.onRankUpdate(topGainer.symbol, topGainer.priceChangePercent, now);
     }
 
+    // 收集所有需要扫描的标的：Top N 榜单标的 + 处于弱反弹监控中的标的 (两者同时并行判断，任一满足即开仓)
+    const candidates: Array<{ ticker: Ticker24h; rank: number }> = [];
+    const seenSymbols = new Set<string>();
+
     for (let i = 0; i < nonPinnedGainers.length && i < this.config.topN; i++) {
       const ticker = nonPinnedGainers[i];
+      seenSymbols.add(ticker.symbol);
+      candidates.push({ ticker, rank: i + 1 });
+    }
+
+    for (const watched of this.unifiedTracker.getReboundWatchlist()) {
+      if (!seenSymbols.has(watched.symbol)) {
+        const found = nonPinnedGainers.find((t) => t.symbol === watched.symbol);
+        if (found) {
+          seenSymbols.add(found.symbol);
+          const r = nonPinnedGainers.indexOf(found) + 1;
+          candidates.push({ ticker: found, rank: r });
+        }
+      }
+    }
+
+    for (const { ticker, rank } of candidates) {
       if (ticker.priceChangePercent <= 0) continue;
       if (this.hasActivePosition(ticker.symbol) || this.hasPendingOrder(ticker.symbol)) continue;
 
@@ -395,7 +419,6 @@ export class PaperTradingEngine {
       const symCache = candleMap.get(ticker.symbol);
       if (!symCache || !symCache.initialized || symCache.candles1m.length < 35) continue;
 
-      const rank = i + 1;
       const liveSignal = this.unifiedTracker.checkCandles(
         ticker.symbol,
         ticker.priceChangePercent,
@@ -406,11 +429,6 @@ export class PaperTradingEngine {
 
       if (liveSignal) {
         const targetIdx = symCache.candles1m.length - 2;
-        const window30 = symCache.candles1m.slice(Math.max(0, targetIdx - 29), targetIdx + 1);
-        const maxHigh = Math.max(...window30.map((c) => c.high));
-        const minLow = Math.min(...window30.map((c) => c.low));
-        const amp30Percent = minLow > 0 ? ((maxHigh - minLow) / minLow) * 100 : 0;
-
         const forming = symCache.candles1m[symCache.candles1m.length - 1];
         const basePrice =
           forming && forming.close > 0 ? forming.close : liveSignal.entryPrice;
@@ -433,6 +451,10 @@ export class PaperTradingEngine {
           0;
         const consecutiveGreenBars =
           liveSignal.details.streakSignal?.consecutiveGreenBars ?? 0;
+        const amp30Percent =
+          liveSignal.details.streakSignal?.amp30Percent ??
+          liveSignal.details.reboundSignal?.reboundPercent ??
+          0;
 
         const signalDetails: SignalMatchDetails = {
           candle: symCache.candles1m[targetIdx],
@@ -1116,7 +1138,11 @@ export class PaperTradingEngine {
       streakConfig: {
         topN: this.config.topN,
         minStreakCount: this.config.minStreakCount,
+        supportMaPeriods: this.config.supportMaPeriods,
+        ampDivisor: this.config.ampDivisor,
+        minUpperShadowRatio: this.config.minUpperShadowRatio,
         maxUpperShadowRatio: this.config.maxUpperShadowRatio,
+        greenWindow: this.config.greenWindow,
         minGreenRatio: this.config.minGreenRatio,
         minConsecutiveGreenBars: this.config.minConsecutiveGreenBars,
         holdMinutes: this.config.holdMinutes,

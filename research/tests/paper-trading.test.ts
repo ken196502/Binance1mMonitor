@@ -480,7 +480,7 @@ test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 
     entryTime: now,
     signalType: "streak",
     signalLabel: "空连阳",
-    exitParams: { holdMinutes: 30, exitX: 60, exitN: 1.5, exitM: 4.0 },
+    exitParams: { holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
     signal: {
       candle: { time: now - 60000, open: 49, high: 50.02, low: 48.9, close: 50, volume: 100 },
       streakCount: 3,
@@ -493,8 +493,8 @@ test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 
 
   assert.equal(streakPos.signalType, "streak");
   assert.equal(streakPos.signalLabel, "空连阳");
-  assert.equal(streakPos.exitParams?.holdMinutes, 30);
-  assert.equal(streakPos.exitParams?.exitX, 60);
+  assert.equal(streakPos.exitParams?.holdMinutes, 15);
+  assert.equal(streakPos.exitParams?.exitX, 50);
 
   // 2. Create rebound pending order
   const reboundOrder = engine.createPendingOrder({
@@ -504,7 +504,7 @@ test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 
     basePrice: 100.0,
     signalType: "rebound",
     signalLabel: "空弱反弹",
-    exitParams: { holdMinutes: 30, exitX: 35, exitN: 2.0, exitM: 1.5 },
+    exitParams: { holdMinutes: 45, exitX: 35, exitN: 2.0, exitM: 3.0 },
     now,
     signal: {
       candle: { time: now - 60000, open: 101, high: 101.5, low: 99.5, close: 100, volume: 100 },
@@ -534,5 +534,6 @@ test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 
   assert.equal(reboundPos.signalLabel, "空弱反弹");
   assert.equal(reboundPos.exitParams?.exitX, 35);
   assert.equal(reboundPos.exitParams?.exitN, 2.0);
-  assert.equal(reboundPos.exitParams?.exitM, 1.5);
+  assert.equal(reboundPos.exitParams?.exitM, 3.0);
+  assert.equal(reboundPos.exitParams?.holdMinutes, 45);
 });

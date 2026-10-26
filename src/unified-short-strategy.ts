@@ -14,27 +14,33 @@ export type UnifiedSignalType = 'streak' | 'rebound';
 export interface StreakStrategyLiveConfig {
   topN: number;
   minStreakCount: number;
-  dayGainFraction: number; // streakGain >= dayChange * dayGainFraction (e.g. 0.03)
-  minGreenRatio: number;   // hist > 0 in 30 bars > minGreenRatio (e.g. 0.60)
+  supportMaPeriods: readonly number[]; // e.g. [3, 7, 15]
+  ampDivisor: number; // 30m 振幅 >= 24h 涨幅 / ampDivisor (默认 12)
+  minUpperShadowRatio: number; // e.g. 0.005 (0.5%)
+  maxUpperShadowRatio: number; // e.g. 0.30 (30%)
+  greenWindow?: number; // e.g. 30
+  minGreenRatio: number;   // hist > 0 in 30 bars > minGreenRatio (e.g. 0.70)
   minConsecutiveGreenBars: number; // e.g. 7
-  maxUpperShadowRatio: number;    // e.g. 0.30
-  holdMinutes: number;            // e.g. 30
-  exitX: number;                  // e.g. 60
+  holdMinutes: number;            // e.g. 15
+  exitX: number;                  // e.g. 50
   exitN: number;                  // e.g. 1.5
-  exitM: number;                  // e.g. 4.0
+  exitM: number;                  // e.g. 3.0
 }
 
 export const STREAK_LIVE_DEFAULT_CONFIG: StreakStrategyLiveConfig = {
   topN: 10,
   minStreakCount: 2,
-  dayGainFraction: 0.03,
-  minGreenRatio: 0.60,
-  minConsecutiveGreenBars: 7,
+  supportMaPeriods: [3, 7, 15],
+  ampDivisor: 12,
+  minUpperShadowRatio: 0.005,
   maxUpperShadowRatio: 0.30,
-  holdMinutes: 30,
-  exitX: 60,
+  greenWindow: 30,
+  minGreenRatio: 0.70,
+  minConsecutiveGreenBars: 7,
+  holdMinutes: 15,
+  exitX: 50,
   exitN: 1.5,
-  exitM: 4.0,
+  exitM: 3.0,
 };
 
 export interface UnifiedLiveConfig {
@@ -66,7 +72,7 @@ export interface UnifiedLiveSignal {
     reboundSignal?: PeakReboundLiveSignal;
     streakSignal?: {
       streakCount: number;
-      streakGainPercent: number;
+      amp30Percent: number;
       greenRatio: number;
       consecutiveGreenBars: number;
       upperShadowRatio: number;
@@ -123,9 +129,18 @@ export class UnifiedShortStrategyTracker {
     return true;
   }
 
+  public getReboundTracker(): PeakReboundStrategyTracker {
+    return this.reboundTracker;
+  }
+
+  public getReboundWatchlist() {
+    return this.reboundTracker.getWatchlist();
+  }
+
   /**
    * Process newly closed 1m candle for a given symbol.
    * Evaluates both Rebound Short and Streak Short signals, resolving conflicts.
+   * Both strategies are checked; if either is satisfied, a signal is returned.
    */
   public checkCandles(
     symbol: string,
@@ -141,36 +156,35 @@ export class UnifiedShortStrategyTracker {
       return null;
     }
 
-    // 2. Evaluate Weak Rebound Short (Rank 1 focus)
-    if (rank === 1) {
-      const reboundSig = this.reboundTracker.checkCandles(symbol, candles, now);
-      if (reboundSig) {
-        const exitParams = {
-          holdMinutes: this.config.reboundConfig.holdMinutes,
-          exitX: this.config.reboundConfig.exitX,
-          exitN: this.config.reboundConfig.exitN,
-          exitM: this.config.reboundConfig.exitM,
-        };
-        const signal: UnifiedLiveSignal = {
-          id: `reb-${symbol}-${reboundSig.time}`,
+    // 2. Evaluate Weak Rebound Short (Rank 1 watchlist focus)
+    // Evaluates any symbol currently tracked on the Rank 1 rebound watchlist
+    const reboundSig = this.reboundTracker.checkCandles(symbol, candles, now);
+    if (reboundSig) {
+      const exitParams = {
+        holdMinutes: this.config.reboundConfig.holdMinutes,
+        exitX: this.config.reboundConfig.exitX,
+        exitN: this.config.reboundConfig.exitN,
+        exitM: this.config.reboundConfig.exitM,
+      };
+      const signal: UnifiedLiveSignal = {
+        id: `reb-${symbol}-${reboundSig.time}`,
+        type: 'rebound',
+        symbol,
+        time: reboundSig.time,
+        dayChangePercent,
+        entryPrice: reboundSig.candle.close,
+        exitParams,
+        details: { reboundSignal: reboundSig },
+      };
+      if (this.config.preventConflict) {
+        this.registerPosition(symbol, {
+          tradeId: signal.id,
           type: 'rebound',
-          symbol,
-          time: reboundSig.time,
-          dayChangePercent,
-          entryPrice: reboundSig.candle.close,
-          exitParams,
-          details: { reboundSignal: reboundSig },
-        };
-        if (this.config.preventConflict) {
-          this.registerPosition(symbol, {
-            tradeId: signal.id,
-            type: 'rebound',
-            entryTime: signal.time,
-            maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
-          });
-        }
-        return signal;
+          entryTime: signal.time,
+          maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
+        });
       }
+      return signal;
     }
 
     // 3. Evaluate Streak Short (Top N focus)
@@ -216,7 +230,7 @@ export class UnifiedShortStrategyTracker {
     candles: Candle[]
   ): {
     streakCount: number;
-    streakGainPercent: number;
+    amp30Percent: number;
     greenRatio: number;
     consecutiveGreenBars: number;
     upperShadowRatio: number;
@@ -224,48 +238,59 @@ export class UnifiedShortStrategyTracker {
     const cfg = this.config.streakConfig;
     // targetIndex is the latest completed candle
     const targetIndex = candles.length - 2;
-    if (targetIndex < 35) return null;
+    const minRequiredBars = Math.max(35, (cfg.greenWindow ?? 30) + 5, ...cfg.supportMaPeriods);
+    if (targetIndex < minRequiredBars - 1) return null;
 
+    const candle = candles[targetIndex];
+    if (!candle || candle.close <= 0 || candle.open <= 0) return null;
+
+    // 1. 至少连续 minStreakCount 根阳线 (默认 >= 2 连阳)
     const streak = consecutiveStreakAt(candles, targetIndex);
     if (streak.direction !== 'up' || streak.count < cfg.minStreakCount) return null;
     const streakCount = streak.count;
 
-    const firstStreakCandle = candles[targetIndex - streakCount + 1];
-    const targetCandle = candles[targetIndex];
-    if (!firstStreakCandle || firstStreakCandle.open <= 0) return null;
+    // 2. 30 分钟振幅 >= 24h 涨幅 / ampDivisor (默认 12)
+    const window30 = candles.slice(targetIndex - 30 + 1, targetIndex + 1);
+    const maxHigh = Math.max(...window30.map((c) => c.high));
+    const minLow = Math.min(...window30.map((c) => c.low));
+    if (minLow <= 0) return null;
+    const amp30Percent = ((maxHigh - minLow) / minLow) * 100;
+    if (amp30Percent < dayChangePercent / cfg.ampDivisor) {
+      return null;
+    }
 
-    const streakGainPercent = ((targetCandle.close - firstStreakCandle.open) / firstStreakCandle.open) * 100;
-    if (streakGainPercent < dayChangePercent * cfg.dayGainFraction) return null;
-
-    // Check no MA support among MA [3, 5, 10, 15, 20]
-    const maSupported = calculateSupportMaAt(candles, targetIndex, [3, 5, 10, 15, 20]);
+    // 3. 均线 MA [3, 7, 15] 均无支撑
+    const maSupported = calculateSupportMaAt(candles, targetIndex, cfg.supportMaPeriods);
     if (maSupported !== null) {
       return null; // Supported by MA -> do not short
     }
 
-    // Upper shadow check
-    const body = targetCandle.close - targetCandle.open;
-    const upperShadow = targetCandle.high - targetCandle.close;
+    // 4. 最后一根阳线上影线介于 0.5% 与 30% 之间 (0.5% <= 上影线比率 < 30%)
+    const body = candle.close - candle.open;
+    const upperShadow = Math.max(0, candle.high - candle.close);
     const upperShadowRatio = body > 0 ? upperShadow / body : 0;
-    if (upperShadowRatio >= cfg.maxUpperShadowRatio) return null;
+    const minShadow = cfg.minUpperShadowRatio ?? 0.005;
+    if (upperShadowRatio < minShadow || upperShadowRatio >= cfg.maxUpperShadowRatio) {
+      return null;
+    }
 
-    // MACD 30-bar green ratio and trailing consecutive green bars
-    const windowStart = Math.max(0, targetIndex - 29);
-    const windowCloses = candles.slice(windowStart, targetIndex + 1).map((c) => c.close);
-    if (windowCloses.length < 30) return null;
-
-    const { hist } = computeMacd(candles.slice(0, targetIndex + 1).map((c) => c.close));
+    // 5. 近 30 根已收盘 1m MACD 绿柱占比严格 > 70%
+    const { hist } = computeMacd(candles.map((c) => c.close));
     if (hist.length <= targetIndex) return null;
 
+    const greenWindow = cfg.greenWindow ?? 30;
+    const greenStart = targetIndex - greenWindow + 1;
+    if (greenStart < 0) return null;
     let greenCount = 0;
-    for (let i = targetIndex - 29; i <= targetIndex; i++) {
+    for (let i = greenStart; i <= targetIndex; i++) {
       if (hist[i] > 0) greenCount++;
     }
-    const greenRatio = greenCount / 30;
+    const greenRatio = greenCount / greenWindow;
     if (greenRatio <= cfg.minGreenRatio) return null;
 
+    // 6. 末尾连续 >= 7 根 MACD 全绿柱
     let consecutiveGreen = 0;
-    for (let i = targetIndex; i >= targetIndex - 29; i--) {
+    for (let i = targetIndex; i >= 0; i--) {
       if (hist[i] > 0) consecutiveGreen++;
       else break;
     }
@@ -273,7 +298,7 @@ export class UnifiedShortStrategyTracker {
 
     return {
       streakCount,
-      streakGainPercent,
+      amp30Percent,
       greenRatio,
       consecutiveGreenBars: consecutiveGreen,
       upperShadowRatio,
