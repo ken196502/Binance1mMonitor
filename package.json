@@ -18,6 +18,7 @@
     "mine:btc5m": "tsx --env-file-if-exists=.env research/miner.ts --study btc5m",
     "mine:monitor": "tsx --env-file-if-exists=.env research/monitor-miner.ts",
     "mine:setup": "uv venv --python 3.12 .venv-gpu && uv pip install --python .venv-gpu/bin/python -r research/gpu/requirements.txt",
+    "mine:peak-rebound": "tsx --env-file-if-exists=.env research/peak-rebound-miner.ts",
     "test:gpu": "GPU_REQUIRED=1 tsx --test research/tests/gpu.test.ts"
   },
   "dependencies": {

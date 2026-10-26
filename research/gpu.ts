@@ -5,7 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { MINUTE, type GainersParameters, type MinuteDataset, type MinuteSignal } from './gainers-types.ts';
 
 /** Binary float32 trajectories; no future validation/test signals are exported. */
-export async function writeGpuWindows(file: string, data: MinuteDataset, signals: MinuteSignal[], horizon: number, end: number) {
+export async function writeGpuWindows(
+  file: string,
+  data: MinuteDataset,
+  signals: Array<Pick<MinuteSignal, 'symbol' | 'index' | 'time'>>,
+  horizon: number,
+  end: number,
+) {
   const handle = await open(file, 'w');
   try {
     for (const signal of signals) {
@@ -68,6 +74,30 @@ export class GpuWorker {
   }
   evaluate(parameters: GainersParameters[], signalBatch: number) {
     return this.call<{ offsets: number[][]; seconds: number }>({ op: 'evaluate', parameters, signalBatch });
+  }
+  twoStageEvaluate(
+    parameters: Array<{ exitX: number; exitN: number; exitM: number; holdMinutes: number }>,
+    dayChanges: number[],
+    options: { takerFeeBps?: number; slippageBps?: number; signalBatch?: number } = {},
+  ) {
+    return this.call<{
+      metrics: Array<{
+        trades: number;
+        wins: number;
+        losses: number;
+        winRate: number;
+        netPnlPercent: number;
+        meanTradePercent: number;
+      }>;
+      seconds: number;
+    }>({
+      op: 'two_stage_evaluate',
+      parameters,
+      dayChanges,
+      takerFeeBps: options.takerFeeBps ?? 5,
+      slippageBps: options.slippageBps ?? 2,
+      signalBatch: options.signalBatch ?? 1024,
+    });
   }
   /** Indicators do not change first exits. Cache by effective hold/stop/target,
    * including account liquidation-adjusted stop, on this worker's training data.
