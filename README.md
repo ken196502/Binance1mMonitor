@@ -1,263 +1,214 @@
-# Binance 1m MACD 连阳涨幅监控（u本位合约）
+# Binance 1m 永续合约动量监控与三大最高胜率做空系统
 
-监控 Binance **u本位永续合约（USDM Futures）** 24h **涨幅榜** 的 **1 分钟 MACD**，当币种同时满足「连阳涨幅达标 + 无 MA 支撑 + 近 30 根 1m MACD 绿柱 > 80%」时触发告警。
+监控 Binance **u 本位永续合约（USDM Futures）** 24h 涨幅榜的 1 分钟量价与 MACD，基于全市场动量币种从情绪脉冲、初次回撤诱多到二次深跌破位的完整生命周期，构建了**三大互斥最高胜率做空信号体系**。
 
-## 信号直接做空与两段平仓研究
+系统在每次 1m 收盘时间点**单次获取行情快照**，对候选标的并行执行三大信号流水线判定，结合**限价挂单冲高接针 (N=100)** 与**自适应两段式动态止盈止损**，在实盘监控与模拟交易引擎中全自动运转。
 
-新增 `npm run research:wick -- --help`：历史24h涨幅榜、连阳涨幅达标、无MA支撑、近30根1m绿柱>80%，信号确认后直接市价开空；第一段平50%，第二段平剩余全部，按整笔统计扣费胜率和实际盈亏比，并核对信号与开仓数量。配置、数据准备和报告说明见[研究模块](research/README.md#连阳信号直接做空与两段平仓)。
+---
 
-## 监控规则变更
+## 一、三大互斥最高胜率做空策略
 
-### 已移除的逻辑
-
-- **1500 分钟逻辑全部移除**：去除了 max1500 最高价统计、lastPrice < max1500 * 0.96 过滤条件，以及初始拉取/滚动的 1500 根限制（冷启动降为拉取 200 根以满足 MA120 及 MACD 绿柱稳定计算）。
-- **5 分钟逻辑全部移除**：去除了 1m 合成 5m K 线（update5mFrom1m / aggregate1mTo5m）、diff5m 判定及 5m DIFF 中的告警门槛。
-- **小时 K 逻辑全部移除**：去除了整点极值与首分钟价格计算（maxHour / hourFirstLow / hourFirstClose）及价格回撤比例限制。
-- **60D 日 K 上涨过滤移除**：去除了非置顶币种必须 60D 上涨的要求，同时去除了日 K 与周 K 网络请求，大幅减轻 API 权重与延迟。
-- **跌幅榜全部移除**：
-  - 服务端与同步模块完全剔除跌幅榜的 K 线拉取、冷启动调度与 WS 订阅，仅保留置顶标的（BTC、SOL）及 24h 涨幅榜。
-  - 前端面板移除了跌幅前十 Tab 与展示区域。
-  - Telegram 告警仅监控并播报 24h 涨幅榜。
-
-### 新的告警过滤规则
-
-必须同时满足以下三项条件（非置顶币种触发，置顶标的固定随行展示）：
-
-1. **连阳且涨幅达到阈值**：
-   - 1m K 线连续收阳（`streakCount ≥ 2`，可由环境变量 `STREAK_MIN_COUNT` 配置，默认 2）；
-   - 该段连阳累计涨幅 ≥ `STREAK_GAIN_THRESHOLD`（默认 1.0%，可由环境变量配置）。
-
-2. **无任何 MA 支撑**：
-   - `supportMa === null`（MA 5/7/10/20/25/30/60/99/120 均未形成有效支撑）。
-
-3. **近 30 根 1m MACD 绿柱 > 80%**：
-   - 最近 30 根已收盘 1m K 线中，MACD 差离柱（`hist = 2 * (DIF - DEA) > 0`）绿柱占比 `strictly > 80%`（即至少 25 根为绿柱）。
-
-## Telegram 计数告警（24h 涨幅榜：连阳涨幅达标 + 无 MA 支撑 + 近 30 根 1m MACD 绿柱 > 80%）
-
-在面板展示之外，后端进行**榜单实时告警判定**（仅播报 24h 涨幅榜，跌幅榜已彻底移除）：
-
-当 **24h 涨幅榜** 出现 **≥ `TG_ALERT_MIN`（默认 1）个**同时满足上述三项条件的币种时：
-
-- **币种 (symbol)**
-- **24h涨幅 (24h: +xx.xx%)**
-- **连阳数 (连阳数: N)**
-- **连阳涨幅 (连阳涨幅: +x.xx%)**
-- **1m30upR (1m30upR: 26/30 (86.7%))**
-- **保留榜单排名变动标签**（如 `#1 ↑+2`）与**置顶标的提示**。
-
-### Telegram 播报样例
+三大信号彼此覆盖资产见顶回落的不同阶段，参数均基于全市场历史真实行情网格挖掘并验证为**胜率最高解**：
 
 ```
-🚨 <b>24h涨幅榜告警：连阳涨幅达标 + 无MA支撑 + 近30根1mMACD绿柱>80%</b>（触发阈值 ≥ 1）
-
-📌 <b>置顶标的</b>：
-• <a href="https://www.binance.com/zh-CN/futures/BTCUSDT"><b>BTCUSDT</b></a> 24h: +3.12% | 连阳数: 3 | 连阳涨幅: +1.45% | 1m30upR: 27/30 (90.0%)
-• <a href="https://www.binance.com/zh-CN/futures/SOLUSDT"><b>SOLUSDT</b></a> 24h: +4.20% | 连阳数: 2 | 连阳涨幅: +1.10% | 1m30upR: 25/30 (83.3%)
-
-📈 <b>↑↑涨幅榜(24h)↑↑</b>：<b>1</b> 个
-• <a href="https://www.binance.com/zh-CN/futures/ETHUSDT"><b>ETHUSDT</b></a> 24h: +12.34% | 连阳数: 4 | 连阳涨幅: +2.50% | 1m30upR: 27/30 (90.0%) [#1 ↑+2]
-
-🔗 <a href="https://macd.reluv.xyz">点击查看监控面板</a>
+                     ┌─────────────────────────────────────────────────────────────┐
+                     │                 Binance 24h 涨幅榜行情                       │
+                     └──────────────────────────────┬──────────────────────────────┘
+                                                    │
+         ┌──────────────────────────────────────────┼──────────────────────────────────────────┐
+         ▼                                          ▼                                          ▼
+   【信号一：连阳悬空】                       【信号二：首次跌到10%】                     【信号三：跌到20%+】
+   (冲高情绪衰竭做空)                         (见顶初次回撤弱反弹做空)                    (深跌二次反弹压制做空)
+   • 历史胜率：100.0% (7/7 全胜)              • 历史胜率：73.9% (34胜12负, 仅5次止损)     • 历史胜率：87.5% (7胜1负, PF 7.15)
+   • 标的池：历史 Top 10                      • 标的池：曾达 Rank 1 持续监控             • 标的池：涨幅榜及跌出榜单标的
+   • 核心触发条件：                           • 核心触发条件：                           • 核心触发条件：
+     1. 连续 1m 阳线 ≥ 2 根                     1. 从 24h 峰值首次回撤 X ≥ 10%             1. 距 24h 高点跌超过 X ≥ 20%
+     2. 30m 振幅 ≥ 24h 涨幅 / 12                2. 阶段低点反弹 y ≥ 4%                     2. 较近 10m 最低点反弹 Y ≥ 5%
+     3. MA [3, 7, 15] 均无支撑                  3. 空头排列 (MA30 > MA15 > MA5)            3. 双均线排列：MA15 < MA30
+     4. 上影线形态：0.5% ≤ 影线比率 < 30%       4. MA30 天花板高出反弹点 ≥ 0.5%             4. 均线压制：1mClose < MA15 < 1mHigh
+     5. 近 30 根绿柱占比 > 70%                  5. 短均线阻击 (High > MA5 且 Close < MA5)  5. MA30 保持下倾 (向下重力确认)
+     6. 末尾连续 ≥ 7 根全绿柱                   6. 近 20 根 MACD 绿柱占比 > 65%            6. 近 20 根 MACD 绿柱占比 > 65%
+     7. 退出：X=50, N=1.5, M=3.0 (15m)          7. 退出：X=35, N=2.0, M=1.5 (30m)          7. 退出：X=35, N=2.0, M=4.0 (30m)
+         │                                          │                                          │
+         └──────────────────────────────────────────┼──────────────────────────────────────────┘
+                                                    │
+                                                    ▼
+                     ┌─────────────────────────────────────────────────────────────┐
+                     │            单次获取行情切片，并行判定，任一满足即开仓         │
+                     │            统一持仓防重调度 (preventConflict: true 避免冲突)  │
+                     └─────────────────────────────────────────────────────────────┘
 ```
 
-- **防骚扰**：当且仅当命中榜单达标且币种列表发生变动时才播报，榜币未变绝不重复骚扰；若榜单归零重置状态。
-- **后台常驻监测**：服务端启动后自动常驻后台轮询（默认每 20s 刷新），即使没有打开浏览器也会持续监控并推送通知。
-- **代理支持**：Telegram 走与 Binance 相同的代理链路（`PROXY` / `HTTP(S)_PROXY`），墙内无需额外配置。
-- **接口异常告警（451 / 418）**：当 Binance API 返回 HTTP 451（地区法律限制）或 418（IP 被封）时，后端记录异常并立即发送一次 Telegram 告警。后续每分钟持续检测到相同错误不重复告警（防刷屏）；当接口解封恢复正常（HTTP 200）时自动清空告警标记，后续若再次受限可重新告警。
+### 策略参数与实测战绩对比
 
-启用步骤：
+| 维度 / 指标 | 信号一：连阳悬空 (Streak) | 信号二：首次跌到10% (Peak Rebound) | 信号三：跌到20%+ (Deep Rebound) |
+| :--- | :--- | :--- | :--- |
+| **策略定位** | 情绪高潮脉冲极度透支 (左侧阻击) | 龙头见顶初次回撤弱反弹 (右侧阻击) | 暴跌破位后次级反弹均线压制 (顺势空) |
+| **监控标的** | 24h 涨幅榜 Top 10 | 曾达 24h 榜首（Rank 1 持续监控 48h） | 涨幅榜及跌出榜单但活跃的深跌标的 |
+| **回撤阈值 X** | - | 从 24h 峰值首次跌 $X = 10\%$ | 距 24h 滚动最高点跌 $X \ge 20\%$ |
+| **反弹阈值 Y** | $30\text{m 振幅} \ge 24\text{h 涨幅} / 12$ | 阶段低点反弹 $y = 4\%$ | 距最近 10m 最低点反弹 $Y \ge 5\%$ |
+| **均线压制** | MA [3, 7, 15] 均无支撑托底 | MA30 > MA15 > MA5 空头排列，MA5 刺破收回 | MA15 < MA30 下倾，1m Close < MA15 < 1m High |
+| **MACD 动能** | 近 30 根绿柱 $> 70\%$，末尾 $\ge 7$ 根全绿 | 近 20 根绿柱 $> 65\%$ | 近 20 根绿柱 $> 65\%$ |
+| **形态过滤** | 上影线 $0.5\% \sim 30\%$ (排除光头阳线) | MA30 天花板高出反弹点 $\ge 0.5\%$ | MA30 保持下倾 (重力确认) |
+| **最长持仓** | **15 分钟** | **30 分钟** | **30 分钟** |
+| **动态退出参数** | $X = 50, N = 1.5, M = 3.0$ | $X = 35, N = 2.0, M = 1.5$ | $X = 35, N = 2.0, M = 4.0$ |
+| **历史实测胜率** | **100.0%** (7 胜 0 负) | **73.9%** (34 胜 12 负，仅 5 止损) | **87.5%** (7 胜 1 负) |
+| **盈利因子 (PF)** | **$\infty$** | **1.21** (超低止损率) | **7.15** |
+
+---
+
+## 二、系统核心运行机制
+
+### 1. 单次获取行情，统一判定三信号
+- **零冗余 API 开销**：每分钟对齐 1m 收盘时间点，后台仅执行单次 `fetch24hTickers()`。
+- **本地 WS K 线推进**：各标的 1m K 线直接由 WebSocket 实时成交流驱动维持在内存 `candleCache` 中，无需反复发起 REST 请求。
+- **同频时间切片**：对每个候选币种，传入同一份 K 线数组与行情数据，在 `checkCandles` 中依次流水线判定，确保各信号判定依据的价格与均线指标完全同步。
+
+### 2. 互斥防重保护 (`preventConflict: true`)
+- 由 `UnifiedShortStrategyTracker` 统一管理全币种持仓状态。
+- 只要某一币种已有在途限价挂单或活跃持仓，互斥拦截其他信号对该币的重复开仓，保证**一币一仓，零信号冲突**。
+
+### 3. 限价接针挂单撮合 (N=100)
+- 信号触发后，不直接按市价追空，而是以基准价向上溢价挂单：
+  $$\text{做空挂单价} = \text{basePrice} \times \left(1 + \frac{\text{dayChangePercent}}{100} / 100\right)$$
+- 利用动量标的高位惯性冲针触碰撮合成交，构建安全容错垫。
+- 设定 3 分钟有效期，超时未触碰或行情提前下破预估 TP1 则自动撤单。
+
+### 4. 自适应两段式动态止盈止损
+- **阶段一（平 50% 仓位）**：
+  - 止盈 1 = $\text{24h 涨幅} / X$
+  - 止损 1 = $\text{24h 涨幅} / X$
+- **阶段二（平剩余 50% 仓位）**：
+  - 止损 2 = $\text{24h 涨幅} \times N / X$
+  - 止盈 2 = $\text{24h 涨幅} \times M / X$
+- 到达最长持仓时限若仍未全部结清，以市价超时平仓。
+
+---
+
+## 三、Telegram 实时推送
+
+系统支持 Telegram 自动化播报，全流程通知均经由代理通道安全出站：
+
+1. **模拟实盘交易通知**：
+   - 挂单提交、冲高接针成交、阶段一达成（止盈/减仓/保本）、整单最终结清。
+   - 均明确标记信号类别标签（`【连阳悬空】`、`【首次跌10%】`、`【跌到20%+】`）。
+2. **涨幅榜动量异动告警**：
+   - 仅监控 24h 涨幅榜，当满足条件的币种数 $\ge \text{TG\_ALERT\_MIN}$ 时播报。
+   - 严格防骚扰：币种列表未变化时绝不重复推送；榜单归零自动重置。
+3. **接口异常告警（HTTP 418 / 451）**：
+   - 当遭遇 Binance IP 封禁或地区受限时，自动告警并记录解封状态。
+
+---
+
+## 四、快速开始与运行
+
+### 1. 开发调试（热更新）
 
 ```bash
-# 1. @BotFather 建 bot 拿 token；2. 给 bot 发条消息；3. 浏览器打开（走代理）:
-#    https://api.telegram.org/bot<TOKEN>/getUpdates  → 取 result[].message.chat.id
-# 4. 写入 .env:
-#    TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-#    TELEGRAM_CHAT_ID=123456789
+npm install                # 安装后端依赖
+npm --prefix web install   # 安装前端依赖
+cp .env.example .env       # 配置 .env（代理 PROXY、Telegram 等）
+npm run dev                # 同时启动后端服务(:4111)与 Vite 前端(:5173)
 ```
 
-MACD 参数：`12 / 26 / 9`，柱状值（DIFF）`= 2 × (DIF − DEA)`（Binance 口径）。
-
-## 运行
-
-前端已改为 React（Vite + TypeScript），位于 `web/` 子项目。开发与生产两种用法：
-
-### 开发（热更新）
+### 2. 生产构建与启动
 
 ```bash
-cd /Users/franklin/VM/DEV/binance-macd-monitor
-npm install            # 根依赖（含 concurrently）
-npm --prefix web install   # 前端依赖
-cp .env.example .env   # 已有则跳过；在 .env 里配代理（PROXY=...）
-npm run dev            # 同时起后端(:4111) + Vite 前端(:5173)
-# 浏览器打开 http://localhost:5173
+npm run build              # 构建前端生产包至 web/dist
+npm start                  # 启动后端生产服务（托管 web/dist + /api/*）
 ```
 
-`npm run dev` 用 concurrently 同时跑后端（tsx watch）与 Vite dev server，前端通过 proxy 把 `/api` 转发到后端 :4111。也可分别用 `npm run dev:server` / `npm run dev:web`。
+浏览器访问 `http://localhost:4111` 即可查看监控与模拟交易大盘。
 
-### 生产（构建后由后端托管）
+### 3. 测试与验证
 
 ```bash
-npm run build          # 构建前端到 web/dist
-npm start              # 起后端，托管 web/dist 静态资源 + /api/status
-# 浏览器打开 http://localhost:4111
+npm test                   # 运行全套单元测试与自动化验证 (68 项全部通过)
+npm run typecheck          # 全代码库 TypeScript 静态类型检查
 ```
 
-`npm start` 会自动加载项目根目录的 `.env`（`tsx --env-file-if-exists=.env`）。命令行显式传入的变量优先级更高，例如 `PROXY= npm start` 会覆盖 `.env` 里的代理强制直连。
+---
 
-> 合约行情只在 `fapi.binance.com`，**没有公开镜像**（spot 的 `data-api.binance.vision` 不提供 `/fapi/`）。若你的网络直连 fapi 不通，就必须配代理：在 `.env` 设 `PROXY` 或 `HTTP_PROXY`/`HTTPS_PROXY`；不需要代理就把 .env 里的代理行注释掉，即直连。
+## 五、1m K 线图表与指标体系
 
-面板每 5 秒轮询一次 `/api/status`，后端对 Binance 的请求有 ~20s 缓存 TTL，避免触发限频。
+右侧面板常驻 TradingView Lightweight Charts 图表：
+- 主图叠加 **MA 5 / 10 / 20 / 30 / 60**。
+- 副图叠加 **MACD (12, 26, 9)**（DIFF / DEA / 差离柱）。
+- 所有指标数值均由后端统一计算并下发，保证图表展示与监控判定口径绝对一致。
+- 历史 K 线接口：
+  ```bash
+  GET /api/klines?symbol=BTCUSDT&limit=200
+  ```
 
-## 1m K 线图表（TradingView Lightweight Charts）
+---
 
-页面右栏常驻一张 1m 图表：主图 K 线叠加 **MA5/10/20/30/60**，副图 **MACD(12,26,9)**（DIF / DEA / 柱）。可下拉切换交易对，均线可逐条点击显隐，十字线悬停时顶部图例显示该根 K 线的 OHLC 与各指标数值。
+## 六、Docker 容器化部署（内置 mihomo 代理）
 
-指标不在前端计算，而是由后端算好后随数据下发（`src/chart.ts` 复用 `macd.ts` 的 `ema`/`computeMacd`），因此**图上看到的 MACD / 均线与监控表格、告警逻辑是同一套数值、同一口径**。
+生产镜像内置 **mihomo（Clash.Meta）** 内核：
+- 容器启动时自动启动 mihomo 并将出站请求路由至健康代理节点，规避 Binance HTTP 451 机房屏蔽。
+- 支持直接配置订阅源：
+  ```bash
+  # 在 .env 中设置 Clash/Mihomo 订阅地址
+  MIHOMO_SUBSCRIPTION_URL=https://example.com/api/v1/client/subscribe?token=xxx
+  
+  # 启动容器
+  docker compose up -d --build
+  ```
 
-```bash
-GET /api/klines?symbol=BTCUSDT&limit=200
-# → { symbol, interval:"1m", source, maPeriods:[5,10,20,30,60], macd:{fast,slow,signal}, bars:[{time,open,high,low,close,volume,ma,dif,dea,hist}] }
-```
+---
 
-- `time` 为 epoch 毫秒且对齐整分钟；`ma` 的键是周期字符串，预热不足的位置为 `null`（前端断线不画假线）。
-- `limit` 默认 200、上限 500、下限 60；`symbol` 仅允许字母数字（防注入）。
-- 数据来源：榜单内标的直接复用监控已在维护的 `candleCache`（含 WS 实时推进，**零额外请求**）；榜单外标的走 45s TTL 的 REST 兜底，`source` 字段会标明是 `monitor` 还是 `rest`。
-- 前端对齐整分钟边界轮询（`web/src/hooks/useKlines.ts`），K 线只在收盘时才定局，没必要一分钟请求多次。
+## 七、配置说明（环境变量）
 
-### Docker 部署（容器内置 mihomo 代理）
-
-生产镜像内置 **mihomo（Clash.Meta）** 内核与 Geo 数据：容器启动时由 `docker/entrypoint.sh` 先在容器内拉起 mihomo，再把 `PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` 指向 `http://127.0.0.1:7890`，最后 `exec npm start`。因为 `src/binance.ts` 与 `src/telegram.ts` 都用 undici 的 `EnvHttpProxyAgent`，**Binance 行情监控、60D 趋势、Telegram 播报全部经由容器内 mihomo 出站**，宿主机不需要再开 Clash，也不必配 `host.docker.internal`。
-
-默认（provider 模式）会把订阅节点按 `fapi.binance.com` 健康检查（`expected-status=200`）自动筛选，规避机房被 Binance `HTTP 451` 屏蔽的问题。
-
-提供代理节点有两种方式（优先级：挂载配置 > 订阅地址 > 内置默认直连配置）：
-
-```bash
-# 方式 1（推荐）：在 .env 里给 Clash/Mihomo YAML 订阅地址
-MIHOMO_SUBSCRIPTION_URL=https://example.com/api/v1/client/subscribe?token=xxx
-
-# 也支持多个订阅源（逗号 / 空格 / 换行分隔），每个都作为 mihomo proxy-provider 加载。
-# docker-compose 默认已内置以下两个公共订阅源，不配置时直接生效：
-#   https://raw.githubusercontent.com/wzmwayne/proxy-node/main/output/aio/clash.yaml
-#   https://raw.githubusercontent.com/ovmvo/FreeSub/refs/heads/main/sub/permanent/mihomo.yaml
-
-# 方式 2：挂载自己的完整配置（含 proxies / proxy-groups / rules），优先级最高
-mkdir -p docker/mihomo
-# 把你的 config.yaml（含 proxy-providers 订阅亦可）放到 docker/mihomo/config.yaml
-# 然后在 docker-compose.yml 中放开：
-#   volumes:
-#     - ./docker/mihomo/config.yaml:/etc/mihomo/config.yaml:ro
-```
-
-**为什么默认用 provider 模式（自动规避 Binance 451）**：很多机房（尤其美国云主机）会被 Binance 以 `HTTP 451` 拒绝。若把订阅直接当配置用，节点由订阅自己的规则/默认选择决定，可能恰好选中被屏蔽的节点；本项目默认把订阅转成 `proxy-provider`，并生成一个对 Binance 做健康检查的 `fallback` 组：
-
-```yaml
-proxy-groups:
-  - name: PROXY
-    type: fallback
-    url: https://fapi.binance.com/fapi/v1/ping
-    expected-status: 200     # 只有能 200 命中 Binance 的节点才算可用
-```
-
-这样 `PROXY` 组只会选中能正常访问 `fapi.binance.com` 的节点，节点失效时自动切换，`DOMAIN-SUFFIX,binance.com / telegram.org` 等流量统一走它。若想完全沿用订阅自带的规则与节点，可设 `MIHOMO_CONFIG_MODE=raw`。
-
-> ⚠️ **重要：mihomo 的 health-check 并不校验 HTTP 状态码**（实测 v1.19.32：把探测地址换成对所有人都返回 500 的 URL，节点依旧被判为 alive；`expected-status` 在该版本中也不生效）。也就是说被 Binance 以 **451** 拒绝的节点仍会被标成 alive 并留在 `PROXY` 组上，仅靠 health-check 无法规避 451。
->
-> 因此实际出口由 `ACTIVE` 组承担（rules 指向 `ACTIVE`，默认走 `PROXY` 自动选点），并由 `src/proxyNode.ts` 兜底：一旦真实请求撞上 451 或网络错误，就用 Clash API 把 `ACTIVE` 切到其它候选节点，并**逐个探测确认真的能 200 命中 Binance** 再采用（`PROXY_PROBE_TRIES` 控制探测数）。探测不通的节点会被拉黑，不再重复选用。
-
-```bash
-# 在 .env 中配置 DOMAIN / TELEGRAM_* 后一键启动
-docker compose up -d --build
-docker compose logs -f binance-macd-monitor   # 可见 [entrypoint] 与 mihomo 日志
-```
-
-要点与排错：
-
-- **订阅格式**：只支持 Clash / Mihomo 的 YAML 订阅（`proxies:` / `proxy-groups:` …）。base64 分享链接列表无法直接使用，请先用 subconverter 之类转成 Clash 配置再挂载，或直接挂载成品 `config.yaml`。
-- **多个订阅**：`MIHOMO_SUBSCRIPTION_URL` 可用逗号 / 空格 / 换行分隔多个地址，全部作为 provider 加载；某个源失效不影响其它源。
-- **选点与 451 规避**：provider 模式下 `PROXY` 组按 `MIHOMO_HEALTHCHECK_URL`（默认 `https://fapi.binance.com/fapi/v1/ping`）做健康检查，`expected-status=200` 才算可用，因此被 Binance 屏蔽的节点会被自动跳过。启动后前 ~10-15 秒健康检查还在跑，可能短暂拿到 451，随后会自动切到可用节点。
-- **raw 模式**：`MIHOMO_CONFIG_MODE=raw`，按顺序下载第一个可用的订阅直接当配置用；其中的 `mixed-port` / `port` / `socks-port` 会被自动改写为 `MIHOMO_PROXY_PORT`（默认 7890），控制端口收敛到 `127.0.0.1:9090`。
-- **没配节点也能跑**：未提供订阅也没挂载配置时，使用 `docker/mihomo/config.default.yaml`（`MATCH,DIRECT` 全部直连），监控不会中断，只是等于没走代理；日志会提示。
-- **不想用容器内代理**：`MIHOMO_ENABLE=0` 关闭 mihomo；或显式设置 `PROXY`（如 `PROXY=http://host.docker.internal:7890` 走宿主机 Clash），此时 entrypoint 会沿用你的设置不再自动指向容器内 mihomo。
-- **拉订阅本身需要代理**（仅 raw 模式下载订阅时使用）：`MIHOMO_SUBSCRIPTION_PROXY=http://host.docker.internal:7890`（compose 已声明 `host.docker.internal` 网关映射）。
-- **改端口**：`MIHOMO_PROXY_PORT=7890`（raw 模式会自动对齐配置里的 `mixed-port`）。
-- **升级内核**：`MIHOMO_VERSION` 默认 `v1.19.32`，可在构建时覆盖：`docker compose build --build-arg MIHOMO_VERSION=v1.19.40`；国内网络拉不动 GitHub 时用镜像前缀 `--build-arg MIHOMO_DOWNLOAD_BASE=https://gh-proxy.com/https://github.com/MetaCubeX/mihomo/releases/download`。
-- **挂载整个配置目录**会覆盖镜像内置的 `geoip.metadb` / `geosite.dat`，含 `GEOIP`/`GEOSITE` 规则的配置首次启动会尝试联网下载；建议只挂载单个 `config.yaml` 文件。
-## 配置（环境变量）
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `PORT` | `4111` | 本地服务端口 |
-| `TOP_N` | `10` | 每个榜单取前 N |
-| `REFRESH_TTL_MS` | `20000` | 快照缓存时长 |
-| `KLINE_LIMIT` | `100` | 1m K 线取多少根（≥35 才能稳定算 MACD） |
-| `HIGH_RATIO` | `0.9` | "高位"阈值：DEA ≥ 该比例 × 窗口峰值即算接近（旧规则，当前不再使用） |
-| `HIGH_WINDOW` | `100` | "高位"观察窗口（1m 根数，旧规则，当前不再使用） |
+| 环境变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `PORT` | `4111` | 本地 Web / API 端口 |
+| `TOP_N` | `10` | 涨幅榜监控标的数量 |
+| `REFRESH_TTL_MS` | `20000` | 快照缓存时长（毫秒） |
 | `BINANCE_BASE` | `https://fapi.binance.com` | 合约行情基址 |
-| `FALLBACK_BASE` | _(空)_ | 主基址网络不可达时自动重试的回退地址（仅对连接级失败生效，HTTP 错误如 429/451 不重试）。合约无公开镜像，默认空；仅在自建反代时设置 |
-| `TELEGRAM_BOT_TOKEN` | _(空)_ | Telegram Bot Token（@BotFather 创建）。**不配则不推送**（启动与命中时都会显式警告，不静默） |
-| `TELEGRAM_CHAT_ID` | _(空)_ | 接收告警的 chat id（个人：向 @userinfobot 查询；群：把 bot 拉入后用 getUpdates 拿） |
-| `TELEGRAM_API_BASE` | `https://api.telegram.org` | Telegram Bot API 基址（自建反代时可改） |
-| `TG_ALERT_MIN` | `1` | Telegram 告警阈值：任意一个榜单出现 ≥ N 个「连阳涨幅达标 + 无MA支撑 + 近30根1mMACD绿柱>80%」时推送 |
-| `TG_REPEAT_MINUTES` | `0` | 持续命中时的重发间隔（分钟），0 = 仅在首次触发时通知 |
-| `DASHBOARD_URL` | `https://macd.reluv.xyz` | Telegram 提醒中附带的面板链接地址 |
-| `PROXY` | _(空)_ | 本应用专用的代理地址（如 `http://127.0.0.1:7890`），**设置后强制走该代理**；未设置则回退到标准 `HTTPS_PROXY`/`HTTP_PROXY`（`NO_PROXY` 同样生效），都未设置则直连。由 undici `ProxyAgent`/`EnvHttpProxyAgent` 应用到所有 fetch（**含 Telegram API**） |
-| `STREAK_MIN_COUNT` | `2` | 连阳最低根数（`streakCount ≥ N` 才触发告警） |
-| `STREAK_GAIN_THRESHOLD` | `1.0` | 连阳累计涨幅阈值（`≥ N%` 才触发告警） |
+| `PROXY` | _(空)_ | 代理地址（如 `http://127.0.0.1:7890`），支持走 Clash/v2ray |
+| `TELEGRAM_BOT_TOKEN` | _(空)_ | Telegram Bot Token（不配则不推送通知） |
+| `TELEGRAM_CHAT_ID` | _(空)_ | Telegram 接收消息的 chat ID |
+| `TG_ALERT_MIN` | `1` | 涨幅榜异动触发 Telegram 推送的最小标的数 |
+| `PAPER_INITIAL_BALANCE` | `100` | 模拟交易账户初始资金（USDT） |
+| `PAPER_LEVERAGE` | `10` | 模拟交易杠杆倍数（默认 10x） |
+| `PAPER_MARGIN_USDT` | `10` | 模拟交易单笔保证金（默认 10 USDT） |
+| `PAPER_LIMIT_N` | `100` | 限价冲高挂单溢价分母（默认 100，即溢价 $\text{24h涨幅} / 100$） |
+| `PAPER_LIMIT_EXPIRE_MINUTES` | `3` | 限价挂单有效期（分钟，超时未触碰自动撤销） |
 
-示例：
+---
 
-```bash
-# 走 Clash 代理：在 .env 里写 PROXY=http://127.0.0.1:7890（推荐，配一次即可）
-# 临时覆盖：命令行传入的变量优先于 .env
-PROXY=http://127.0.0.1:7890 npm start
-# 直连（fapi 未被墙，或 .env 未配代理时）：
-npm start
-```
-
-## 数据源
-
-均为 Binance 合约公开行情接口（无需鉴权）：
-
-- `GET /fapi/v1/ticker/24hr` — 全市场 USDM 合约 24h 行情，用于排序涨幅榜；
-- `GET /fapi/v1/klines?interval=1m&limit=100` — 1m K 线，用于计算 MACD。
-
-已过滤：仅保留 `*USDT` **永续合约**，剔除交割合约（带 `_YYMMDD` 后缀，如 `BTCUSDT_240329`）。币本位合约（`*USD_PERP`）因不以 `USDT` 结尾自动排除。
-
-## 结构
+## 八、代码目录结构
 
 ```
 src/
-  types.ts     # 共享类型（Row / Status / HighBearSummary），server 与 web 都用，纯类型无副作用
-  macd.ts      # EMA / MACD 计算 + 连阳统计 + 绿柱占比计算
-  binance.ts   # Binance REST 客户端（24h 行情 + 1m K 线）
-  telegram.ts  # Telegram Bot API 发送（走全局代理）
-  alert.ts     # 「连阳涨幅达标 + 无MA支撑 + 近30根1mMACD绿柱>80%」计数 + 边沿触发 Telegram 告警状态机
-  server.ts    # 本地 HTTP 服务 + 托管 web/dist 静态资源 + /api/status
-research/      # 独立 CLI：小时数据、历史三榜、多轮参数回测与报告
-web/           # React 前端（Vite + TypeScript）
+  types.ts                    # 共享类型定义（Row / Status / PaperTrading / Signals）
+  server.ts                   # Web 与 API 服务入口（行情刷新、WS 订阅同步、模拟交易入口）
+  unified-short-strategy.ts   # 三大最高胜率做空信号统一调度引擎（防冲突锁）
+  peak-rebound-strategy.ts    # 首次跌10%（榜一峰值反弹）实时追踪器
+  paper-trading.ts            # 模拟交易撮合执行引擎（挂单接针、两段式平仓、状态持久化）
+  alert.ts                    # Telegram 异动告警状态机
+  binance.ts                  # Binance 24h Tickers 与 K 线 REST 客户端
+  ws.ts                       # Binance 实时交易 Tick 与 K 线 WebSocket 客户端
+  chart.ts                    # 1m Lightweight Charts K 线与均线/MACD 计算
+  macd.ts                     # EMA / MACD 计算与连阳连阴形态识别
+  proxyNode.ts                # 代理节点健康检测与自动切换
+research/
+  README.md                   # 深度研究报告与参数挖掘完整档案
+  cli.ts                      # 研究模块 CLI 入口
+  data.ts                     # 全市场小时数据归档下载器
+  backtest.ts                 # 历史快照与框架回测工具
+  peak-rebound-*.ts           # 首次跌10%策略回测与动态退出挖掘
+  wick*.ts                    # 连阳悬空策略历史回测工具
+web/                          # React 前端（Vite + TypeScript + Lightweight Charts）
   src/
-    App.tsx          # 面板布局：header / 窄屏 tab / 涨幅榜
-    App.css          # 暗色主题 + 响应式 tab
-    components/      # GroupSection / Row
-    hooks/useStatus.ts  # 每 5s 轮询 /api/status
-    lib/format.ts    # fmt / pct / colClass
+    App.tsx                   # 监控大盘主框架
+    components/
+      PaperTradingPanel.tsx   # 模拟交易控制台（活跃持仓、挂单接针、历史成交、一键重置）
+      KlineChart.tsx          # 1m 实时交互 K 线图
+      GroupSection.tsx        # 涨幅榜列表
+      Countdown.tsx           # 刷新倒计时
 ```
 
-开发验证：`npm run typecheck`、`npm test`、`npm run build`。测试使用本地模拟数据与模拟 Telegram 服务，不请求真实通知服务。
+---
 
-> 仅用于研究/观察，不构成交易建议。MACD 1m 信号噪声大，连阳涨幅达标需结合其他条件判断。
-
-## 24h 涨幅榜双信号做空策略与模拟交易
-
-策略包含两个协同互补的做空维度，并在模拟交易中打标跟踪（`空连阳` / `空弱反弹`）：
-
-1. **信号一：空连阳 (Streak Short)**
-   - 针对 24h 涨幅榜 Top 10，当连续阳线、累计涨幅达标、无均线支撑、上影线不长且 MACD 绿柱持续占优时做空，捕获极端透支后的高位衰竭回落。
-2. **信号二：空弱反弹 (Peak Rebound Short)**
-   - 针对 24h 涨幅榜首（Rank 1），当币种见顶急跌回撤 $\ge 10\%$ 后出现弱反弹（$\ge 4\%$ 且反弹受限于斐波那契 50% 与均线空头压制），在短均线 MA5 阻击收阴或长上影时做空。
-
-两类信号均采用自适应行情两段式动态退出机制（阶段一平 50%，阶段二平剩余 50%）。实盘模拟交易已深度同步该策略，每次开仓、挂单、阶段平仓与结清均明确标记所属信号类别。
-
-详细回测与参数挖掘参见 [研究模块文档](research/README.md)。
+> **免责声明**：本项目仅供技术交流与策略研究使用，不构成任何投资建议。虚拟货币衍生品具有高杠杆与高波动风险，据此交易风险自担。

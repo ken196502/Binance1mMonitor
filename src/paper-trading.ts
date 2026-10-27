@@ -370,7 +370,7 @@ export class PaperTradingEngine {
 
   /**
    * Called on every scan/refresh at candle close.
-   * Scans Top 10 gainers for entry signals using Unified Dual-Signal strategy (空连阳 / 空弱反弹).
+   * Scans gainers for entry signals using Unified 3-Signal strategy (连阳悬空 / 首次跌10% / 跌到20%+).
    */
   public async onScan(
     gainers: Ticker24h[],
@@ -390,14 +390,16 @@ export class PaperTradingEngine {
       this.unifiedTracker.onRankUpdate(topGainer.symbol, topGainer.priceChangePercent, now);
     }
 
-    // 收集所有需要扫描的标的：Top N 榜单标的 + 处于弱反弹监控中的标的 (两者同时并行判断，任一满足即开仓)
+    // 收集所有需要扫描的标的：全量传入标的 (含 Top N 与跌出前十标的) + 处于弱反弹监控中的标的 (三者同时并行判断，任一满足即开仓)
     const candidates: Array<{ ticker: Ticker24h; rank: number }> = [];
     const seenSymbols = new Set<string>();
 
-    for (let i = 0; i < nonPinnedGainers.length && i < this.config.topN; i++) {
+    for (let i = 0; i < nonPinnedGainers.length; i++) {
       const ticker = nonPinnedGainers[i];
-      seenSymbols.add(ticker.symbol);
-      candidates.push({ ticker, rank: i + 1 });
+      if (!seenSymbols.has(ticker.symbol)) {
+        seenSymbols.add(ticker.symbol);
+        candidates.push({ ticker, rank: i + 1 });
+      }
     }
 
     for (const watched of this.unifiedTracker.getReboundWatchlist()) {

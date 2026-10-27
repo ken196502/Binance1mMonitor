@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import path from "node:path";
 import { fetchDataset } from "./data.ts";
 
-const HELP = `24h涨幅榜双信号做空策略研究 CLI
+const HELP = `24h涨幅榜多信号做空策略研究 CLI
 
 用法：npm run research -- <wick|peak-rebound|fetch> [选项]
 
