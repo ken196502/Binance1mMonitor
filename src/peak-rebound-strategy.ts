@@ -30,10 +30,10 @@ export const PEAK_REBOUND_LIVE_DEFAULT_CONFIG: PeakReboundLiveConfig = {
   longMaOffsetPercent: 0.5,
   minGreenRatio20: 0.65,
   requireMaSlopeDown: true,
-  holdMinutes: 45,
+  holdMinutes: 30,
   exitX: 35,
   exitN: 2.0,
-  exitM: 3.0,
+  exitM: 1.5,
   watchWindowHours: 48,
 };
 
@@ -227,8 +227,10 @@ export class PeakReboundStrategyTracker {
       const isMaAlignment = this.config.mediumMa !== undefined && maMed != null
         ? (maLong > maMed && maMed > maShort)
         : (maLong > maShort);
-      // 2. 长周期均线高于上影线最高点 X%: maLong >= candle.high * (1 + this.config.longMaOffsetPercent / 100)
-      const isMaLongAboveHigh = maLong >= candle.high * (1 + this.config.longMaOffsetPercent / 100);
+      // 2. 长周期均线高于上影线最高点 X% (若 offset > 0 则校验)
+      const isMaLongAboveHigh = this.config.longMaOffsetPercent > 0
+        ? maLong >= candle.high * (1 + this.config.longMaOffsetPercent / 100)
+        : true;
       // 3. 短周期均线压制: candle.high > maShort && candle.close < maShort
       const isShortMaSuppressed = candle.high > maShort && candle.close < maShort;
       // 4. 可选: 中长均线向下倾斜

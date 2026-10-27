@@ -453,9 +453,9 @@ async function refresh(): Promise<Status> {
     losers: [],
   };
 
-  // 触发模拟交易扫描（基于最新已收盘 1m K 线检测最高胜率做空信号）
+  // 触发模拟交易扫描（基于最新已收盘 1m K 线检测最高胜率做空信号：连阳悬空、首次跌10%、跌到20%+）
   try {
-    await paperTrading.onScan(tops.gainers, candleCache);
+    await paperTrading.onScan([...tops.gainers, ...droppedGainerTickers], candleCache);
   } catch (err) {
     console.warn(`[paper-trading] 扫描信号异常:`, (err as any)?.message ?? err);
   }

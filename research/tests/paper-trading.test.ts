@@ -461,7 +461,7 @@ test("PaperTradingEngine: reset restores account balance and clears all orders/p
   assert.equal(engine.getSummary().totalTrades, 0);
 });
 
-test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 and 空弱反弹", () => {
+test("PaperTradingEngine: records signalType and signalLabel for 连阳悬空, 首次跌10%, and 跌到20%+", () => {
   const engine = new PaperTradingEngine({
     initialBalanceUsdt: 100,
     leverage: 10,
@@ -479,7 +479,7 @@ test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 
     entryPrice: 50.0,
     entryTime: now,
     signalType: "streak",
-    signalLabel: "空连阳",
+    signalLabel: "连阳悬空",
     exitParams: { holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
     signal: {
       candle: { time: now - 60000, open: 49, high: 50.02, low: 48.9, close: 50, volume: 100 },
@@ -492,19 +492,19 @@ test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 
   });
 
   assert.equal(streakPos.signalType, "streak");
-  assert.equal(streakPos.signalLabel, "空连阳");
+  assert.equal(streakPos.signalLabel, "连阳悬空");
   assert.equal(streakPos.exitParams?.holdMinutes, 15);
   assert.equal(streakPos.exitParams?.exitX, 50);
 
-  // 2. Create rebound pending order
+  // 2. Create rebound pending order (Signal 2: 首次跌10%)
   const reboundOrder = engine.createPendingOrder({
     symbol: "REBUSDT",
     dayChangePercent: 35.0,
     rank: 1,
     basePrice: 100.0,
     signalType: "rebound",
-    signalLabel: "空弱反弹",
-    exitParams: { holdMinutes: 45, exitX: 35, exitN: 2.0, exitM: 3.0 },
+    signalLabel: "首次跌10%",
+    exitParams: { holdMinutes: 30, exitX: 35, exitN: 2.0, exitM: 1.5 },
     now,
     signal: {
       candle: { time: now - 60000, open: 101, high: 101.5, low: 99.5, close: 100, volume: 100 },
@@ -517,7 +517,7 @@ test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 
   });
 
   assert.equal(reboundOrder.signalType, "rebound");
-  assert.equal(reboundOrder.signalLabel, "空弱反弹");
+  assert.equal(reboundOrder.signalLabel, "首次跌10%");
   assert.equal(reboundOrder.exitParams?.exitX, 35);
 
   // 3. Fill the rebound pending order
@@ -531,9 +531,33 @@ test("PaperTradingEngine: records signalType and signalLabel for both 空连阳 
   const reboundPos = engine.getPosition("REBUSDT")!;
   assert.ok(reboundPos != null);
   assert.equal(reboundPos.signalType, "rebound");
-  assert.equal(reboundPos.signalLabel, "空弱反弹");
+  assert.equal(reboundPos.signalLabel, "首次跌10%");
   assert.equal(reboundPos.exitParams?.exitX, 35);
   assert.equal(reboundPos.exitParams?.exitN, 2.0);
-  assert.equal(reboundPos.exitParams?.exitM, 3.0);
-  assert.equal(reboundPos.exitParams?.holdMinutes, 45);
+  assert.equal(reboundPos.exitParams?.exitM, 1.5);
+  assert.equal(reboundPos.exitParams?.holdMinutes, 30);
+
+  // 4. Create and fill deep_rebound position (Signal 3: 跌到20%+)
+  const deepPos = engine.openPosition({
+    symbol: "DEEPUSDT",
+    dayChangePercent: 18.0,
+    rank: 5,
+    entryPrice: 80.0,
+    entryTime: now + 60000,
+    signalType: "deep_rebound",
+    exitParams: { holdMinutes: 30, exitX: 35, exitN: 2.0, exitM: 4.0 },
+    signal: {
+      candle: { time: now, open: 79, high: 80.5, low: 78.5, close: 80, volume: 100 },
+      streakCount: 1,
+      amp30Percent: 6.0,
+      upperShadowRatio: 0.2,
+      greenRatio: 0.75,
+      consecutiveGreenBars: 4,
+    },
+  });
+
+  assert.equal(deepPos.signalType, "deep_rebound");
+  assert.equal(deepPos.signalLabel, "跌到20%+"); // Auto-mapped by formatSignalLabel
+  assert.equal(deepPos.exitParams?.holdMinutes, 30);
+  assert.equal(deepPos.exitParams?.exitM, 4.0);
 });

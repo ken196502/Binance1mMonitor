@@ -567,6 +567,12 @@ tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
   border: 1px solid rgba(165, 105, 189, 0.4);
 }
 
+.badge-signal.badge-deep_rebound {
+  background: rgba(230, 126, 34, 0.2);
+  color: #f39c12;
+  border: 1px solid rgba(230, 126, 34, 0.4);
+}
+
 .badge-short {
   font-size: 10px;
   font-weight: 700;

@@ -15,6 +15,7 @@ import { sendTelegramMessage } from "./telegram.ts";
 import {
   UnifiedShortStrategyTracker,
   type StreakStrategyLiveConfig,
+  type DeepReboundLiveConfig,
   type UnifiedLiveConfig,
 } from "./unified-short-strategy.ts";
 import {
@@ -61,6 +62,7 @@ export interface PaperStrategyConfig {
   storageFile?: string | null;
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   reboundConfig?: Partial<PeakReboundLiveConfig>;
+  deepReboundConfig?: Partial<DeepReboundLiveConfig>;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -90,6 +92,13 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   limitExpireMinutes: Number(process.env.PAPER_LIMIT_EXPIRE_MINUTES ?? 3), // 默认 3 分钟
   storageFile: STATE_FILE,
 };
+
+export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLabel): PaperSignalLabel {
+  if (label) return label;
+  if (type === "deep_rebound") return "跌到20%+";
+  if (type === "rebound") return "首次跌10%";
+  return "连阳悬空";
+}
 
 export interface SignalMatchDetails {
   candle: Candle;
@@ -201,6 +210,7 @@ export class PaperTradingEngine {
         ...this.config.streakConfig,
       },
       reboundConfig: this.config.reboundConfig,
+      deepReboundConfig: this.config.deepReboundConfig,
       preventConflict: true,
     });
     this.account = {
@@ -298,7 +308,7 @@ export class PaperTradingEngine {
     const notionalUsdt = this.config.marginUsdt * this.config.leverage;
 
     const signalType = params.signalType ?? "streak";
-    const signalLabel = params.signalLabel ?? (signalType === "rebound" ? "空弱反弹" : "空连阳");
+    const signalLabel = formatSignalLabel(signalType, params.signalLabel);
 
     const order: PaperPendingOrder = {
       id: `pending-${symbol}-${now}`,
@@ -434,7 +444,7 @@ export class PaperTradingEngine {
           forming && forming.close > 0 ? forming.close : liveSignal.entryPrice;
 
         const signalType = liveSignal.type;
-        const signalLabel = signalType === "streak" ? "空连阳" : "空弱反弹";
+        const signalLabel = formatSignalLabel(signalType, liveSignal.label);
         const exitParams = liveSignal.exitParams;
 
         const streakCount =
@@ -448,12 +458,14 @@ export class PaperTradingEngine {
         const greenRatio =
           liveSignal.details.streakSignal?.greenRatio ??
           liveSignal.details.reboundSignal?.greenRatio20 ??
+          liveSignal.details.deepReboundSignal?.greenRatio20 ??
           0;
         const consecutiveGreenBars =
           liveSignal.details.streakSignal?.consecutiveGreenBars ?? 0;
         const amp30Percent =
           liveSignal.details.streakSignal?.amp30Percent ??
           liveSignal.details.reboundSignal?.reboundPercent ??
+          liveSignal.details.deepReboundSignal?.reboundFrom10m ??
           0;
 
         const signalDetails: SignalMatchDetails = {
@@ -547,7 +559,7 @@ export class PaperTradingEngine {
     const notionalUsdt = this.config.marginUsdt * this.config.leverage; // 10 * 10 = 100 USDT
 
     const signalType = params.signalType ?? "streak";
-    const signalLabel = params.signalLabel ?? (signalType === "rebound" ? "空弱反弹" : "空连阳");
+    const signalLabel = formatSignalLabel(signalType, params.signalLabel);
 
     const position: PaperPosition = {
       id: `${symbol}-${entryTime}`,
@@ -868,7 +880,7 @@ export class PaperTradingEngine {
       console.warn(`[paper-trading] 发送结清通知异常:`, (e as any)?.message ?? e),
     );
 
-    const label = pos.signalLabel ?? (pos.signalType === "rebound" ? "空弱反弹" : "空连阳");
+    const label = formatSignalLabel(pos.signalType, pos.signalLabel);
     console.log(
       `[paper-trading] 🏆 ${pos.symbol} [${label}] 订单结清 (${pos.finalReason}) | ` +
       `整单净盈亏: ${pos.totalNetPnlUsdt >= 0 ? "+" : ""}${pos.totalNetPnlUsdt.toFixed(2)} USDT (ROE: ${pos.roePercent >= 0 ? "+" : ""}${pos.roePercent.toFixed(1)}%) | ` +
@@ -958,7 +970,7 @@ export class PaperTradingEngine {
   // --- Telegram Alerts ---
   private async notifyPendingOrder(order: PaperPendingOrder): Promise<void> {
     const rankStr = order.rank ? `(#${order.rank})` : "";
-    const label = order.signalLabel ?? (order.signalType === "rebound" ? "空弱反弹" : "空连阳");
+    const label = formatSignalLabel(order.signalType, order.signalLabel);
     const msg =
       `⏳ <b>[模拟交易] 发现做空信号【${label}】，已提交限价做空挂单</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${order.symbol}"><b>${order.symbol}</b></a>\n` +
@@ -973,7 +985,7 @@ export class PaperTradingEngine {
   private async notifyEntry(pos: PaperPosition): Promise<void> {
     const rankStr = pos.rank ? `(#${pos.rank})` : "";
     const isLimit = pos.limitPrice != null;
-    const label = pos.signalLabel ?? (pos.signalType === "rebound" ? "空弱反弹" : "空连阳");
+    const label = formatSignalLabel(pos.signalType, pos.signalLabel);
     const holdMin = pos.exitParams?.holdMinutes ?? this.config.holdMinutes;
     const msg =
       `⚡ <b>[模拟交易] ${isLimit ? "限价挂单冲高撮合成交" : "发现做空信号，市价开空"}【${label}】</b>\n` +
@@ -1001,7 +1013,7 @@ export class PaperTradingEngine {
           ? "止损减仓 🛑"
           : "超时平仓 ⏱️";
     const pnlSign = exit.netPnlUsdt >= 0 ? "+" : "";
-    const label = pos.signalLabel ?? (pos.signalType === "rebound" ? "空弱反弹" : "空连阳");
+    const label = formatSignalLabel(pos.signalType, pos.signalLabel);
     const msg =
       `🎯 <b>[模拟交易] 阶段一达成 (平仓 50%) 【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
@@ -1029,7 +1041,7 @@ export class PaperTradingEngine {
         : pos.currentPrice;
     const pnlSign = pos.totalNetPnlUsdt >= 0 ? "+" : "";
     const totSign = this.account.totalPnlUsdt >= 0 ? "+" : "";
-    const label = pos.signalLabel ?? (pos.signalType === "rebound" ? "空弱反弹" : "空连阳");
+    const label = formatSignalLabel(pos.signalType, pos.signalLabel);
 
     const msg =
       `🏆 <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${label}】</b>\n` +
@@ -1087,7 +1099,7 @@ export class PaperTradingEngine {
           this.pendingOrders.clear();
           for (const o of data.pendingOrders) {
             o.signalType = o.signalType ?? "streak";
-            o.signalLabel = o.signalLabel ?? (o.signalType === "rebound" ? "空弱反弹" : "空连阳");
+            o.signalLabel = formatSignalLabel(o.signalType, o.signalLabel);
             this.pendingOrders.set(o.symbol, o);
             this.unifiedTracker.registerPosition(o.symbol, {
               tradeId: o.id,
@@ -1101,7 +1113,7 @@ export class PaperTradingEngine {
           this.activePositions.clear();
           for (const p of data.activePositions) {
             p.signalType = p.signalType ?? "streak";
-            p.signalLabel = p.signalLabel ?? (p.signalType === "rebound" ? "空弱反弹" : "空连阳");
+            p.signalLabel = formatSignalLabel(p.signalType, p.signalLabel);
             this.activePositions.set(p.symbol, p);
             this.unifiedTracker.registerPosition(p.symbol, {
               tradeId: p.id,
@@ -1114,7 +1126,7 @@ export class PaperTradingEngine {
         if (Array.isArray(data.closedPositions)) {
           this.closedPositions = data.closedPositions.map((p) => {
             p.signalType = p.signalType ?? "streak";
-            p.signalLabel = p.signalLabel ?? (p.signalType === "rebound" ? "空弱反弹" : "空连阳");
+            p.signalLabel = formatSignalLabel(p.signalType, p.signalLabel);
             return p;
           });
         }
@@ -1152,6 +1164,7 @@ export class PaperTradingEngine {
         ...this.config.streakConfig,
       },
       reboundConfig: this.config.reboundConfig,
+      deepReboundConfig: this.config.deepReboundConfig,
       preventConflict: true,
     });
     this.account = {

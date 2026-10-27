@@ -34,6 +34,13 @@ function formatHoldDuration(closedAt?: number, entryTime?: number): string {
   return `${(durationMs / 60000).toFixed(1)} 分钟`;
 }
 
+function formatSignalLabel(type?: string, label?: string): string {
+  if (label) return label;
+  if (type === "deep_rebound") return "跌到20%+";
+  if (type === "rebound") return "首次跌10%";
+  return "连阳悬空";
+}
+
 export function PaperTradingPanel({
   summary,
   onSelectSymbol,
@@ -120,7 +127,7 @@ export function PaperTradingPanel({
           <h2 style={{ margin: 0 }}>
             <span>⚡ 模拟实盘交易</span>
             <span className="badge-leverage">10x 杠杆 · 保证金 10U</span>
-            <span className="badge-strategy">30m振幅&gt;24h/12 · 上影0.5%~30% · 挂单冲高接针 (N=100) · 两段止盈止损</span>
+            <span className="badge-strategy">3大互斥最高胜率策略 (连阳悬空 100% · 首次跌10% 74% · 跌到20%+ 88%) · 挂单接针 (N=100) · 两段动态止盈止损</span>
           </h2>
           <div className="paper-stats-chips">
             <span className={`chip ${account.totalPnlUsdt >= 0 ? "chip-pos" : "chip-neg"}`}>
@@ -203,7 +210,7 @@ export function PaperTradingPanel({
                           <b>{order.symbol}</b>
                         </a>
                         <span className={`badge-signal badge-${order.signalType || "streak"}`}>
-                          {order.signalLabel || (order.signalType === "rebound" ? "空弱反弹" : "空连阳")}
+                          {formatSignalLabel(order.signalType, order.signalLabel)}
                         </span>
                         <span className="badge-short" style={{ background: "rgba(245, 166, 35, 0.2)", color: "#f5a623" }}>
                           10x 限价挂单
@@ -289,7 +296,7 @@ export function PaperTradingPanel({
                         <b>{pos.symbol}</b>
                       </a>
                       <span className={`badge-signal badge-${pos.signalType || "streak"}`}>
-                        {pos.signalLabel || (pos.signalType === "rebound" ? "空弱反弹" : "空连阳")}
+                        {formatSignalLabel(pos.signalType, pos.signalLabel)}
                       </span>
                       <span className="badge-short">{pos.leverage}x 做空</span>
                       <span className="badge-margin">保 {pos.marginUsdt}U</span>
@@ -420,7 +427,7 @@ export function PaperTradingPanel({
                         </td>
                         <td>
                           <span className={`badge-signal badge-${item.signalType || "streak"}`}>
-                            {item.signalLabel || (item.signalType === "rebound" ? "空弱反弹" : "空连阳")}
+                            {formatSignalLabel(item.signalType, item.signalLabel)}
                           </span>
                         </td>
                         <td className="pos">+{item.dayChangePercent.toFixed(2)}%</td>

@@ -119,9 +119,9 @@ export function buildPeakReboundSignals(
   const {
     pullbackX,
     reboundY,
-    shortMa = options.maPeriods?.[0] ?? 5,
-    mediumMa = options.mediumMa ?? 15,
-    longMa = options.longMa ?? 30,
+    shortMa = options.shortMa ?? options.maPeriods?.[0] ?? 5,
+    mediumMa = 'mediumMa' in options ? options.mediumMa : 15,
+    longMa = options.longMa ?? (options.maPeriods && options.maPeriods.length > 1 ? options.maPeriods[options.maPeriods.length - 1] : 30),
     longMaOffsetPercent = options.longMaOffsetPercent ?? 0.5,
     minGreenRatio20 = options.minGreenRatio20 ?? 0.65,
     requireMaSlopeDown = options.requireMaSlopeDown ?? true,
@@ -129,7 +129,7 @@ export function buildPeakReboundSignals(
     maxFibRetracement = options.maxFibRetracement,
     minUpperShadowRatio = options.minUpperShadowRatio,
     requireBearishOrUpperShadow = options.requireBearishOrUpperShadow ?? false,
-    maPeriods = mediumMa !== undefined ? [shortMa, mediumMa, longMa] : [shortMa],
+    maPeriods = mediumMa !== undefined ? [shortMa, mediumMa, longMa] : [shortMa, longMa],
     watchWindowHours = options.watchWindowHours ?? 48,
   } = options;
   const watchlist = getRank1Watchlist(frames);
@@ -272,17 +272,19 @@ export function buildPeakReboundSignals(
             let satisfiesCondition = false;
             let piercedMa = shortMa;
 
-            if (options.shortMa !== undefined && options.longMa !== undefined) {
+            if (shortMa !== undefined && longMa !== undefined) {
               if (maShort != null && maLong != null) {
                 // 1. 均线排列确认: 双均线 maLong > maShort; 三均线 maLong > maMed > maShort
                 const isMaAlignment = mediumMa !== undefined && maMed != null
                   ? (maLong > maMed && maMed > maShort)
                   : (maLong > maShort);
 
-                // 2. 长均线作为空头天花板
-                const isMaLongAboveHigh = maLong >= candle.high * (1 + longMaOffsetPercent / 100);
+                // 2. 长均线作为空头天花板 (若 offset > 0 则要求长均线高于高点 offset%)
+                const isMaLongAboveHigh = longMaOffsetPercent > 0
+                  ? maLong >= candle.high * (1 + longMaOffsetPercent / 100)
+                  : true;
 
-                // 3. 短周期均线阻击
+                // 3. 短周期均线阻击 (上影线冲过短均线，收盘跌回收在短均线之下)
                 const isShortMaSuppressed = candle.high > maShort && candle.close < maShort;
 
                 // 4. 可选: 均线向下倾斜

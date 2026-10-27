@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   UnifiedShortStrategyTracker,
   STREAK_LIVE_DEFAULT_CONFIG,
+  DEEP_REBOUND_LIVE_DEFAULT_CONFIG,
 } from '../../src/unified-short-strategy.ts';
 import {
   PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
@@ -26,7 +27,7 @@ function createMockCandles(count: number, basePrice = 100): Candle[] {
 }
 
 test('Default strategy configurations match verified specifications', () => {
-  // 1. 空弱反弹
+  // 1. 空弱反弹 (首次跌10%) - 最高胜率参数 (73.9%胜率, 34胜12负, 仅5次止损)
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.shortMa, 5);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.mediumMa, 15);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.longMa, 30);
@@ -35,12 +36,12 @@ test('Default strategy configurations match verified specifications', () => {
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.reboundY, 4.0);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.65);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.requireMaSlopeDown, true);
-  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.holdMinutes, 45);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.holdMinutes, 30);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitX, 35);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitN, 2.0);
-  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitM, 3.0);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitM, 1.5);
 
-  // 2. 空连阳
+  // 2. 空连阳 (连阳悬空) - 100% 胜率 (7胜0负)
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.topN, 10);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.minStreakCount, 2);
   assert.deepEqual(STREAK_LIVE_DEFAULT_CONFIG.supportMaPeriods, [3, 7, 15]);
@@ -53,6 +54,19 @@ test('Default strategy configurations match verified specifications', () => {
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitX, 50);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitN, 1.5);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitM, 3.0);
+
+  // 3. 跌到20%+ (超跌反弹做空) - 最高胜率参数 (87.5%胜率, 7胜1负, PF 7.15)
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.pullbackX, 20.0);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.reboundY, 5.0);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.lowWindowMinutes, 10);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.shortMa, 15);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.longMa, 30);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.65);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.requireMaSlopeDown, true);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.holdMinutes, 30);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitX, 35);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitN, 2.0);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitM, 4.0);
 });
 
 test('UnifiedShortStrategyTracker manages active positions and prevents double-entry conflicts', () => {
