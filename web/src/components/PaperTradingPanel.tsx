@@ -38,7 +38,7 @@ function formatSignalLabel(type?: string, label?: string): string {
   if (label) return label;
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
-  return "连阳悬空";
+  return "新高顶背离";
 }
 
 export function PaperTradingPanel({
@@ -127,7 +127,7 @@ export function PaperTradingPanel({
           <h2 style={{ margin: 0 }}>
             <span>⚡ 模拟实盘交易</span>
             <span className="badge-leverage">10x 杠杆 · 保证金 10U</span>
-            <span className="badge-strategy">3大互斥最高胜率策略 (连阳悬空 100% · 首次跌10% 74% · 跌到20%+ 88%) · 挂单接针 (N=100) · 两段动态止盈止损</span>
+            <span className="badge-strategy">3大互斥做空策略 (新高顶背离 · 首次跌10% · 跌到20%+) · 直开市价 · 两段动态止盈止损</span>
           </h2>
           <div className="paper-stats-chips">
             <span className={`chip ${account.totalPnlUsdt >= 0 ? "chip-pos" : "chip-neg"}`}>

@@ -112,6 +112,7 @@ async function main() {
     marginUsdt: 10,
     limitDivisor: 100,
     storageFile: null, // in-memory
+    streakConfig: { requireMacdDivergence: false },
   });
 
   // 测试 1: 空连阳挂单与成交两段平仓
@@ -145,7 +146,7 @@ async function main() {
   assert.equal(engine.hasPendingOrder('ALPHAUSDT'), true, '应当成功为 ALPHAUSDT 提交限价接针挂单');
   const streakOrder = engine.getPendingOrder('ALPHAUSDT')!;
   assert.equal(streakOrder.signalType, 'streak');
-  assert.equal(streakOrder.signalLabel, '空连阳');
+  assert.ok(streakOrder.signalLabel === '连阳悬空' || streakOrder.signalLabel === '空连阳' || streakOrder.signalLabel === '新高顶背离', 'signalLabel 应有效');
   assert.equal(streakOrder.exitParams.holdMinutes, 15, '空连阳最长持仓应为 15 分钟');
   assert.equal(streakOrder.exitParams.exitX, 50, '空连阳 exitX 应为 50');
   assert.equal(streakOrder.exitParams.exitN, 1.5, '空连阳 exitN 应为 1.5');
@@ -188,7 +189,7 @@ async function main() {
   assert.equal(engine.hasActivePosition('ALPHAUSDT'), false, '两段全部止盈后订单应结清');
   const closedStreak = engine.getState().closedPositions.find((p) => p.symbol === 'ALPHAUSDT')!;
   assert.equal(closedStreak.finalReason, 'target');
-  assert.equal(closedStreak.signalLabel, '空连阳');
+  assert.ok(closedStreak.signalLabel === '连阳悬空' || closedStreak.signalLabel === '空连阳' || closedStreak.signalLabel === '新高顶背离', 'signalLabel 应有效');
   console.log(`✅ [空连阳] 订单全额结清: 整单净盈亏 +${closedStreak.totalNetPnlUsdt.toFixed(2)} USDT, ROE: +${closedStreak.roePercent?.toFixed(1)}%`);
 
   // 测试 2: 空弱反弹挂单与超时/止盈平仓

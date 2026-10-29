@@ -453,7 +453,7 @@ async function refresh(): Promise<Status> {
     losers: [],
   };
 
-  // 触发模拟交易扫描（基于最新已收盘 1m K 线检测最高胜率做空信号：连阳悬空、首次跌10%、跌到20%+）
+  // 触发模拟交易扫描（基于最新已收盘 1m K 线检测3大互斥做空信号：新高顶背离、首次跌10%、跌到20%+）
   try {
     await paperTrading.onScan([...tops.gainers, ...droppedGainerTickers], candleCache);
   } catch (err) {

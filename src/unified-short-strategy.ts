@@ -1,6 +1,6 @@
 // Unified Triple-Signal Short Strategy Engine
 // Coordinates:
-// 1. 'Streak Short' (连阳悬空 / 空连阳 - Left-side high-level exhaustion)
+// 1. 'New High Bearish Divergence Short' (新高顶背离 - 24h new high + no MA support + Xm surge + MACD divergence, replaced legacy Streak Short)
 // 2. 'Weak Rebound Short' (首次跌到10% / 空弱反弹 - Right-side post-drop rebound MA ceiling)
 // 3. 'Deep Rebound Short' (跌到20%+ / 超跌死猫跳 - Post-dump secondary bounce MA15/30 suppression)
 
@@ -17,34 +17,42 @@ export type UnifiedSignalType = 'streak' | 'rebound' | 'deep_rebound';
 
 export interface StreakStrategyLiveConfig {
   topN: number;
-  minStreakCount: number;
+  xMinutes?: number; // 冲高回溯窗口，默认 5 分钟
+  ampDivisor: number; // x 分钟内涨幅 >= 24h 涨幅 / ampDivisor (默认 10)
+  require24hNewHigh?: boolean; // 是否要求创 24h 新高 (默认 true)
   supportMaPeriods: readonly number[]; // e.g. [3, 7, 15]
-  ampDivisor: number; // 30m 振幅 >= 24h 涨幅 / ampDivisor (默认 12)
-  minUpperShadowRatio: number; // e.g. 0.005 (0.5%)
-  maxUpperShadowRatio: number; // e.g. 0.30 (30%)
-  greenWindow?: number; // e.g. 30
-  minGreenRatio: number;   // hist > 0 in 30 bars > minGreenRatio (e.g. 0.70)
-  minConsecutiveGreenBars: number; // e.g. 7
   holdMinutes: number;            // e.g. 15
   exitX: number;                  // e.g. 50
   exitN: number;                  // e.g. 1.5
   exitM: number;                  // e.g. 3.0
+  // MACD 顶背离配置
+  requireMacdDivergence?: boolean; // 是否开启 MACD 顶背离检测 (默认 true)
+  divergenceLookbackMin?: number; // 背离前高最小跨度 (默认 10 根)
+  divergenceLookbackMax?: number; // 背离前高最大跨度 (默认 120 根)
+  requireDoubleDivergence?: boolean; // 是否要求 DIF 与 Hist 双重顶背离 (默认 true)
+  // 向下兼容可选字段 (保留自定义测试支持)
+  minStreakCount?: number;
+  minUpperShadowRatio?: number;
+  maxUpperShadowRatio?: number;
+  greenWindow?: number;
+  minGreenRatio?: number;
+  minConsecutiveGreenBars?: number;
 }
 
 export const STREAK_LIVE_DEFAULT_CONFIG: StreakStrategyLiveConfig = {
   topN: 10,
-  minStreakCount: 2,
+  xMinutes: 5,
+  ampDivisor: 10, // 5m 涨幅 >= 24h 涨幅 / 10
+  require24hNewHigh: true,
   supportMaPeriods: [3, 7, 15],
-  ampDivisor: 12,
-  minUpperShadowRatio: 0.005,
-  maxUpperShadowRatio: 0.30,
-  greenWindow: 30,
-  minGreenRatio: 0.70,
-  minConsecutiveGreenBars: 7,
   holdMinutes: 15,
   exitX: 50,
   exitN: 1.5,
   exitM: 3.0,
+  requireMacdDivergence: true,
+  divergenceLookbackMin: 10,
+  divergenceLookbackMax: 120,
+  requireDoubleDivergence: true,
 };
 
 export interface DeepReboundLiveConfig {
@@ -120,6 +128,14 @@ export interface UnifiedLiveSignal {
       greenRatio: number;
       consecutiveGreenBars: number;
       upperShadowRatio: number;
+      divergence?: {
+        prevPeakPrice: number;
+        prevPeakTime: number;
+        curHist: number;
+        prevHist: number;
+        curDif: number;
+        prevDif: number;
+      };
     };
   };
 }
@@ -270,7 +286,7 @@ export class UnifiedShortStrategyTracker {
       return signal;
     }
 
-    // 4. 信号一: 连阳悬空 (Top N focus)
+    // 4. 信号一: 新高顶背离 (Top N focus, 彻底替换连阳空)
     if (rank <= this.config.streakConfig.topN) {
       const streakSig = this.checkStreakSignal(symbol, dayChangePercent, candles);
       if (streakSig) {
@@ -281,10 +297,11 @@ export class UnifiedShortStrategyTracker {
           exitM: this.config.streakConfig.exitM,
         };
         const closedCandle = candles[candles.length - 2];
+        const signalLabel: PaperSignalLabel = '新高顶背离';
         const signal: UnifiedLiveSignal = {
           id: `str-${symbol}-${closedCandle.time}`,
           type: 'streak',
-          label: '连阳悬空',
+          label: signalLabel,
           symbol,
           time: closedCandle.time + 60 * 1000,
           dayChangePercent,
@@ -399,7 +416,7 @@ export class UnifiedShortStrategyTracker {
     };
   }
 
-  /** Micro-structure evaluation of streak short conditions */
+  /** Micro-structure evaluation of New High Bearish Divergence (新高顶背离，彻底替换连阳空) */
   private checkStreakSignal(
     symbol: string,
     dayChangePercent: number,
@@ -410,74 +427,131 @@ export class UnifiedShortStrategyTracker {
     greenRatio: number;
     consecutiveGreenBars: number;
     upperShadowRatio: number;
+    divergence?: {
+      prevPeakPrice: number;
+      prevPeakTime: number;
+      curHist: number;
+      prevHist: number;
+      curDif: number;
+      prevDif: number;
+    };
   } | null {
     const cfg = this.config.streakConfig;
     // targetIndex is the latest completed candle
     const targetIndex = candles.length - 2;
-    const minRequiredBars = Math.max(35, (cfg.greenWindow ?? 30) + 5, ...cfg.supportMaPeriods);
+    const minRequiredBars = Math.max(35, ...cfg.supportMaPeriods);
     if (targetIndex < minRequiredBars - 1) return null;
 
     const candle = candles[targetIndex];
     if (!candle || candle.close <= 0 || candle.open <= 0) return null;
 
-    // 1. 至少连续 minStreakCount 根阳线 (默认 >= 2 连阳)
-    const streak = consecutiveStreakAt(candles, targetIndex);
-    if (streak.direction !== 'up' || streak.count < cfg.minStreakCount) return null;
-    const streakCount = streak.count;
-
-    // 2. 30 分钟振幅 >= 24h 涨幅 / ampDivisor (默认 12)
-    const window30 = candles.slice(targetIndex - 30 + 1, targetIndex + 1);
-    const maxHigh = Math.max(...window30.map((c) => c.high));
-    const minLow = Math.min(...window30.map((c) => c.low));
-    if (minLow <= 0) return null;
-    const amp30Percent = ((maxHigh - minLow) / minLow) * 100;
-    if (amp30Percent < dayChangePercent / cfg.ampDivisor) {
-      return null;
+    // 1. 创 24h 新高 (默认开启，要求当前 high 为过去 1440 根 K 线的最高点)
+    if (cfg.require24hNewHigh ?? true) {
+      const lookback24hStart = Math.max(0, targetIndex - 1440);
+      let prev24hMax = 0;
+      for (let k = lookback24hStart; k < targetIndex; k++) {
+        if (candles[k].high > prev24hMax) prev24hMax = candles[k].high;
+      }
+      if (candle.high < prev24hMax) return null;
     }
 
-    // 3. 均线 MA [3, 7, 15] 均无支撑
+    // 2. X 分钟内冲高涨幅达到 24h 涨幅 / N (默认 X=5m, N=10)
+    const xMinutes = cfg.xMinutes ?? 5;
+    const xStart = Math.max(0, targetIndex - xMinutes + 1);
+    let xMinLow = Infinity;
+    for (let k = xStart; k <= targetIndex; k++) {
+      if (candles[k].low < xMinLow) xMinLow = candles[k].low;
+    }
+    if (xMinLow <= 0) return null;
+    const xRisePercent = ((candle.high - xMinLow) / xMinLow) * 100;
+    const requiredRise = dayChangePercent / (cfg.ampDivisor ?? 10);
+    if (xRisePercent < requiredRise) return null;
+
+    // 3. 均线 MA [3, 7, 15] 均无支撑 (悬空)
     const maSupported = calculateSupportMaAt(candles, targetIndex, cfg.supportMaPeriods);
     if (maSupported !== null) {
       return null; // Supported by MA -> do not short
     }
 
-    // 4. 最后一根阳线上影线介于 0.5% 与 30% 之间 (0.5% <= 上影线比率 < 30%)
+    // 4. 可选：显式指定了最小连阳数时才校验连阳 (向下兼容自定义测试，默认不管连阳)
+    if (cfg.minStreakCount !== undefined && cfg.minStreakCount > 0) {
+      const streak = consecutiveStreakAt(candles, targetIndex);
+      if (streak.direction !== 'up' || streak.count < cfg.minStreakCount) return null;
+    }
+
+    // 5. 可选：显式指定了上影线比例时才校验上影线
     const body = candle.close - candle.open;
     const upperShadow = Math.max(0, candle.high - candle.close);
     const upperShadowRatio = body > 0 ? upperShadow / body : 0;
-    const minShadow = cfg.minUpperShadowRatio ?? 0.005;
-    if (upperShadowRatio < minShadow || upperShadowRatio >= cfg.maxUpperShadowRatio) {
-      return null;
+    if (cfg.minUpperShadowRatio !== undefined && cfg.maxUpperShadowRatio !== undefined) {
+      if (upperShadowRatio < cfg.minUpperShadowRatio || upperShadowRatio >= cfg.maxUpperShadowRatio) {
+        return null;
+      }
     }
 
-    // 5. 近 30 根已收盘 1m MACD 绿柱占比严格 > 70%
-    const { hist } = computeMacd(candles.map((c) => c.close));
-    if (hist.length <= targetIndex) return null;
+    // 6. MACD 计算与双重顶背离检测 (Bearish Divergence)
+    const { hist, dif } = computeMacd(candles.map((c) => c.close));
+    if (hist.length <= targetIndex || dif.length <= targetIndex) return null;
 
-    const greenWindow = cfg.greenWindow ?? 30;
-    const greenStart = targetIndex - greenWindow + 1;
-    if (greenStart < 0) return null;
-    let greenCount = 0;
-    for (let i = greenStart; i <= targetIndex; i++) {
-      if (hist[i] > 0) greenCount++;
+    let divergenceInfo: {
+      prevPeakPrice: number;
+      prevPeakTime: number;
+      curHist: number;
+      prevHist: number;
+      curDif: number;
+      prevDif: number;
+    } | undefined;
+
+    if (cfg.requireMacdDivergence ?? true) {
+      const lookbackMin = cfg.divergenceLookbackMin ?? 10;
+      const lookbackMax = cfg.divergenceLookbackMax ?? 120;
+      const searchStart = Math.max(0, targetIndex - lookbackMax);
+      const searchEnd = Math.max(0, targetIndex - lookbackMin);
+
+      if (searchEnd <= searchStart) return null;
+
+      let prevPeakIdx = -1;
+      let prevPeakHigh = 0;
+      for (let k = searchStart; k <= searchEnd; k++) {
+        if (candles[k].high > prevPeakHigh) {
+          prevPeakHigh = candles[k].high;
+          prevPeakIdx = k;
+        }
+      }
+
+      if (prevPeakIdx < 0) return null;
+      // 价格创出更高高点 (新高)
+      if (candle.high < prevPeakHigh) return null;
+
+      const curHist = hist[targetIndex];
+      const prevHist = hist[prevPeakIdx];
+      const curDif = dif[targetIndex];
+      const prevDif = dif[prevPeakIdx];
+
+      // 柱体顶背离：当前绿柱小于前高时的绿柱
+      if (curHist >= prevHist) return null;
+
+      // 如果要求双重顶背离，DIF 快线也必须背离
+      if ((cfg.requireDoubleDivergence ?? true) && curDif >= prevDif) return null;
+
+      divergenceInfo = {
+        prevPeakPrice: prevPeakHigh,
+        prevPeakTime: candles[prevPeakIdx].time,
+        curHist,
+        prevHist,
+        curDif,
+        prevDif,
+      };
     }
-    const greenRatio = greenCount / greenWindow;
-    if (greenRatio <= cfg.minGreenRatio) return null;
 
-    // 6. 末尾连续 >= 7 根 MACD 全绿柱
-    let consecutiveGreen = 0;
-    for (let i = targetIndex; i >= 0; i--) {
-      if (hist[i] > 0) consecutiveGreen++;
-      else break;
-    }
-    if (consecutiveGreen < cfg.minConsecutiveGreenBars) return null;
-
+    const streak = consecutiveStreakAt(candles, targetIndex);
     return {
-      streakCount,
-      amp30Percent,
-      greenRatio,
-      consecutiveGreenBars: consecutiveGreen,
+      streakCount: streak.count,
+      amp30Percent: xRisePercent,
+      greenRatio: 0,
+      consecutiveGreenBars: 0,
       upperShadowRatio,
+      divergence: divergenceInfo,
     };
   }
 }

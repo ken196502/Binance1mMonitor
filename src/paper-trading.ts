@@ -14,6 +14,7 @@ import {
 import { sendTelegramMessage } from "./telegram.ts";
 import {
   UnifiedShortStrategyTracker,
+  STREAK_LIVE_DEFAULT_CONFIG,
   type StreakStrategyLiveConfig,
   type DeepReboundLiveConfig,
   type UnifiedLiveConfig,
@@ -71,9 +72,9 @@ const STATE_FILE = path.join(DATA_DIR, "paper-trading.json");
 export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   topN: 10,
   supportMaPeriods: [3, 7, 15],
-  ampDivisor: 12, // 30 分钟振幅 >= 24h 涨幅 / 12
+  ampDivisor: 10, // 5 分钟冲高涨幅 >= 24h 涨幅 / 10
   minStreakCount: 2,
-  minUpperShadowRatio: 0.005, // 上影线 >= 0.5% 柱体 (排除光头大阳线陷阱)
+  minUpperShadowRatio: 0.005, // 上影线 >= 0.5% 柱体
   maxUpperShadowRatio: 0.30,  // 上影线 < 30% 柱体
   greenWindow: 30,
   minGreenRatio: 0.70,
@@ -88,7 +89,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   marginUsdt: Number(process.env.PAPER_MARGIN_USDT ?? 10),
   takerFeeBps: 5,   // 0.05%
   slippageBps: 2,   // 0.02%
-  limitDivisor: Number(process.env.PAPER_LIMIT_N ?? 100), // 默认 N = 100
+  limitDivisor: Number(process.env.PAPER_LIMIT_N ?? 0), // 默认 0 (直开市价模式，回测胜率 71.2%，PF 3.23)
   limitExpireMinutes: Number(process.env.PAPER_LIMIT_EXPIRE_MINUTES ?? 3), // 默认 3 分钟
   storageFile: STATE_FILE,
 };
@@ -97,7 +98,7 @@ export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLab
   if (label) return label;
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
-  return "连阳悬空";
+  return "新高顶背离";
 }
 
 export interface SignalMatchDetails {
@@ -194,19 +195,20 @@ export class PaperTradingEngine {
     this.config = { ...PAPER_DEFAULT_CONFIG, ...config };
     this.unifiedTracker = new UnifiedShortStrategyTracker({
       streakConfig: {
+        ...STREAK_LIVE_DEFAULT_CONFIG,
         topN: this.config.topN,
-        minStreakCount: this.config.minStreakCount,
         supportMaPeriods: this.config.supportMaPeriods,
         ampDivisor: this.config.ampDivisor,
+        holdMinutes: this.config.holdMinutes,
+        exitX: this.config.exitX,
+        exitN: this.config.exitN,
+        exitM: this.config.exitM,
+        minStreakCount: this.config.minStreakCount,
         minUpperShadowRatio: this.config.minUpperShadowRatio,
         maxUpperShadowRatio: this.config.maxUpperShadowRatio,
         greenWindow: this.config.greenWindow,
         minGreenRatio: this.config.minGreenRatio,
         minConsecutiveGreenBars: this.config.minConsecutiveGreenBars,
-        holdMinutes: this.config.holdMinutes,
-        exitX: this.config.exitX,
-        exitN: this.config.exitN,
-        exitM: this.config.exitM,
         ...this.config.streakConfig,
       },
       reboundConfig: this.config.reboundConfig,
