@@ -664,6 +664,30 @@ async function serveStatic(reqUrl: string, res: http.ServerResponse): Promise<bo
   }
 }
 
+function readJsonBody(req: http.IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 100_000) {
+        reject(new Error("请求体过大"));
+      }
+    });
+    req.on("end", () => {
+      if (!body.trim()) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        reject(new Error("无效的 JSON 格式"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.url === "/api/status") {
     try {
@@ -679,7 +703,7 @@ const server = http.createServer(async (req, res) => {
   const reqUrl = req.url ?? "/";
   const u = new URL(reqUrl, `http://${req.headers.host ?? "localhost"}`);
 
-  if (u.pathname === "/api/paper-trading/reset" || (u.pathname === "/api/paper-trading" && req.method === "POST")) {
+  if (u.pathname === "/api/paper-trading/reset") {
     paperTrading.reset();
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
@@ -689,7 +713,56 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (u.pathname === "/api/paper-trading/config") {
+    if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+      try {
+        const body = await readJsonBody(req);
+        const updatedConfig = paperTrading.updateConfig(body);
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            message: "模拟交易策略参数配置更新成功",
+            config: updatedConfig,
+            summary: paperTrading.getSummary(),
+          }),
+        );
+      } catch (e: any) {
+        res.writeHead(400, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ ok: false, error: e?.message ?? String(e) }));
+      }
+      return;
+    } else {
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          config: paperTrading.getConfig(),
+        }),
+      );
+      return;
+    }
+  }
+
   if (u.pathname === "/api/paper-trading") {
+    if (req.method === "POST") {
+      paperTrading.reset();
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify({ ok: true, state: paperTrading.getState() }));
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",

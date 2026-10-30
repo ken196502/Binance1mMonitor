@@ -91,6 +91,7 @@ export interface PaperExitParams {
   tp1Percent?: number;            // e.g. 4.0 (%) 阶段一显式止盈比例
   tp2Percent?: number;            // e.g. 8.0 (%) 阶段二显式止盈比例
   moveSlToEntryAfterTp1?: boolean;// 阶段一止盈后剩余仓位止损移动至保本价 (Breakeven)
+  leverage?: number;              // 策略指定专属杠杆倍数
 }
 
 export interface PaperExit {
@@ -219,6 +220,8 @@ export interface PaperTradingState {
 
 export interface PaperTradingSummaryConfig {
   leverage: number;
+  streakLeverage?: number;
+  trendLeverage?: number;
   marginUsdt: number;
   limitDivisor: number;
   holdMinutes: number;

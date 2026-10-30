@@ -465,6 +465,128 @@ tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
   align-items: center;
   gap: 8px;
 }
+.btn-config-toggle {
+  background: rgba(77, 157, 255, 0.1);
+  color: #4d9dff;
+  border: 1px solid rgba(77, 157, 255, 0.3);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-config-toggle:hover {
+  background: rgba(77, 157, 255, 0.2);
+  border-color: #4d9dff;
+}
+
+/* 策略配置模态框 */
+.config-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.config-modal-content {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 520px;
+  padding: 24px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  color: var(--text);
+}
+.config-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+.config-modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #fff;
+}
+.config-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  cursor: pointer;
+}
+.config-modal-close:hover {
+  color: #fff;
+}
+.config-form-group {
+  margin-bottom: 16px;
+}
+.config-form-group label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+.config-form-group label small {
+  color: var(--muted);
+}
+.config-form-group input, .config-form-group select {
+  width: 100%;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #fff;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.config-form-group input:focus, .config-form-group select:focus {
+  outline: none;
+  border-color: #4d9dff;
+}
+.config-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+}
+.btn-preset-reset {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn-preset-reset:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+.btn-config-save {
+  background: #3498db;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 18px;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.btn-config-save:hover {
+  background: #2980b9;
+}
 .btn-reset-paper {
   background: rgba(231, 76, 60, 0.1);
   color: #e74c3c;

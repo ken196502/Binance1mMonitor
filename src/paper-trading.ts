@@ -58,8 +58,10 @@ export interface PaperStrategyConfig {
   exitM: number;
   firstCloseFraction: number;
   initialBalanceUsdt: number; // 启动资金 100 USDT
-  leverage: number;           // 10x 杠杆
-  marginUsdt: number;         // 10 USDT 单笔保证金 (名义本金 100 USDT)
+  leverage: number;           // 通用/顺势波段杠杆 (默认 3x)
+  streakLeverage?: number;    // 新高顶背离闪击专属杠杆 (回测最优 10x)
+  trendLeverage?: number;     // 顺势衰竭专属杠杆 (默认 3x)
+  marginUsdt: number;         // 20 USDT 单笔保证金 (名义本金 60/200 USDT)
   takerFeeBps: number;
   slippageBps: number;
   limitDivisor: number; // 挂单上浮幅度分母 N: 挂单上浮 = dayChangePercent / limitDivisor (默认 100)
@@ -90,14 +92,16 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   exitN: 1.5,
   exitM: 3.0,
   firstCloseFraction: 0.5,
-  initialBalanceUsdt: Number(process.env.PAPER_INITIAL_BALANCE ?? 100),
-  leverage: Number(process.env.PAPER_LEVERAGE ?? 3),
-  marginUsdt: Number(process.env.PAPER_MARGIN_USDT ?? 20),
-  takerFeeBps: 5,   // 0.05%
-  slippageBps: 2,   // 0.02%
-  limitDivisor: Number(process.env.PAPER_LIMIT_N ?? 0), // 默认 0 (直开市价模式，回测胜率 71.2%，PF 3.23)
-  limitExpireMinutes: Number(process.env.PAPER_LIMIT_EXPIRE_MINUTES ?? 3), // 默认 3 分钟
-  stopAtHigh: process.env.PAPER_STOP_AT_HIGH !== "false", // 默认 true (开启极端最高点止损模式)
+  initialBalanceUsdt: 100, // 初始模拟资金 100 USDT
+  leverage: 3,             // 默认通用/顺势衰竭杠杆 3x (黄金收益/回撤比，零爆仓)
+  trendLeverage: 3,        // 顺势衰竭长波段杠杆 3x (10% 大止损)
+  streakLeverage: 10,      // 新高顶背离闪击战杠杆 10x (15m 紧止损，回测最优解，零爆仓)
+  marginUsdt: 20,          // 单笔保证金 20 USDT
+  takerFeeBps: 5,          // 0.05%
+  slippageBps: 2,          // 0.02%
+  limitDivisor: 0,         // 默认 0 (直开市价模式，回测胜率 71.2%，PF 3.23)
+  limitExpireMinutes: 3,   // 默认 3 分钟
+  stopAtHigh: true,        // 默认 true (开启极端最高点止损模式)
   storageFile: STATE_FILE,
   // 默认启用黄金双速最优组合 (Dual-Speed Ensemble: 首次跌10%、跌到20%、极度乖离走 3x / 10% 止损 / 90m 长波段，新高顶背离保留 15m 闪击战)
   reboundConfig: DUAL_SPEED_PEAK_REBOUND_CONFIG,
@@ -205,6 +209,14 @@ export class PaperTradingEngine {
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
     this.config = { ...PAPER_DEFAULT_CONFIG, ...config };
+    if (config.leverage !== undefined) {
+      if (config.streakLeverage === undefined) {
+        this.config.streakLeverage = config.leverage;
+      }
+      if (config.trendLeverage === undefined) {
+        this.config.trendLeverage = config.leverage;
+      }
+    }
     this.unifiedTracker = new UnifiedShortStrategyTracker({
       streakConfig: {
         ...STREAK_LIVE_DEFAULT_CONFIG,
@@ -265,6 +277,47 @@ export class PaperTradingEngine {
     return { ...this.config };
   }
 
+  public getLeverageForSignal(signalType?: PaperSignalType): number {
+    if (signalType === "streak") {
+      return this.config.streakLeverage ?? 10;
+    }
+    return this.config.trendLeverage ?? this.config.leverage;
+  }
+
+  public updateConfig(updates: Partial<PaperStrategyConfig>): PaperStrategyConfig {
+    if (typeof updates.leverage === "number" && Number.isFinite(updates.leverage) && updates.leverage >= 1 && updates.leverage <= 100) {
+      this.config.leverage = updates.leverage;
+    }
+    if (typeof updates.streakLeverage === "number" && Number.isFinite(updates.streakLeverage) && updates.streakLeverage >= 1 && updates.streakLeverage <= 100) {
+      this.config.streakLeverage = updates.streakLeverage;
+    }
+    if (typeof updates.trendLeverage === "number" && Number.isFinite(updates.trendLeverage) && updates.trendLeverage >= 1 && updates.trendLeverage <= 100) {
+      this.config.trendLeverage = updates.trendLeverage;
+    }
+    if (typeof updates.marginUsdt === "number" && Number.isFinite(updates.marginUsdt) && updates.marginUsdt > 0) {
+      this.config.marginUsdt = updates.marginUsdt;
+    }
+    if (typeof updates.limitDivisor === "number" && Number.isFinite(updates.limitDivisor) && updates.limitDivisor >= 0) {
+      this.config.limitDivisor = updates.limitDivisor;
+    }
+    if (typeof updates.limitExpireMinutes === "number" && Number.isFinite(updates.limitExpireMinutes) && updates.limitExpireMinutes > 0) {
+      this.config.limitExpireMinutes = updates.limitExpireMinutes;
+    }
+    if (typeof updates.stopAtHigh === "boolean") {
+      this.config.stopAtHigh = updates.stopAtHigh;
+    }
+    if (typeof updates.holdMinutes === "number" && Number.isFinite(updates.holdMinutes) && updates.holdMinutes > 0) {
+      this.config.holdMinutes = updates.holdMinutes;
+    }
+
+    console.log(
+      `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高背离闪击杠杆 ${this.config.streakLeverage ?? 10}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 单笔保证金 ${this.config.marginUsdt} USDT`,
+    );
+
+    this.scheduleSave();
+    return this.getConfig();
+  }
+
   public getAccount(): PaperAccount {
     return { ...this.account };
   }
@@ -320,16 +373,16 @@ export class PaperTradingEngine {
     const tp1OffsetPercent = exitParams?.tp1Percent ?? (dayChangePercent / exitX);
     const cancelBelowPrice = basePrice * (1 - tp1OffsetPercent / 100);
 
-    const notionalUsdt = this.config.marginUsdt * this.config.leverage;
-
     const signalType = params.signalType ?? "streak";
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
+    const leverage = exitParams?.leverage ?? this.getLeverageForSignal(signalType);
+    const notionalUsdt = this.config.marginUsdt * leverage;
 
     const order: PaperPendingOrder = {
       id: `pending-${symbol}-${now}`,
       symbol,
       side: "SHORT",
-      leverage: this.config.leverage,
+      leverage,
       marginUsdt: this.config.marginUsdt,
       notionalUsdt,
       signalType,
@@ -539,6 +592,7 @@ export class PaperTradingEngine {
     signalType?: PaperSignalType;
     signalLabel?: PaperSignalLabel;
     exitParams?: PaperExitParams;
+    leverage?: number;
   }): PaperPosition {
     const {
       symbol,
@@ -572,16 +626,17 @@ export class PaperTradingEngine {
     const tp2Price = entryPrice * (1 - tp2Percent / 100);
 
     const timeoutAt = entryTime + holdMinutes * 60 * 1000;
-    const notionalUsdt = this.config.marginUsdt * this.config.leverage;
 
     const signalType = params.signalType ?? "streak";
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
+    const leverage = params.leverage ?? exitParams?.leverage ?? this.getLeverageForSignal(signalType);
+    const notionalUsdt = this.config.marginUsdt * leverage;
 
     const position: PaperPosition = {
       id: `${symbol}-${entryTime}`,
       symbol,
       side: "SHORT",
-      leverage: this.config.leverage,
+      leverage,
       marginUsdt: this.config.marginUsdt,
       notionalUsdt,
       status: "OPEN",
@@ -648,7 +703,7 @@ export class PaperTradingEngine {
     const isLimit = limitPrice != null;
     console.log(
       `[paper-trading] ⚡ ${isLimit ? "限价挂单成交做空" : "市价开空"} [${signalLabel}] ${symbol} @ ${entryPrice.toFixed(4)} ` +
-      `(${this.config.leverage}x, 保证金 ${this.config.marginUsdt} USDT, 24h: +${dayChangePercent.toFixed(2)}%, 30m振幅: ${signal.amp30Percent.toFixed(2)}%) ` +
+      `(${leverage}x, 保证金 ${this.config.marginUsdt} USDT, 24h: +${dayChangePercent.toFixed(2)}%, 30m振幅: ${signal.amp30Percent.toFixed(2)}%) ` +
       `TP1: ${tp1Price.toFixed(4)} SL1: ${sl1Price.toFixed(4)} SL2: ${sl2Price.toFixed(4)} TP2: ${tp2Price.toFixed(4)} 持仓: ${holdMinutes}m`,
     );
 
@@ -688,6 +743,7 @@ export class PaperTradingEngine {
           signalType: pending.signalType,
           signalLabel: pending.signalLabel,
           exitParams: pending.exitParams,
+          leverage: pending.leverage,
           signal: {
             candle: {
               time: tick.time,
@@ -1116,13 +1172,23 @@ export class PaperTradingEngine {
       if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
       }
-      const data: PaperTradingState = {
+      const data: PaperTradingState & { configOverrides?: Partial<PaperStrategyConfig> } = {
         account: this.account,
         pendingOrders: Array.from(this.pendingOrders.values()),
         activePositions: Array.from(this.activePositions.values()),
         closedPositions: this.closedPositions,
         stats: this.stats,
         updatedAt: new Date().toISOString(),
+        configOverrides: {
+          leverage: this.config.leverage,
+          streakLeverage: this.config.streakLeverage,
+          trendLeverage: this.config.trendLeverage,
+          marginUsdt: this.config.marginUsdt,
+          limitDivisor: this.config.limitDivisor,
+          limitExpireMinutes: this.config.limitExpireMinutes,
+          stopAtHigh: this.config.stopAtHigh,
+          holdMinutes: this.config.holdMinutes,
+        },
       };
       fs.writeFileSync(this.config.storageFile, JSON.stringify(data, null, 2), "utf8");
     } catch (e) {
@@ -1176,6 +1242,17 @@ export class PaperTradingEngine {
         }
         if (data.stats) {
           this.stats = data.stats;
+        }
+        if ((data as any).configOverrides) {
+          const cfg = (data as any).configOverrides;
+          if (typeof cfg.leverage === "number") this.config.leverage = cfg.leverage;
+          if (typeof cfg.streakLeverage === "number") this.config.streakLeverage = cfg.streakLeverage;
+          if (typeof cfg.trendLeverage === "number") this.config.trendLeverage = cfg.trendLeverage;
+          if (typeof cfg.marginUsdt === "number") this.config.marginUsdt = cfg.marginUsdt;
+          if (typeof cfg.limitDivisor === "number") this.config.limitDivisor = cfg.limitDivisor;
+          if (typeof cfg.limitExpireMinutes === "number") this.config.limitExpireMinutes = cfg.limitExpireMinutes;
+          if (typeof cfg.stopAtHigh === "boolean") this.config.stopAtHigh = cfg.stopAtHigh;
+          if (typeof cfg.holdMinutes === "number") this.config.holdMinutes = cfg.holdMinutes;
         }
         console.log(
           `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
@@ -1258,6 +1335,8 @@ export class PaperTradingEngine {
       activePositions: Array.from(this.activePositions.values()),
       config: {
         leverage: this.config.leverage,
+        streakLeverage: this.config.streakLeverage ?? 10,
+        trendLeverage: this.config.trendLeverage ?? this.config.leverage,
         marginUsdt: this.config.marginUsdt,
         limitDivisor: this.config.limitDivisor,
         holdMinutes: this.config.holdMinutes,

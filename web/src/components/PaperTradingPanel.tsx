@@ -53,6 +53,14 @@ export function PaperTradingPanel({
   const [isResetting, setIsResetting] = useState(false);
   const [, setTick] = useState(0);
 
+  // 策略配置模态框状态 (API 设置)
+  const [showConfigModal, setShowConfigModal] = useState(false);
+  const [streakLevInput, setStreakLevInput] = useState<number>(10);
+  const [trendLevInput, setTrendLevInput] = useState<number>(3);
+  const [marginUsdtInput, setMarginUsdtInput] = useState<number>(20);
+  const [limitDivisorInput, setLimitDivisorInput] = useState<number>(0);
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
+
   // Update timer every second for countdowns
   useEffect(() => {
     const timer = setInterval(() => {
@@ -60,6 +68,51 @@ export function PaperTradingPanel({
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (summary?.config) {
+      setStreakLevInput(summary.config.streakLeverage ?? 10);
+      setTrendLevInput(summary.config.trendLeverage ?? summary.config.leverage ?? 3);
+      setMarginUsdtInput(summary.config.marginUsdt ?? 20);
+      setLimitDivisorInput(summary.config.limitDivisor ?? 0);
+    }
+  }, [summary?.config]);
+
+  const handleSaveConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingConfig(true);
+    try {
+      const res = await fetch("/api/paper-trading/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          streakLeverage: Number(streakLevInput),
+          trendLeverage: Number(trendLevInput),
+          leverage: Number(trendLevInput),
+          marginUsdt: Number(marginUsdtInput),
+          limitDivisor: Number(limitDivisorInput),
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        alert("✅ 模拟交易策略配置已通过 API 成功更新并持久化！");
+        setShowConfigModal(false);
+      } else {
+        alert("❌ 更新配置失败: " + (data.error ?? "未知错误"));
+      }
+    } catch (err: any) {
+      alert("❌ 请求异常: " + (err?.message ?? err));
+    } finally {
+      setIsSavingConfig(false);
+    }
+  };
+
+  const handleResetOptimal = () => {
+    setStreakLevInput(10);
+    setTrendLevInput(3);
+    setMarginUsdtInput(20);
+    setLimitDivisorInput(0);
+  };
 
   const handleReset = async () => {
     const ok = window.confirm(
@@ -122,9 +175,9 @@ export function PaperTradingPanel({
   const pendingOrders = summary?.pendingOrders ?? [];
 
   const config = summary?.config;
-  const leverage = config?.leverage ?? (activePositions[0]?.leverage ?? 3);
+  const streakLev = config?.streakLeverage ?? 10;
+  const trendLev = config?.trendLeverage ?? (config?.leverage ?? 3);
   const marginUsdt = config?.marginUsdt ?? (activePositions[0]?.marginUsdt ?? 20);
-  const notionalUsdt = marginUsdt * leverage;
   const isLimitEntry = (config?.limitDivisor ?? 0) > 0;
 
   return (
@@ -133,7 +186,9 @@ export function PaperTradingPanel({
         <div className="paper-title-wrap">
           <h2 style={{ margin: 0 }}>
             <span>⚡ 模拟实盘交易</span>
-            <span className="badge-leverage">{leverage}x 杠杆 · 保证金 {marginUsdt}U</span>
+            <span className="badge-leverage" title={`新高顶背离闪击 ${streakLev}x · 顺势衰竭长波段 ${trendLev}x · 单笔 ${marginUsdt}U`}>
+              双速杠杆 ({streakLev}x 闪击 / {trendLev}x 波段) · 保证金 {marginUsdt}U
+            </span>
             <span className="badge-strategy">
               4大互斥做空策略 · 黄金双速系统 (顺势衰竭 90m波段/10%大止损/动态保本 + 新高背离 15m闪击) · {isLimitEntry ? `限价接针 (N=${config!.limitDivisor})` : "直开市价"} · 两段动态止盈止损
             </span>
@@ -168,6 +223,14 @@ export function PaperTradingPanel({
           </div>
         </div>
         <div className="paper-header-actions">
+          <button
+            type="button"
+            className="btn-config-toggle"
+            onClick={() => setShowConfigModal(true)}
+            title="通过 API 设置新高背离独立杠杆、顺势波段杠杆与保证金"
+          >
+            ⚙️ 策略参数设置
+          </button>
           <button
             type="button"
             className="btn-history-toggle"
@@ -275,7 +338,7 @@ export function PaperTradingPanel({
             <div className="empty-paper-state">
               <span className="empty-icon">📡</span>
               <span className="empty-text">
-                当前暂无活跃持仓与挂单 · 账户资金 {account.initialBalanceUsdt.toFixed(0)} USDT · 单笔保证金 {marginUsdt} USDT ({leverage}x 杠杆, 名义 {notionalUsdt} USDT) · 四大最高胜率做空策略 (顺势衰竭 90m波段/10%大止损/动态保本 + 新高背离 15m闪击) · {isLimitEntry ? `每分钟收盘扫描 Top 10 (以 24h涨幅/${config!.limitDivisor} 向上溢价挂单接针)` : "每分钟收盘对齐直开市价做空"}
+                当前暂无活跃持仓与挂单 · 账户资金 {account.initialBalanceUsdt.toFixed(0)} USDT · 单笔保证金 {marginUsdt} USDT (新高闪击 {streakLev}x / 顺势波段 {trendLev}x) · 四大最高胜率做空策略 (顺势衰竭 90m波段/10%大止损/动态保本 + 新高背离 15m闪击) · {isLimitEntry ? `每分钟收盘扫描 Top 10 (以 24h涨幅/${config!.limitDivisor} 向上溢价挂单接针)` : "每分钟收盘对齐直开市价做空"}
               </span>
             </div>
           ) : null
@@ -470,6 +533,106 @@ export function PaperTradingPanel({
               </table>
             </div>
           )}
+        </div>
+      )}
+      {/* 策略参数设置模态框 */}
+      {showConfigModal && (
+        <div className="config-modal-backdrop" onClick={() => setShowConfigModal(false)}>
+          <div className="config-modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="config-modal-header">
+              <h3>⚙️ 模拟实盘交易策略参数设置 (API 同步)</h3>
+              <button
+                type="button"
+                className="config-modal-close"
+                onClick={() => setShowConfigModal(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleSaveConfig}>
+              <div className="config-form-group">
+                <label>
+                  <span>⚡ 新高顶背离闪击杠杆 (Streak Leverage)</span>
+                  <small>15m 紧止损 · 回测最优 10x (零爆仓)</small>
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  step="1"
+                  value={streakLevInput}
+                  onChange={(e) => setStreakLevInput(Number(e.target.value))}
+                  required
+                />
+              </div>
+
+              <div className="config-form-group">
+                <label>
+                  <span>🛡️ 顺势衰竭长波段杠杆 (Trend Leverage)</span>
+                  <small>90m 波段 / 10% 大止损 · 最优 3x 黄金低杠杆</small>
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={trendLevInput}
+                  onChange={(e) => setTrendLevInput(Number(e.target.value))}
+                  required
+                />
+              </div>
+
+              <div className="config-form-group">
+                <label>
+                  <span>💰 单笔订单保证金 (Margin USDT)</span>
+                  <small>默认 20 USDT (100U 账户可开 3~5 笔)</small>
+                </label>
+                <input
+                  type="number"
+                  min="5"
+                  max="1000"
+                  step="5"
+                  value={marginUsdtInput}
+                  onChange={(e) => setMarginUsdtInput(Number(e.target.value))}
+                  required
+                />
+              </div>
+
+              <div className="config-form-group">
+                <label>
+                  <span>🎯 入场模式与挂单分母 (Limit Divisor N)</span>
+                  <small>0 = 市价直开 (推荐)；&gt;0 = 溢价挂单接针</small>
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="500"
+                  step="10"
+                  value={limitDivisorInput}
+                  onChange={(e) => setLimitDivisorInput(Number(e.target.value))}
+                  required
+                />
+              </div>
+
+              <div className="config-modal-actions">
+                <button
+                  type="button"
+                  className="btn-preset-reset"
+                  onClick={handleResetOptimal}
+                  title="恢复量化研究皇冠最优配置：新高背离10x、顺势衰竭3x、单笔20U、市价直开"
+                >
+                  恢复皇冠最优推荐
+                </button>
+                <button
+                  type="submit"
+                  className="btn-config-save"
+                  disabled={isSavingConfig}
+                >
+                  {isSavingConfig ? "保存中…" : "保存并应用到模拟实盘"}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </section>
