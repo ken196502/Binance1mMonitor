@@ -1077,7 +1077,7 @@ export class PaperTradingEngine {
       pos.finalReason === "target"
         ? "两阶段全部止盈 🎯"
         : pos.finalReason === "stop"
-          ? "触发止损 🛑"
+          ? (pos.isBreakevenArmed ? "触发保本止损 🛡️" : "触发止损 🛑")
           : `${holdMins}分钟超时市价平仓 ⏱️`;
     const avgExitPrice =
       pos.exits.length > 0
@@ -1256,6 +1256,13 @@ export class PaperTradingEngine {
       totalNetPnlUsdt: this.stats.totalNetPnlUsdt,
       profitFactor: this.stats.profitFactor,
       activePositions: Array.from(this.activePositions.values()),
+      config: {
+        leverage: this.config.leverage,
+        marginUsdt: this.config.marginUsdt,
+        limitDivisor: this.config.limitDivisor,
+        holdMinutes: this.config.holdMinutes,
+        initialBalanceUsdt: this.config.initialBalanceUsdt,
+      },
     };
   }
 

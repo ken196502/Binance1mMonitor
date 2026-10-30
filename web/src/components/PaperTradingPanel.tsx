@@ -121,14 +121,22 @@ export function PaperTradingPanel({
   const activePositions = summary?.activePositions ?? [];
   const pendingOrders = summary?.pendingOrders ?? [];
 
+  const config = summary?.config;
+  const leverage = config?.leverage ?? (activePositions[0]?.leverage ?? 3);
+  const marginUsdt = config?.marginUsdt ?? (activePositions[0]?.marginUsdt ?? 20);
+  const notionalUsdt = marginUsdt * leverage;
+  const isLimitEntry = (config?.limitDivisor ?? 0) > 0;
+
   return (
     <section className="paper-trading-section">
       <div className="paper-header">
         <div className="paper-title-wrap">
           <h2 style={{ margin: 0 }}>
             <span>⚡ 模拟实盘交易</span>
-            <span className="badge-leverage">10x 杠杆 · 保证金 10U</span>
-            <span className="badge-strategy">4大互斥做空策略 (冲高极度乖离 · 新高顶背离 · 首次跌10% · 跌到20%+) · 直开市价 · 两段动态止盈止损</span>
+            <span className="badge-leverage">{leverage}x 杠杆 · 保证金 {marginUsdt}U</span>
+            <span className="badge-strategy">
+              4大互斥做空策略 · 黄金双速系统 (顺势衰竭 90m波段/10%大止损/动态保本 + 新高背离 15m闪击) · {isLimitEntry ? `限价接针 (N=${config!.limitDivisor})` : "直开市价"} · 两段动态止盈止损
+            </span>
           </h2>
           <div className="paper-stats-chips">
             <span className={`chip ${account.totalPnlUsdt >= 0 ? "chip-pos" : "chip-neg"}`}>
@@ -137,7 +145,7 @@ export function PaperTradingPanel({
             </span>
             <span className="chip">
               可用保证金: <b>{account.availableMarginUsdt.toFixed(2)} USDT</b>
-              <small> (本金 100U)</small>
+              <small> (本金 {account.initialBalanceUsdt.toFixed(0)}U)</small>
             </span>
             <span className="chip chip-winrate">
               胜率: <b>{winRate.toFixed(1)}%</b>
@@ -184,7 +192,7 @@ export function PaperTradingPanel({
         {pendingOrders.length > 0 && (
           <div className="paper-pending-wrap" style={{ marginBottom: "14px" }}>
             <div style={{ fontSize: "12px", fontWeight: "bold", color: "#f5a623", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
-              <span>⏳ 限价挂单等待冲高撮合 (N=100 · 向上溢价做空接针)</span>
+              <span>⏳ 限价挂单等待冲高撮合 (N={config?.limitDivisor ?? 100} · 向上溢价做空接针)</span>
               <span style={{ fontSize: "11px", opacity: 0.8 }}>({pendingOrders.length} 笔等待触碰)</span>
             </div>
             <div className="paper-positions-grid">
@@ -214,7 +222,7 @@ export function PaperTradingPanel({
                           {formatSignalLabel(order.signalType, order.signalLabel)}
                         </span>
                         <span className="badge-short" style={{ background: "rgba(245, 166, 35, 0.2)", color: "#f5a623" }}>
-                          10x 限价挂单
+                          {order.leverage}x 限价挂单
                         </span>
                         <span className="badge-margin">保 {order.marginUsdt}U</span>
                         {order.rank && <span className="pos-rank">#{order.rank}</span>}
@@ -267,7 +275,7 @@ export function PaperTradingPanel({
             <div className="empty-paper-state">
               <span className="empty-icon">📡</span>
               <span className="empty-text">
-                当前暂无活跃持仓与挂单 · 账户资金 100 USDT · 单笔保证金 10 USDT (10x 杠杆, 名义 100 USDT) · 每分钟收盘扫描 Top 10 (命中条件后以 24h涨幅/100 向上挂单做空接针)
+                当前暂无活跃持仓与挂单 · 账户资金 {account.initialBalanceUsdt.toFixed(0)} USDT · 单笔保证金 {marginUsdt} USDT ({leverage}x 杠杆, 名义 {notionalUsdt} USDT) · 四大最高胜率做空策略 (顺势衰竭 90m波段/10%大止损/动态保本 + 新高背离 15m闪击) · {isLimitEntry ? `每分钟收盘扫描 Top 10 (以 24h涨幅/${config!.limitDivisor} 向上溢价挂单接针)` : "每分钟收盘对齐直开市价做空"}
               </span>
             </div>
           ) : null
@@ -333,7 +341,7 @@ export function PaperTradingPanel({
                   <div className="pos-card-stages">
                     <div className={`stage-block ${pos.remainingFraction === 1.0 ? "stage-active" : "stage-done"}`}>
                       <div className="stage-title">
-                        <span>阶段一 (50% 仓位 · 5U 保证金)</span>
+                        <span>阶段一 (50% 仓位 · {(pos.marginUsdt * 0.5).toFixed(0)}U 保证金)</span>
                         <span className="stage-status">
                           {pos.remainingFraction === 1.0 ? "待触发" : "已平仓 ✅"}
                         </span>
@@ -346,13 +354,24 @@ export function PaperTradingPanel({
 
                     <div className={`stage-block ${pos.remainingFraction === 0.5 ? "stage-active" : "stage-pending"}`}>
                       <div className="stage-title">
-                        <span>阶段二 (剩余 50% · 5U 保证金)</span>
+                        <span>阶段二 (剩余 50% · {(pos.marginUsdt * 0.5).toFixed(0)}U 保证金)</span>
                         <span className="stage-status">
                           {pos.remainingFraction === 0.5 ? "运行中 ⏳" : "等待中"}
                         </span>
                       </div>
                       <div className="stage-targets">
-                        <span>止损2: <b className="target-red">{pos.sl2Price.toFixed(4)} (+{pos.sl2Percent.toFixed(2)}%)</b></span>
+                        <span>
+                          止损2:{" "}
+                          {pos.isBreakevenArmed ? (
+                            <b className="target-green" title="阶段一止盈后已上移锁定保本">
+                              保本锁定 ({pos.sl2Price.toFixed(4)})
+                            </b>
+                          ) : (
+                            <b className="target-red">
+                              {pos.sl2Price.toFixed(4)} (+{pos.sl2Percent.toFixed(2)}%)
+                            </b>
+                          )}
+                        </span>
                         <span>止盈2: <b className="target-green">{pos.tp2Price.toFixed(4)} (-{pos.tp2Percent.toFixed(2)}%)</b></span>
                       </div>
                     </div>
@@ -402,8 +421,9 @@ export function PaperTradingPanel({
                     const holdDuration = formatHoldDuration(item.closedAt, item.entryTime);
                     const reasonMap: Record<string, string> = {
                       target: "两段全部止盈 🎯",
-                      stop: "触发止损 🛑",
+                      stop: item.isBreakevenArmed ? "保本止损 🛡️" : "触发止损 🛑",
                       timeout: "超时平仓 ⏱️",
+                      breakeven_stop: "保本止损 🛡️",
                     };
                     const reasonText = reasonMap[item.finalReason ?? ""] ?? item.finalReason ?? "-";
 

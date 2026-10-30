@@ -217,6 +217,14 @@ export interface PaperTradingState {
   updatedAt: string;
 }
 
+export interface PaperTradingSummaryConfig {
+  leverage: number;
+  marginUsdt: number;
+  limitDivisor: number;
+  holdMinutes: number;
+  initialBalanceUsdt: number;
+}
+
 export interface PaperTradingSummary {
   account: PaperAccount;
   pendingOrders: PaperPendingOrder[];
@@ -229,6 +237,7 @@ export interface PaperTradingSummary {
   totalNetPnlUsdt: number;
   profitFactor: number;
   activePositions: PaperPosition[];
+  config?: PaperTradingSummaryConfig;
 }
 
 export interface Status {
