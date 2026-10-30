@@ -18,6 +18,10 @@ export interface PeakReboundLiveConfig {
   exitX: number; // Stage 1 denominator (e.g. 35)
   exitN: number; // Stage 2 SL multiplier (e.g. 2.0)
   exitM: number; // Stage 2 TP multiplier (e.g. 1.5)
+  stopLossPercent?: number; // 显式大止损比例 (e.g. 10.0%)
+  tp1Percent?: number;      // 阶段一止盈比例 (e.g. 4.0%)
+  tp2Percent?: number;      // 阶段二止盈比例 (e.g. 8.0%)
+  moveSlToEntryAfterTp1?: boolean; // 阶段一达标后移动保本止损
   watchWindowHours: number; // how long to observe after reaching rank 1 (default 48h)
 }
 
@@ -35,6 +39,17 @@ export const PEAK_REBOUND_LIVE_DEFAULT_CONFIG: PeakReboundLiveConfig = {
   exitN: 2.0,
   exitM: 1.5,
   watchWindowHours: 48,
+};
+
+// 黄金双速最优组合 (Dual-Speed Ensemble) 专属长波段配置 (胜率 80.3%, PF 2.42, 3x 杠杆累计收益 +189.6%)
+export const DUAL_SPEED_PEAK_REBOUND_CONFIG: PeakReboundLiveConfig = {
+  ...PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
+  holdMinutes: 90,
+  exitM: 2.0,
+  stopLossPercent: 10.0,
+  tp1Percent: 4.0,
+  tp2Percent: 8.0,
+  moveSlToEntryAfterTp1: true,
 };
 
 export interface WatchState {

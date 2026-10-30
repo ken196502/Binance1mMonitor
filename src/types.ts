@@ -87,6 +87,10 @@ export interface PaperExitParams {
   exitX: number;
   exitN: number;
   exitM: number;
+  stopLossPercent?: number;       // e.g. 10.0 (%) 显式大止损比例
+  tp1Percent?: number;            // e.g. 4.0 (%) 阶段一显式止盈比例
+  tp2Percent?: number;            // e.g. 8.0 (%) 阶段二显式止盈比例
+  moveSlToEntryAfterTp1?: boolean;// 阶段一止盈后剩余仓位止损移动至保本价 (Breakeven)
 }
 
 export interface PaperExit {
@@ -162,6 +166,8 @@ export interface PaperPosition {
   tp2Price: number;
 
   timeoutAt: number;
+  moveSlToEntryAfterTp1?: boolean;
+  isBreakevenArmed?: boolean;
 
   exits: PaperExit[];
   remainingFraction: number; // 1.0 -> 0.5 -> 0.0

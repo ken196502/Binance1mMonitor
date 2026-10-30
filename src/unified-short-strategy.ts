@@ -9,6 +9,7 @@ import { Candle, computeMacd, consecutiveStreakAt, calculateSupportMaAt, calcula
 import {
   PeakReboundLiveConfig,
   PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
+  DUAL_SPEED_PEAK_REBOUND_CONFIG,
   PeakReboundStrategyTracker,
   PeakReboundLiveSignal,
 } from './peak-rebound-strategy.ts';
@@ -24,10 +25,14 @@ export interface ExtremeDevLiveConfig {
   minAbsoluteSurge: number;   // 默认 4.0% (绝对冲高下限)
   deviationPeriod: number;    // 默认 30 (MA30 偏离基准)
   minDeviationPercent: number;// 默认 1.5% (MA30 乖离率 >= 1.5%)
-  holdMinutes: number;        // 默认 20 分钟
+  holdMinutes: number;        // 默认 90 分钟 (大止损长持仓最优波段)
   exitX: number;              // 默认 30
   exitN: number;              // 默认 2.0
   exitM: number;              // 默认 2.0
+  stopLossPercent?: number;   // 显式大止损比例 (默认 10.0%)
+  tp1Percent?: number;        // 阶段一止盈比例 (默认 4.0%)
+  tp2Percent?: number;        // 阶段二止盈比例 (默认 8.0%)
+  moveSlToEntryAfterTp1?: boolean; // 阶段一达标后移动保本止损
   cooldownMinutes: number;    // 默认 20 分钟
 }
 
@@ -44,6 +49,16 @@ export const EXTREME_DEV_LIVE_DEFAULT_CONFIG: ExtremeDevLiveConfig = {
   exitN: 2.0,
   exitM: 2.0,
   cooldownMinutes: 20,
+};
+
+// 黄金双速最优组合 (Dual-Speed Ensemble): 冲高极度乖离长波段参数 (胜率 72.7%, PF 2.18, 3x 杠杆累计收益 +75.5%)
+export const DUAL_SPEED_EXTREME_DEV_CONFIG: ExtremeDevLiveConfig = {
+  ...EXTREME_DEV_LIVE_DEFAULT_CONFIG,
+  holdMinutes: 90,
+  stopLossPercent: 10.0,
+  tp1Percent: 4.0,
+  tp2Percent: 8.0,
+  moveSlToEntryAfterTp1: true,
 };
 
 export interface StreakStrategyLiveConfig {
@@ -97,10 +112,14 @@ export interface DeepReboundLiveConfig {
   longMa: number;    // e.g. 30
   minGreenRatio20: number; // e.g. 0.65 (近 20 根 1m MACD 绿柱占比 > 65%)
   requireMaSlopeDown: boolean; // e.g. true (MA30 向下倾斜确认)
-  holdMinutes: number; // e.g. 30 (最高胜率: 30m)
+  holdMinutes: number; // 默认 90 分钟 (最高胜率与 Calmar 解)
   exitX: number; // e.g. 35
   exitN: number; // e.g. 2.0
   exitM: number; // e.g. 4.0 (胜率 87.5%, PF 7.15)
+  stopLossPercent?: number; // 显式大止损比例 (默认 10.0%)
+  tp1Percent?: number;      // 阶段一止盈比例 (默认 4.0%)
+  tp2Percent?: number;      // 阶段二止盈比例 (默认 8.0%)
+  moveSlToEntryAfterTp1?: boolean; // 阶段一达标后移动保本止损
   cooldownMinutes: number; // e.g. 30
 }
 
@@ -119,6 +138,16 @@ export const DEEP_REBOUND_LIVE_DEFAULT_CONFIG: DeepReboundLiveConfig = {
   cooldownMinutes: 30,
 };
 
+// 黄金双速最优组合 (Dual-Speed Ensemble): 跌到20%+ 次级反弹长波段参数 (胜率 83.3%, PF 2.97, 3x 杠杆累计收益 +31.4%)
+export const DUAL_SPEED_DEEP_REBOUND_CONFIG: DeepReboundLiveConfig = {
+  ...DEEP_REBOUND_LIVE_DEFAULT_CONFIG,
+  holdMinutes: 90,
+  stopLossPercent: 10.0,
+  tp1Percent: 4.0,
+  tp2Percent: 8.0,
+  moveSlToEntryAfterTp1: true,
+};
+
 export interface UnifiedLiveConfig {
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
@@ -131,6 +160,15 @@ export const UNIFIED_LIVE_DEFAULT_CONFIG: Required<UnifiedLiveConfig> = {
   reboundConfig: PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
   deepReboundConfig: DEEP_REBOUND_LIVE_DEFAULT_CONFIG,
   extremeDevConfig: EXTREME_DEV_LIVE_DEFAULT_CONFIG,
+  streakConfig: STREAK_LIVE_DEFAULT_CONFIG,
+  preventConflict: true,
+};
+
+// 黄金双速最优组合 (Dual-Speed Ensemble): 首次跌10%、跌到20%+、冲高极度乖离走 3x / 10%大止损 / 90m 长波段，新高顶背离保留 15m 闪击战
+export const DUAL_SPEED_UNIFIED_CONFIG: Required<UnifiedLiveConfig> = {
+  reboundConfig: DUAL_SPEED_PEAK_REBOUND_CONFIG,
+  deepReboundConfig: DUAL_SPEED_DEEP_REBOUND_CONFIG,
+  extremeDevConfig: DUAL_SPEED_EXTREME_DEV_CONFIG,
   streakConfig: STREAK_LIVE_DEFAULT_CONFIG,
   preventConflict: true,
 };
@@ -148,6 +186,10 @@ export interface UnifiedLiveSignal {
     exitX: number;
     exitN: number;
     exitM: number;
+    stopLossPercent?: number;
+    tp1Percent?: number;
+    tp2Percent?: number;
+    moveSlToEntryAfterTp1?: boolean;
   };
   details: {
     reboundSignal?: PeakReboundLiveSignal;
@@ -275,6 +317,10 @@ export class UnifiedShortStrategyTracker {
         exitX: this.config.reboundConfig.exitX,
         exitN: this.config.reboundConfig.exitN,
         exitM: this.config.reboundConfig.exitM,
+        stopLossPercent: this.config.reboundConfig.stopLossPercent,
+        tp1Percent: this.config.reboundConfig.tp1Percent,
+        tp2Percent: this.config.reboundConfig.tp2Percent,
+        moveSlToEntryAfterTp1: this.config.reboundConfig.moveSlToEntryAfterTp1,
       };
       const signal: UnifiedLiveSignal = {
         id: `reb-${symbol}-${reboundSig.time}`,
@@ -306,6 +352,10 @@ export class UnifiedShortStrategyTracker {
         exitX: this.config.deepReboundConfig.exitX,
         exitN: this.config.deepReboundConfig.exitN,
         exitM: this.config.deepReboundConfig.exitM,
+        stopLossPercent: this.config.deepReboundConfig.stopLossPercent,
+        tp1Percent: this.config.deepReboundConfig.tp1Percent,
+        tp2Percent: this.config.deepReboundConfig.tp2Percent,
+        moveSlToEntryAfterTp1: this.config.deepReboundConfig.moveSlToEntryAfterTp1,
       };
       const targetIdx = candles.length - 2;
       const closedCandle = candles[targetIdx];
@@ -340,6 +390,10 @@ export class UnifiedShortStrategyTracker {
           exitX: this.config.extremeDevConfig.exitX,
           exitN: this.config.extremeDevConfig.exitN,
           exitM: this.config.extremeDevConfig.exitM,
+          stopLossPercent: this.config.extremeDevConfig.stopLossPercent,
+          tp1Percent: this.config.extremeDevConfig.tp1Percent,
+          tp2Percent: this.config.extremeDevConfig.tp2Percent,
+          moveSlToEntryAfterTp1: this.config.extremeDevConfig.moveSlToEntryAfterTp1,
         };
         const closedCandle = candles[candles.length - 2];
         const signalLabel: PaperSignalLabel = '冲高极度乖离';
@@ -375,6 +429,10 @@ export class UnifiedShortStrategyTracker {
           exitX: this.config.streakConfig.exitX,
           exitN: this.config.streakConfig.exitN,
           exitM: this.config.streakConfig.exitM,
+          stopLossPercent: undefined,
+          tp1Percent: undefined,
+          tp2Percent: undefined,
+          moveSlToEntryAfterTp1: false,
         };
         const closedCandle = candles[candles.length - 2];
         const signalLabel: PaperSignalLabel = '新高顶背离';

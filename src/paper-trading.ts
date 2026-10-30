@@ -15,11 +15,15 @@ import { sendTelegramMessage } from "./telegram.ts";
 import {
   UnifiedShortStrategyTracker,
   STREAK_LIVE_DEFAULT_CONFIG,
+  DUAL_SPEED_EXTREME_DEV_CONFIG,
+  DUAL_SPEED_DEEP_REBOUND_CONFIG,
+  type ExtremeDevLiveConfig,
   type StreakStrategyLiveConfig,
   type DeepReboundLiveConfig,
   type UnifiedLiveConfig,
 } from "./unified-short-strategy.ts";
 import {
+  DUAL_SPEED_PEAK_REBOUND_CONFIG,
   type PeakReboundLiveConfig,
 } from "./peak-rebound-strategy.ts";
 import type {
@@ -65,6 +69,7 @@ export interface PaperStrategyConfig {
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
+  extremeDevConfig?: Partial<ExtremeDevLiveConfig>;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -86,14 +91,18 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   exitM: 3.0,
   firstCloseFraction: 0.5,
   initialBalanceUsdt: Number(process.env.PAPER_INITIAL_BALANCE ?? 100),
-  leverage: Number(process.env.PAPER_LEVERAGE ?? 10),
-  marginUsdt: Number(process.env.PAPER_MARGIN_USDT ?? 10),
+  leverage: Number(process.env.PAPER_LEVERAGE ?? 3),
+  marginUsdt: Number(process.env.PAPER_MARGIN_USDT ?? 20),
   takerFeeBps: 5,   // 0.05%
   slippageBps: 2,   // 0.02%
   limitDivisor: Number(process.env.PAPER_LIMIT_N ?? 0), // 默认 0 (直开市价模式，回测胜率 71.2%，PF 3.23)
   limitExpireMinutes: Number(process.env.PAPER_LIMIT_EXPIRE_MINUTES ?? 3), // 默认 3 分钟
   stopAtHigh: process.env.PAPER_STOP_AT_HIGH !== "false", // 默认 true (开启极端最高点止损模式)
   storageFile: STATE_FILE,
+  // 默认启用黄金双速最优组合 (Dual-Speed Ensemble: 首次跌10%、跌到20%、极度乖离走 3x / 10% 止损 / 90m 长波段，新高顶背离保留 15m 闪击战)
+  reboundConfig: DUAL_SPEED_PEAK_REBOUND_CONFIG,
+  deepReboundConfig: DUAL_SPEED_DEEP_REBOUND_CONFIG,
+  extremeDevConfig: DUAL_SPEED_EXTREME_DEV_CONFIG,
 };
 
 export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLabel): PaperSignalLabel {
@@ -216,6 +225,7 @@ export class PaperTradingEngine {
       },
       reboundConfig: this.config.reboundConfig,
       deepReboundConfig: this.config.deepReboundConfig,
+      extremeDevConfig: this.config.extremeDevConfig,
       preventConflict: true,
     });
     this.account = {
@@ -307,7 +317,7 @@ export class PaperTradingEngine {
 
     const exitX = exitParams?.exitX ?? this.config.exitX;
     // 保护位：若行情直接下杀跌破预估的阶段一止盈位，说明行情已直接跌完，不再接单
-    const tp1OffsetPercent = dayChangePercent / exitX;
+    const tp1OffsetPercent = exitParams?.tp1Percent ?? (dayChangePercent / exitX);
     const cancelBelowPrice = basePrice * (1 - tp1OffsetPercent / 100);
 
     const notionalUsdt = this.config.marginUsdt * this.config.leverage;
@@ -547,12 +557,11 @@ export class PaperTradingEngine {
     const holdMinutes = exitParams?.holdMinutes ?? this.config.holdMinutes;
 
     // Two-stage dynamic thresholds:
-    // Stage 1: tp1 = dayChange / x, sl1 = dayChange / x
-    // Stage 2: sl2 = dayChange * n / x, tp2 = dayChange * m / x
-    const tp1Percent = dayChangePercent / exitX;
-    const sl1Percent = dayChangePercent / exitX;
-    const sl2Percent = (dayChangePercent * exitN) / exitX;
-    const tp2Percent = (dayChangePercent * exitM) / exitX;
+    // 支持显式大止损/大止盈参数 (如 10% 大止损, 4% TP1, 8% TP2) 或回退至动态公式
+    const tp1Percent = exitParams?.tp1Percent ?? (dayChangePercent / exitX);
+    const sl1Percent = exitParams?.stopLossPercent ?? (dayChangePercent / exitX);
+    const sl2Percent = exitParams?.stopLossPercent ?? ((dayChangePercent * exitN) / exitX);
+    const tp2Percent = exitParams?.tp2Percent ?? ((dayChangePercent * exitM) / exitX);
 
     // Short direction price levels:
     // Target (profit): entry * (1 - tp / 100)
@@ -563,7 +572,7 @@ export class PaperTradingEngine {
     const tp2Price = entryPrice * (1 - tp2Percent / 100);
 
     const timeoutAt = entryTime + holdMinutes * 60 * 1000;
-    const notionalUsdt = this.config.marginUsdt * this.config.leverage; // 10 * 10 = 100 USDT
+    const notionalUsdt = this.config.marginUsdt * this.config.leverage;
 
     const signalType = params.signalType ?? "streak";
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
@@ -583,7 +592,12 @@ export class PaperTradingEngine {
         exitX,
         exitN,
         exitM,
+        stopLossPercent: exitParams?.stopLossPercent,
+        tp1Percent: exitParams?.tp1Percent,
+        tp2Percent: exitParams?.tp2Percent,
+        moveSlToEntryAfterTp1: exitParams?.moveSlToEntryAfterTp1,
       },
+      moveSlToEntryAfterTp1: exitParams?.moveSlToEntryAfterTp1 ?? true,
       entryTime,
       entryPrice,
       limitPrice,
@@ -836,6 +850,17 @@ export class PaperTradingEngine {
     if (stage === 1) {
       pos.remainingFraction = 1 - fraction;
       pos.status = "PARTIAL";
+
+      // 阶段一止盈达成后，若开启保本机制，将剩余仓位止损移动至入场保本价 (微留 0.2% 覆盖手续费)
+      if (reason === "target" && pos.moveSlToEntryAfterTp1 !== false) {
+        pos.sl2Price = pos.entryPrice * 1.002;
+        pos.sl2Percent = 0.2;
+        pos.isBreakevenArmed = true;
+        console.log(
+          `[paper-trading] 🛡️ ${pos.symbol} 阶段一止盈达成，剩余仓位止损已锁定保本价 @ ${pos.sl2Price.toFixed(4)}`,
+        );
+      }
+
       this.updateUnrealizedPnl(pos, exitPrice);
 
       this.notifyStage1(pos, exit).catch((e) =>
@@ -1030,6 +1055,9 @@ export class PaperTradingEngine {
           : "超时平仓 ⏱️";
     const pnlSign = exit.netPnlUsdt >= 0 ? "+" : "";
     const label = formatSignalLabel(pos.signalType, pos.signalLabel);
+    const beStr = pos.isBreakevenArmed
+      ? `\n• <b>保护机制</b>: 🛡️ 剩余仓位止损已上移锁定保本价 <code>${pos.sl2Price.toFixed(4)}</code> (锁定无风险交易！)`
+      : "";
     const msg =
       `🎯 <b>[模拟交易] 阶段一达成 (平仓 50%) 【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
@@ -1037,7 +1065,7 @@ export class PaperTradingEngine {
       `• <b>动作</b>: ${action}\n` +
       `• <b>成交价</b>: <code>${exit.exitPrice.toFixed(4)}</code>\n` +
       `• <b>阶段净盈亏</b>: <b>${pnlSign}${exit.netPnlUsdt.toFixed(2)} USDT</b>\n` +
-      `• <b>剩余仓位</b>: 50% (等待阶段二: 止盈 <code>${pos.tp2Price.toFixed(4)}</code> / 止损 <code>${pos.sl2Price.toFixed(4)}</code>)`;
+      `• <b>剩余仓位</b>: 50% (等待阶段二: 止盈 <code>${pos.tp2Price.toFixed(4)}</code> / 止损 <code>${pos.sl2Price.toFixed(4)}</code>)${beStr}`;
     await sendTelegramMessage(msg);
   }
 
@@ -1182,6 +1210,7 @@ export class PaperTradingEngine {
       },
       reboundConfig: this.config.reboundConfig,
       deepReboundConfig: this.config.deepReboundConfig,
+      extremeDevConfig: this.config.extremeDevConfig,
       preventConflict: true,
     });
     this.account = {

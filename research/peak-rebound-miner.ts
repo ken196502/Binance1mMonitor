@@ -262,7 +262,7 @@ export async function runPeakReboundMiner(args = process.argv.slice(2)) {
           const exact = backtestPeakRebound(minuteData, trainSignals, fullParams, hourly.manifest.start, trainEnd, {
             takerFeeBps: feeBps,
             slippageBps: slippageBps,
-            stopAtHigh: config.stopAtHigh,
+            stopAtHigh: PEAK_REBOUND_DEFAULT_CONFIG.stopAtHigh,
           });
 
           if (exact.metrics.trades >= 5 && exact.metrics.winRate != null && exact.metrics.winRate >= 50.0 && exact.metrics.netPnlPercent > 0) {
@@ -305,7 +305,7 @@ export async function runPeakReboundMiner(args = process.argv.slice(2)) {
     const valResult = backtestPeakRebound(minuteData, valSignals, candidate.params, trainEnd, valEnd, {
       takerFeeBps: feeBps,
       slippageBps: slippageBps,
-      stopAtHigh: config.stopAtHigh,
+      stopAtHigh: PEAK_REBOUND_DEFAULT_CONFIG.stopAtHigh,
     });
     candidate.valMetrics = valResult.metrics;
   }
@@ -341,7 +341,7 @@ export async function runPeakReboundMiner(args = process.argv.slice(2)) {
     testResult = backtestPeakRebound(minuteData, testSignals, bestCandidate.params, valEnd, testEnd, {
       takerFeeBps: feeBps,
       slippageBps: slippageBps,
-      stopAtHigh: config.stopAtHigh,
+      stopAtHigh: PEAK_REBOUND_DEFAULT_CONFIG.stopAtHigh,
     });
     bestCandidate.testMetrics = testResult.metrics;
   }
@@ -366,7 +366,7 @@ export async function runPeakReboundMiner(args = process.argv.slice(2)) {
     fullRunResult = backtestPeakRebound(minuteData, allSignals, bestCandidate.params, hourly.manifest.start, testEnd, {
       takerFeeBps: feeBps,
       slippageBps: slippageBps,
-      stopAtHigh: config.stopAtHigh,
+      stopAtHigh: PEAK_REBOUND_DEFAULT_CONFIG.stopAtHigh,
     });
   }
 
