@@ -4,6 +4,7 @@ import {
   UnifiedShortStrategyTracker,
   STREAK_LIVE_DEFAULT_CONFIG,
   DEEP_REBOUND_LIVE_DEFAULT_CONFIG,
+  EXTREME_DEV_LIVE_DEFAULT_CONFIG,
 } from '../../src/unified-short-strategy.ts';
 import {
   PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
@@ -68,6 +69,19 @@ test('Default strategy configurations match verified specifications', () => {
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitX, 35);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitN, 2.0);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitM, 4.0);
+
+  // 4. 冲高极度乖离做空 (基底 24h/N + MA30乖离) - 最高胜率参数 (90.9%胜率, 10胜1负, PF 12.09)
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.topN, 10);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.minDayChange, 20.0);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.xMinutes, 3);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.ampDivisor, 3.5);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.minAbsoluteSurge, 4.0);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.deviationPeriod, 30);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.minDeviationPercent, 1.5);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.holdMinutes, 20);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.exitX, 30);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.exitN, 2.0);
+  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.exitM, 2.0);
 });
 
 test('UnifiedShortStrategyTracker manages active positions and prevents double-entry conflicts', () => {
@@ -179,4 +193,86 @@ test('UnifiedShortStrategyTracker triggers 新高顶背离 signal when MACD bear
   assert.ok(sig.details.streakSignal?.divergence != null, 'Divergence details should be present');
   assert.ok(sig.details.streakSignal!.divergence!.curHist < sig.details.streakSignal!.divergence!.prevHist);
   assert.ok(sig.details.streakSignal!.divergence!.curDif < sig.details.streakSignal!.divergence!.prevDif);
+});
+
+test('UnifiedShortStrategyTracker triggers 冲高极度乖离 signal when 3m surge and MA30 deviation exceed thresholds', () => {
+  const tracker = new UnifiedShortStrategyTracker();
+
+  const now = 1700000000000;
+  const candles: Candle[] = [];
+
+  // 46 baseline bars at 100
+  for (let i = 0; i < 46; i++) {
+    candles.push({
+      time: now + i * 60000,
+      open: 100,
+      high: 100.5,
+      low: 99.5,
+      close: 100,
+      volume: 1000,
+    });
+  }
+
+  // Bar 46: start surge
+  candles.push({
+    time: now + 46 * 60000,
+    open: 100,
+    high: 103,
+    low: 100,
+    close: 103,
+    volume: 5000,
+  });
+
+  // Bar 47: continue surge
+  candles.push({
+    time: now + 47 * 60000,
+    open: 103,
+    high: 106,
+    low: 103,
+    close: 106,
+    volume: 6000,
+  });
+
+  // Bar 48 (targetIndex): spike up to 110 (+10% in 3m)
+  candles.push({
+    time: now + 48 * 60000,
+    open: 106,
+    high: 110,
+    low: 106,
+    close: 110,
+    volume: 8000,
+  });
+
+  // Bar 49: forming bar
+  candles.push({
+    time: now + 49 * 60000,
+    open: 110,
+    high: 110.5,
+    low: 109.8,
+    close: 110,
+    volume: 100,
+  });
+
+  const checkTime = now + 49 * 60000;
+  const sig = tracker.checkCandles('SURGEUSDT', 25.0, 1, candles, checkTime);
+
+  assert.ok(sig !== null, '冲高极度乖离 signal should trigger');
+  assert.equal(sig.type, 'extreme_dev');
+  assert.equal(sig.label, '冲高极度乖离');
+  assert.equal(sig.symbol, 'SURGEUSDT');
+  assert.equal(sig.entryPrice, 110);
+  assert.equal(sig.exitParams.holdMinutes, 20);
+  assert.equal(sig.exitParams.exitX, 30);
+  assert.equal(sig.exitParams.exitN, 2.0);
+  assert.equal(sig.exitParams.exitM, 2.0);
+  assert.ok(sig.details.extremeDevSignal != null);
+  assert.ok(sig.details.extremeDevSignal!.surgePercent >= 9.9);
+  assert.ok(sig.details.extremeDevSignal!.maDeviation >= 8.0);
+
+  // Verify conflict protection: symbol should now be busy
+  assert.equal(tracker.isSymbolBusy('SURGEUSDT', checkTime), true);
+
+  // Duplicate call should be blocked by conflict prevention
+  const duplicateSig = tracker.checkCandles('SURGEUSDT', 25.0, 1, candles, checkTime);
+  assert.equal(duplicateSig, null, 'Duplicate signal should be prevented while position active');
 });

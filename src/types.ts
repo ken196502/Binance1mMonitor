@@ -79,8 +79,8 @@ export interface HighBearState extends HighBullSummary {
 
 // ---- 模拟交易 (Paper Trading) ----
 export type PaperExitReason = "target" | "stop" | "timeout";
-export type PaperSignalType = "streak" | "rebound" | "deep_rebound";
-export type PaperSignalLabel = "连阳悬空" | "首次跌10%" | "跌到20%+" | "空连阳" | "空弱反弹" | "超跌反弹" | "新高顶背离";
+export type PaperSignalType = "streak" | "rebound" | "deep_rebound" | "extreme_dev";
+export type PaperSignalLabel = "连阳悬空" | "首次跌10%" | "跌到20%+" | "空连阳" | "空弱反弹" | "超跌反弹" | "新高顶背离" | "冲高极度乖离" | "极度乖离";
 
 export interface PaperExitParams {
   holdMinutes: number;

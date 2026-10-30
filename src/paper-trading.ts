@@ -96,6 +96,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
 
 export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLabel): PaperSignalLabel {
   if (label) return label;
+  if (type === "extreme_dev") return "冲高极度乖离";
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
   return "新高顶背离";

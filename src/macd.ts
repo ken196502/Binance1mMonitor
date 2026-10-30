@@ -123,6 +123,16 @@ export function calculateMacdGreenBarRatio(
     ratio: greenCount / windowSize,
   };
 }
+/** Calculate simple moving average at index i */
+export function calculateSma(closes: readonly number[], index: number, period: number): number | null {
+  if (index + 1 < period) return null;
+  let sum = 0;
+  for (let k = 0; k < period; k++) {
+    sum += closes[index - k];
+  }
+  return sum / period;
+}
+
 export const SUPPORT_MA_PERIODS = [5, 7, 10, 20, 25, 30, 60, 99, 120] as const;
 
 /** Shared monitor/research rule. Read only candles up to the specified closed bar. */
