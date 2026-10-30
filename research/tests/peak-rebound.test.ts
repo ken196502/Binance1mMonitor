@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { calculateSma, isMaSuppressed, getRank1Watchlist } from '../peak-rebound-signals.ts';
-import { calcReturn, wilsonInterval } from '../peak-rebound-backtest.ts';
+import { backtestPeakRebound, calcReturn, wilsonInterval } from '../peak-rebound-backtest.ts';
 import { calculateMacdGreenBarRatio } from '../../src/macd.ts';
 import type { Frame } from '../types.ts';
 
@@ -145,4 +145,66 @@ test('calculateMacdGreenBarRatio computes green hist proportion in window', () =
   assert.ok(ratioRes !== null);
   assert.equal(ratioRes.total, 20);
   assert.ok(ratioRes.ratio > 0.5);
+});
+
+test('backtestPeakRebound supports extreme stop loss at candle high when stopAtHigh is true', () => {
+  const signal: any = {
+    symbol: 'TESTUSDT',
+    time: 60000,
+    index: 0,
+    boardTime: 0,
+    dayChangePercent: 35,
+    rank: 1,
+    peakPrice: 110,
+    peakTime: 0,
+    pullbackPercent: 10,
+    troughPrice: 99,
+    troughTime: 500,
+    reboundPercent: 4,
+    fibRetracement: 0.3,
+    reboundUpCandles: 2,
+    upperShadowRatio: 0.1,
+    shortMa: 5,
+    longMa: 30,
+    longMaOffsetPercent: 0.5,
+    greenRatio20: 0.7,
+    maPeriod: 5,
+    maPeriods: [5, 15, 30],
+    maValues: { 5: 100, 15: 102, 30: 105 },
+    close: 100,
+    high: 101,
+    low: 99,
+    open: 100,
+  };
+  const bars = [
+    [0, 100, 101, 99, 100],
+    [60000, 100, 105, 99.5, 100.5],
+  ];
+  const dataset = { candles: new Map([['TESTUSDT', bars]]), symbols: ['TESTUSDT'] } as any;
+  const params: any = {
+    pullbackX: 10,
+    reboundY: 4,
+    shortMa: 5,
+    longMa: 30,
+    longMaOffsetPercent: 0.5,
+    minGreenRatio20: 0.65,
+    maPeriods: [5, 15, 30],
+    holdMinutes: 5,
+    exitX: 35,
+    exitN: 2.0,
+    exitM: 1.5,
+  };
+
+  // Standard stop: exits at sl1=101, sl2=102
+  const stdRes = backtestPeakRebound(dataset, [signal], params, 0, 1000000, { takerFeeBps: 0, slippageBps: 0, stopAtHigh: false });
+  assert.equal(stdRes.trades.length, 1);
+  assert.equal(stdRes.trades[0].exits[0].exitPrice, 101);
+  assert.equal(stdRes.trades[0].exits[1].exitPrice, 102);
+
+  // Extreme high stop: exits at high=105 for both stages
+  const extRes = backtestPeakRebound(dataset, [signal], params, 0, 1000000, { takerFeeBps: 0, slippageBps: 0, stopAtHigh: true });
+  assert.equal(extRes.trades.length, 1);
+  assert.equal(extRes.trades[0].exits[0].exitPrice, 105);
+  assert.equal(extRes.trades[0].exits[1].exitPrice, 105);
+  assert.equal(extRes.trades[0].grossPercent, -5.0);
 });

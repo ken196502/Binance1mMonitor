@@ -14,6 +14,7 @@ export const FIRST_STAGE_FRACTION = 0.5;
 export interface CostOptions {
   takerFeeBps?: number;
   slippageBps?: number;
+  stopAtHigh?: boolean;
 }
 
 export function calcReturn(
@@ -217,7 +218,7 @@ export function backtestPeakRebound(
 
         // Open gap check
         if (canUseOpen && bar[1] >= stop) {
-          exit = bar[1];
+          exit = costs.stopAtHigh ? bar[2] : bar[1];
           reason = 'stop';
           atOpen = true;
         } else if (canUseOpen && bar[1] <= target) {
@@ -229,7 +230,7 @@ export function backtestPeakRebound(
           if (bar[2] >= stop && bar[3] <= target) ambiguous = true;
 
           if (bar[2] >= stop) {
-            exit = stop;
+            exit = costs.stopAtHigh ? bar[2] : stop;
             reason = 'stop';
           } else if (bar[3] <= target) {
             exit = target;

@@ -61,6 +61,7 @@ export interface PaperStrategyConfig {
   limitDivisor: number; // 挂单上浮幅度分母 N: 挂单上浮 = dayChangePercent / limitDivisor (默认 100)
   limitExpireMinutes: number; // 挂单有效期分钟数 (默认 3 分钟)
   storageFile?: string | null;
+  stopAtHigh?: boolean; // 极端最高点止损模式 (触碰止损时按当根1m K线最高点/Tick最高突破价成交，默认 true)
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
@@ -91,6 +92,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   slippageBps: 2,   // 0.02%
   limitDivisor: Number(process.env.PAPER_LIMIT_N ?? 0), // 默认 0 (直开市价模式，回测胜率 71.2%，PF 3.23)
   limitExpireMinutes: Number(process.env.PAPER_LIMIT_EXPIRE_MINUTES ?? 3), // 默认 3 分钟
+  stopAtHigh: process.env.PAPER_STOP_AT_HIGH !== "false", // 默认 true (开启极端最高点止损模式)
   storageFile: STATE_FILE,
 };
 
@@ -643,7 +645,7 @@ export class PaperTradingEngine {
    * Real-time trade tick processing.
    * Evaluates pending limit orders, take-profit, stop-loss and timeouts in milliseconds.
    */
-  public onTick(tick: TradeTick): void {
+  public onTick(tick: TradeTick, currentCandleHigh?: number): void {
     // 0. 优先撮合限价做空挂单
     const pending = this.pendingOrders.get(tick.symbol);
     if (pending) {
@@ -715,10 +717,16 @@ export class PaperTradingEngine {
         }
         return;
       } else if (price >= position.sl1Price) {
-        this.closeStage(position, 1, position.sl1Price, time, "stop");
+        const exitPrice1 = this.config.stopAtHigh
+          ? Math.max(price, currentCandleHigh ?? price, position.sl1Price)
+          : position.sl1Price;
+        this.closeStage(position, 1, exitPrice1, time, "stop");
         // In extreme fast jumps, check if Stage 2 stop is also hit
         if (price >= position.sl2Price) {
-          this.closeStage(position, 2, position.sl2Price, time, "stop");
+          const exitPrice2 = this.config.stopAtHigh
+            ? Math.max(price, currentCandleHigh ?? price, position.sl2Price)
+            : position.sl2Price;
+          this.closeStage(position, 2, exitPrice2, time, "stop");
         }
         return;
       }
@@ -730,7 +738,10 @@ export class PaperTradingEngine {
         this.closeStage(position, 2, position.tp2Price, time, "target");
         return;
       } else if (price >= position.sl2Price) {
-        this.closeStage(position, 2, position.sl2Price, time, "stop");
+        const exitPrice = this.config.stopAtHigh
+          ? Math.max(price, currentCandleHigh ?? price, position.sl2Price)
+          : position.sl2Price;
+        this.closeStage(position, 2, exitPrice, time, "stop");
         return;
       }
     }
@@ -1153,6 +1164,7 @@ export class PaperTradingEngine {
     this.closedPositions = [];
     this.unifiedTracker = new UnifiedShortStrategyTracker({
       streakConfig: {
+        ...STREAK_LIVE_DEFAULT_CONFIG,
         topN: this.config.topN,
         minStreakCount: this.config.minStreakCount,
         supportMaPeriods: this.config.supportMaPeriods,

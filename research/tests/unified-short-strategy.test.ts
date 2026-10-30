@@ -54,8 +54,9 @@ test('Default strategy configurations match verified specifications', () => {
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitM, 3.0);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.requireMacdDivergence, true);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.divergenceLookbackMin, 10);
-  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.divergenceLookbackMax, 120);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.divergenceLookbackMax, 20);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.requireDoubleDivergence, true);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.requireBearish, true);
 
   // 3. 跌到20%+ (超跌反弹做空) - 最高胜率参数 (87.5%胜率, 7胜1负, PF 7.15)
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.pullbackX, 20.0);
@@ -113,7 +114,7 @@ test('UnifiedShortStrategyTracker manages active positions and prevents double-e
 
 test('UnifiedShortStrategyTracker triggers streak signal with verified parameters', () => {
   const tracker = new UnifiedShortStrategyTracker({
-    streakConfig: { requireMacdDivergence: false },
+    streakConfig: { requireMacdDivergence: false, requireBearish: false },
   });
 
   // Create 50 rising candles suitable for streak signal
@@ -175,13 +176,20 @@ test('UnifiedShortStrategyTracker triggers 新高顶背离 signal when MACD bear
     candles.push({ time, open, high, low, close, volume: 1000 });
   }
 
-  // Wave 2: 42..55 (Slower rise to higher high, creating lower MACD peak and ending with 2 green bars)
+  // Wave 2: 42..55 (Slower rise to higher high, creating lower MACD peak and ending with a bearish confirmation bar)
   for (let i = 42; i < 55; i++) {
     const time = now + i * 60000;
-    const open = basePrice;
-    const close = basePrice + 0.35;
-    const high = close + 0.05; // upper shadow 0.05 / 0.35 = 14.3%
-    const low = open + 0.1;
+    let open = basePrice;
+    let close = basePrice + 0.35;
+    let high = close + 0.05;
+    let low = open + 0.1;
+    if (i === 53) {
+      // Completed signal candle closes red to confirm bearish divergence false breakout
+      open = basePrice;
+      close = basePrice - 0.4;
+      high = open + 0.4;
+      low = close - 0.1;
+    }
     basePrice = close;
     candles.push({ time, open, high, low, close, volume: 1000 });
   }

@@ -61,6 +61,8 @@ export interface StreakStrategyLiveConfig {
   divergenceLookbackMin?: number; // 背离前高最小跨度 (默认 10 根)
   divergenceLookbackMax?: number; // 背离前高最大跨度 (默认 120 根)
   requireDoubleDivergence?: boolean; // 是否要求 DIF 与 Hist 双重顶背离 (默认 true)
+  requireBearish?: boolean; // 信号K线需收阴确认假突破 (默认 false，开启后规避顺势暴涨冲高风险)
+  maxLowerShadowPercent?: number; // 信号K线下影线占价格比例上限 (防止强买盘托底)
   // 向下兼容可选字段 (保留自定义测试支持)
   minStreakCount?: number;
   minUpperShadowRatio?: number;
@@ -82,8 +84,9 @@ export const STREAK_LIVE_DEFAULT_CONFIG: StreakStrategyLiveConfig = {
   exitM: 3.0,
   requireMacdDivergence: true,
   divergenceLookbackMin: 10,
-  divergenceLookbackMax: 120,
+  divergenceLookbackMax: 20, // 优化：收窄背离窗口至紧邻双顶 <= 20，避免陈旧高点导致伪背离
   requireDoubleDivergence: true,
+  requireBearish: true,      // 优化：信号K线必须收阴确认假突破冲高回落
 };
 
 export interface DeepReboundLiveConfig {
@@ -619,6 +622,20 @@ export class UnifiedShortStrategyTracker {
     const upperShadowRatio = body > 0 ? upperShadow / body : 0;
     if (cfg.minUpperShadowRatio !== undefined && cfg.maxUpperShadowRatio !== undefined) {
       if (upperShadowRatio < cfg.minUpperShadowRatio || upperShadowRatio >= cfg.maxUpperShadowRatio) {
+        return null;
+      }
+    }
+
+    // 5b. 可选：要求信号K线收阴确认假突破回落
+    if (cfg.requireBearish && candle.close >= candle.open) {
+      return null;
+    }
+
+    // 5c. 可选：下影线占比过滤 (防止下探强买盘托底)
+    if (cfg.maxLowerShadowPercent !== undefined) {
+      const lowerShadow = Math.min(candle.close, candle.open) - candle.low;
+      const lowerShadowPct = (lowerShadow / candle.open) * 100;
+      if (lowerShadowPct > cfg.maxLowerShadowPercent) {
         return null;
       }
     }

@@ -112,7 +112,7 @@ async function main() {
     marginUsdt: 10,
     limitDivisor: 100,
     storageFile: null, // in-memory
-    streakConfig: { requireMacdDivergence: false },
+    streakConfig: { requireMacdDivergence: false, requireBearish: false },
   });
 
   // 测试 1: 空连阳挂单与成交两段平仓

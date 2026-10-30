@@ -561,3 +561,51 @@ test("PaperTradingEngine: records signalType and signalLabel for 连阳悬空, �
   assert.equal(deepPos.exitParams?.holdMinutes, 30);
   assert.equal(deepPos.exitParams?.exitM, 4.0);
 });
+
+test("PaperTradingEngine: executes extreme stop loss at candle high or spiking tick price when stopAtHigh=true", () => {
+  const engine = new PaperTradingEngine({
+    initialBalanceUsdt: 100,
+    leverage: 10,
+    marginUsdt: 10,
+    takerFeeBps: 0,
+    slippageBps: 0,
+    stopAtHigh: true,
+    storageFile: null,
+  });
+
+  const now = 1700000000000;
+  // entry = 100, dayChange = 30%, exitX = 50 -> sl1 = 30/50 = 0.6% -> sl1Price = 100.6
+  engine.openPosition({
+    symbol: "EXTREMEUSDT",
+    dayChangePercent: 30.0,
+    entryPrice: 100.0,
+    entryTime: now,
+    signal: {
+      candle: { time: now - 60000, open: 98, high: 100.05, low: 97.9, close: 100, volume: 100 },
+      streakCount: 2,
+      amp30Percent: 7.2,
+      upperShadowRatio: 0.1,
+      greenRatio: 0.75,
+      consecutiveGreenBars: 7,
+    },
+  });
+
+  // Tick triggers SL1 with price=100.7 and currentCandleHigh=101.5 (extreme upper wick)
+  engine.onTick(
+    {
+      symbol: "EXTREMEUSDT",
+      price: 100.7,
+      qty: 1,
+      time: now + 30000,
+    },
+    101.5
+  );
+
+  const pos = engine.getPosition("EXTREMEUSDT")!;
+  assert.equal(pos.status, "PARTIAL");
+  assert.equal(pos.exits[0].reason, "stop");
+  // Exit price must be the extreme candle high (101.5), not the standard sl1Price (100.6)
+  assert.equal(pos.exits[0].exitPrice, 101.5);
+  // Gross loss on 50 USDT notional = 50 * (100 - 101.5) / 100 = -0.75 USDT
+  assert.ok(Math.abs(pos.realizedNetPnlUsdt - (-0.75)) < 1e-4);
+});

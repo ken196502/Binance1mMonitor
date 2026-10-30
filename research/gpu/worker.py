@@ -45,7 +45,7 @@ def first_exits(windows, parameters, device, signal_batch=1024):
     return result.tolist()
 
 
-def two_stage_exits(windows, parameters, day_changes, device, taker_fee_bps=5.0, slippage_bps=2.0, signal_batch=1024):
+def two_stage_exits(windows, parameters, day_changes, device, taker_fee_bps=5.0, slippage_bps=2.0, signal_batch=1024, stop_at_high=False):
     """Batch simulate two-stage adaptive dynamic exits on Apple Metal GPU.
 
     windows [signal, minute, 5]: O/H/L/C normalized to entry price 1.0, and validity.
@@ -111,9 +111,10 @@ def two_stage_exits(windows, parameters, day_changes, device, taker_fee_bps=5.0,
         st1_2d = st1.squeeze(2)
         tg1_2d = tg1.squeeze(2)
 
-        exit1 = torch.where(op1 >= st1_2d, op1,
+        st1_stop_exit = hi1 if stop_at_high else torch.where(op1 >= st1_2d, op1, st1_2d)
+        exit1 = torch.where(op1 >= st1_2d, st1_stop_exit,
                 torch.where(op1 <= tg1_2d, op1,
-                torch.where(hi1 >= st1_2d, st1_2d,
+                torch.where(hi1 >= st1_2d, st1_stop_exit,
                 torch.where(lo1 <= tg1_2d, tg1_2d, cl1))))
 
         # Stage 2 touch (from off1 onwards)
@@ -130,9 +131,10 @@ def two_stage_exits(windows, parameters, day_changes, device, taker_fee_bps=5.0,
         st2_2d = st2.squeeze(2)
         tg2_2d = tg2.squeeze(2)
 
-        exit2 = torch.where(op2 >= st2_2d, op2,
+        st2_stop_exit = hi2 if stop_at_high else torch.where(op2 >= st2_2d, op2, st2_2d)
+        exit2 = torch.where(op2 >= st2_2d, st2_stop_exit,
                 torch.where(op2 <= tg2_2d, op2,
-                torch.where(hi2 >= st2_2d, st2_2d,
+                torch.where(hi2 >= st2_2d, st2_stop_exit,
                 torch.where(lo2 <= tg2_2d, tg2_2d, cl2))))
 
         gross1 = (1.0 - exit1) * 100.0
@@ -213,7 +215,8 @@ def serve():
                 metrics = two_stage_exits(windows, params, day_changes, device,
                                           request.get('takerFeeBps', 5.0),
                                           request.get('slippageBps', 2.0),
-                                          request.get('signalBatch', 1024))
+                                          request.get('signalBatch', 1024),
+                                          stop_at_high=request.get('stopAtHigh', False))
                 if device.type == 'mps':
                     torch.mps.synchronize()
                 response = {'metrics': metrics, 'seconds': time.perf_counter() - began}

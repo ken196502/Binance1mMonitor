@@ -50,6 +50,7 @@ export interface WickConfig {
   exitM?: number;
   exitMs?: number[];
   exitPlans?: WickExitPlan[];
+  stopAtHigh?: boolean;
 }
 
 export const WICK_CONFIG: WickConfig = {
@@ -85,6 +86,7 @@ export const WICK_CONFIG: WickConfig = {
     { firstTakeProfitPercent: 0.2, firstStopLossPercent: 0.2, finalTakeProfitPercent: 1, finalStopLossPercent: 0.3 },
     { firstTakeProfitPercent: 0.3, firstStopLossPercent: 0.3, finalTakeProfitPercent: 2, finalStopLossPercent: 0.5 },
   ],
+  stopAtHigh: false,
 };
 
 export function validateWickConfig(value: unknown): WickConfig {
@@ -129,6 +131,7 @@ export function validateWickConfig(value: unknown): WickConfig {
     ['slippageBps', 0, 100, false], ['minTrades', 1, 100000, true],
   ] as const) if (!number(c[k], min, max, int)) throw new Error(`wick ${k} 无效`);
 
+  if (c.stopAtHigh !== undefined && typeof c.stopAtHigh !== 'boolean') throw new Error('wick stopAtHigh 无效');
   if (!['day-fraction', 'fixed'].includes(c.gainMode)) throw new Error('wick 涨幅模式或撤单配置无效');
   if (![c.trainRatio, c.validationRatio].every(v => number(v, 0.001, 0.999)) || c.trainRatio + c.validationRatio >= 1) throw new Error('wick 训练/验证比例合计必须 <1');
 

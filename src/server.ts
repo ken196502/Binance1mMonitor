@@ -76,10 +76,12 @@ onAnomalyRecovered(() => {
 // 监听 WebSocket 成交流，实时推进当前 1m K 线并驱动模拟交易撮合
 wsManager.onTrade((tick) => {
   const symCache = candleCache.get(tick.symbol);
+  let currentCandleHigh: number | undefined;
   if (symCache && symCache.initialized && symCache.candles1m.length > 0) {
     symCache.candles1m = applyTradeToCandles(symCache.candles1m, tick, KLINE_ROLLING_LIMIT);
+    currentCandleHigh = symCache.candles1m[symCache.candles1m.length - 1]?.high;
   }
-  paperTrading.onTick(tick);
+  paperTrading.onTick(tick, currentCandleHigh);
 });
 
 export function getCandleCacheForTest(): Map<string, SymbolCandleCache> {

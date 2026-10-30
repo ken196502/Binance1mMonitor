@@ -24,6 +24,7 @@ export interface PeakReboundConfig {
   watchWindowHours: number; // how many hours to keep watching a coin after it was rank 1
   takerFeeBps: number;
   slippageBps: number;
+  stopAtHigh?: boolean;
   grid: PeakReboundGrid;
 }
 
@@ -52,6 +53,7 @@ export const PEAK_REBOUND_DEFAULT_CONFIG: PeakReboundConfig = {
   watchWindowHours: 48,
   takerFeeBps: 5,
   slippageBps: 2,
+  stopAtHigh: false,
   grid: PEAK_REBOUND_DEFAULT_GRID,
 };
 

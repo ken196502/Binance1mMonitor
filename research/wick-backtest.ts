@@ -169,12 +169,12 @@ export function backtestWick(data: MinuteDataset, signals: WickSignal[], p: Wick
           const { stop, target, targetTouch } = levels[order.exits.length];
           let exit: number | null = null, reason: WickExitReason = 'timeout';
           let atOpen = false;
-          if (canUseOpen && bar[1] >= stop) { exit = bar[1]; reason = 'stop'; atOpen = true; }
+          if (canUseOpen && bar[1] >= stop) { exit = c.stopAtHigh ? bar[2] : bar[1]; reason = 'stop'; atOpen = true; }
           else if (canUseOpen && bar[1] <= targetTouch) { exit = bar[1]; reason = 'target'; atOpen = true; }
           else {
             if (bar[2] >= stop && bar[3] <= targetTouch) ambiguous = true;
             if (!targetProvenByLow && bar[3] <= targetTouch && bar[4] > targetTouch) ignoredUnorderedTarget = true;
-            if (bar[2] >= stop) { exit = stop; reason = 'stop'; }
+            if (bar[2] >= stop) { exit = c.stopAtHigh ? bar[2] : stop; reason = 'stop'; }
             else if ((targetProvenByLow ? bar[3] : bar[4]) <= targetTouch) { exit = target; reason = 'target'; }
           }
           if (exit == null) break;
