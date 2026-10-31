@@ -77,11 +77,14 @@ onAnomalyRecovered(() => {
 wsManager.onTrade((tick) => {
   const symCache = candleCache.get(tick.symbol);
   let currentCandleHigh: number | undefined;
+  let currentCandleLow: number | undefined;
   if (symCache && symCache.initialized && symCache.candles1m.length > 0) {
     symCache.candles1m = applyTradeToCandles(symCache.candles1m, tick, KLINE_ROLLING_LIMIT);
-    currentCandleHigh = symCache.candles1m[symCache.candles1m.length - 1]?.high;
+    const forming = symCache.candles1m[symCache.candles1m.length - 1];
+    currentCandleHigh = forming?.high;
+    currentCandleLow = forming?.low;
   }
-  paperTrading.onTick(tick, currentCandleHigh);
+  paperTrading.onTick(tick, currentCandleHigh, currentCandleLow);
 });
 
 export function getCandleCacheForTest(): Map<string, SymbolCandleCache> {

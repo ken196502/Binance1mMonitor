@@ -154,6 +154,10 @@ export interface UnifiedLiveConfig {
   extremeDevConfig?: Partial<ExtremeDevLiveConfig>;
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   preventConflict?: boolean; // Prevent double-entry if the same symbol has an active trade (default true)
+  enableStreak?: boolean;     // 是否启用新高顶背离做空 (默认 true)
+  enableRebound?: boolean;    // 是否启用首次跌10%弱反弹做空 (默认 true)
+  enableDeepRebound?: boolean;// 是否启用跌20%+超跌反弹做空 (默认 true)
+  enableExtremeDev?: boolean; // 是否启用冲高极度乖离做空 (默认 true)
 }
 
 export const UNIFIED_LIVE_DEFAULT_CONFIG: Required<UnifiedLiveConfig> = {
@@ -162,6 +166,10 @@ export const UNIFIED_LIVE_DEFAULT_CONFIG: Required<UnifiedLiveConfig> = {
   extremeDevConfig: EXTREME_DEV_LIVE_DEFAULT_CONFIG,
   streakConfig: STREAK_LIVE_DEFAULT_CONFIG,
   preventConflict: true,
+  enableStreak: true,
+  enableRebound: true,
+  enableDeepRebound: true,
+  enableExtremeDev: true,
 };
 
 // 黄金双速最优组合 (Dual-Speed Ensemble): 首次跌10%、跌到20%+、冲高极度乖离走 3x / 10%大止损 / 90m 长波段，新高顶背离保留 15m 闪击战
@@ -171,6 +179,10 @@ export const DUAL_SPEED_UNIFIED_CONFIG: Required<UnifiedLiveConfig> = {
   extremeDevConfig: DUAL_SPEED_EXTREME_DEV_CONFIG,
   streakConfig: STREAK_LIVE_DEFAULT_CONFIG,
   preventConflict: true,
+  enableStreak: true,
+  enableRebound: true,
+  enableDeepRebound: true,
+  enableExtremeDev: true,
 };
 
 export interface UnifiedLiveSignal {
@@ -238,6 +250,10 @@ export class UnifiedShortStrategyTracker {
     extremeDevConfig: ExtremeDevLiveConfig;
     streakConfig: StreakStrategyLiveConfig;
     preventConflict: boolean;
+    enableStreak: boolean;
+    enableRebound: boolean;
+    enableDeepRebound: boolean;
+    enableExtremeDev: boolean;
   };
   private reboundTracker: PeakReboundStrategyTracker;
   private activePositions = new Map<string, ActivePositionInfo>();
@@ -251,6 +267,10 @@ export class UnifiedShortStrategyTracker {
       extremeDevConfig: { ...EXTREME_DEV_LIVE_DEFAULT_CONFIG, ...config.extremeDevConfig },
       streakConfig: { ...STREAK_LIVE_DEFAULT_CONFIG, ...config.streakConfig },
       preventConflict: config.preventConflict ?? true,
+      enableStreak: config.enableStreak ?? true,
+      enableRebound: config.enableRebound ?? true,
+      enableDeepRebound: config.enableDeepRebound ?? true,
+      enableExtremeDev: config.enableExtremeDev ?? true,
     };
     this.reboundTracker = new PeakReboundStrategyTracker(this.config.reboundConfig);
   }
@@ -310,79 +330,83 @@ export class UnifiedShortStrategyTracker {
     }
 
     // 2. 信号二: 首次跌到 10% (Rank 1 watchlist focus)
-    const reboundSig = this.reboundTracker.checkCandles(symbol, candles, now);
-    if (reboundSig) {
-      const exitParams = {
-        holdMinutes: this.config.reboundConfig.holdMinutes,
-        exitX: this.config.reboundConfig.exitX,
-        exitN: this.config.reboundConfig.exitN,
-        exitM: this.config.reboundConfig.exitM,
-        stopLossPercent: this.config.reboundConfig.stopLossPercent,
-        tp1Percent: this.config.reboundConfig.tp1Percent,
-        tp2Percent: this.config.reboundConfig.tp2Percent,
-        moveSlToEntryAfterTp1: this.config.reboundConfig.moveSlToEntryAfterTp1,
-      };
-      const signal: UnifiedLiveSignal = {
-        id: `reb-${symbol}-${reboundSig.time}`,
-        type: 'rebound',
-        label: '首次跌10%',
-        symbol,
-        time: reboundSig.time,
-        dayChangePercent,
-        entryPrice: reboundSig.candle.close,
-        exitParams,
-        details: { reboundSignal: reboundSig },
-      };
-      if (this.config.preventConflict) {
-        this.registerPosition(symbol, {
-          tradeId: signal.id,
+    if (this.config.enableRebound) {
+      const reboundSig = this.reboundTracker.checkCandles(symbol, candles, now);
+      if (reboundSig) {
+        const exitParams = {
+          holdMinutes: this.config.reboundConfig.holdMinutes,
+          exitX: this.config.reboundConfig.exitX,
+          exitN: this.config.reboundConfig.exitN,
+          exitM: this.config.reboundConfig.exitM,
+          stopLossPercent: this.config.reboundConfig.stopLossPercent,
+          tp1Percent: this.config.reboundConfig.tp1Percent,
+          tp2Percent: this.config.reboundConfig.tp2Percent,
+          moveSlToEntryAfterTp1: this.config.reboundConfig.moveSlToEntryAfterTp1,
+        };
+        const signal: UnifiedLiveSignal = {
+          id: `reb-${symbol}-${reboundSig.time}`,
           type: 'rebound',
-          entryTime: signal.time,
-          maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
-        });
+          label: '首次跌10%',
+          symbol,
+          time: reboundSig.time,
+          dayChangePercent,
+          entryPrice: reboundSig.candle.close,
+          exitParams,
+          details: { reboundSignal: reboundSig },
+        };
+        if (this.config.preventConflict) {
+          this.registerPosition(symbol, {
+            tradeId: signal.id,
+            type: 'rebound',
+            entryTime: signal.time,
+            maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
+          });
+        }
+        return signal;
       }
-      return signal;
     }
 
     // 3. 信号三: 跌到 20%+ (Deep Rebound Short)
-    const deepSig = this.checkDeepReboundSignal(symbol, dayChangePercent, candles, now);
-    if (deepSig) {
-      const exitParams = {
-        holdMinutes: this.config.deepReboundConfig.holdMinutes,
-        exitX: this.config.deepReboundConfig.exitX,
-        exitN: this.config.deepReboundConfig.exitN,
-        exitM: this.config.deepReboundConfig.exitM,
-        stopLossPercent: this.config.deepReboundConfig.stopLossPercent,
-        tp1Percent: this.config.deepReboundConfig.tp1Percent,
-        tp2Percent: this.config.deepReboundConfig.tp2Percent,
-        moveSlToEntryAfterTp1: this.config.deepReboundConfig.moveSlToEntryAfterTp1,
-      };
-      const targetIdx = candles.length - 2;
-      const closedCandle = candles[targetIdx];
-      const signal: UnifiedLiveSignal = {
-        id: `deep-${symbol}-${closedCandle.time}`,
-        type: 'deep_rebound',
-        label: '跌到20%+',
-        symbol,
-        time: closedCandle.time + 60 * 1000,
-        dayChangePercent,
-        entryPrice: closedCandle.close,
-        exitParams,
-        details: { deepReboundSignal: deepSig },
-      };
-      if (this.config.preventConflict) {
-        this.registerPosition(symbol, {
-          tradeId: signal.id,
+    if (this.config.enableDeepRebound) {
+      const deepSig = this.checkDeepReboundSignal(symbol, dayChangePercent, candles, now);
+      if (deepSig) {
+        const exitParams = {
+          holdMinutes: this.config.deepReboundConfig.holdMinutes,
+          exitX: this.config.deepReboundConfig.exitX,
+          exitN: this.config.deepReboundConfig.exitN,
+          exitM: this.config.deepReboundConfig.exitM,
+          stopLossPercent: this.config.deepReboundConfig.stopLossPercent,
+          tp1Percent: this.config.deepReboundConfig.tp1Percent,
+          tp2Percent: this.config.deepReboundConfig.tp2Percent,
+          moveSlToEntryAfterTp1: this.config.deepReboundConfig.moveSlToEntryAfterTp1,
+        };
+        const targetIdx = candles.length - 2;
+        const closedCandle = candles[targetIdx];
+        const signal: UnifiedLiveSignal = {
+          id: `deep-${symbol}-${closedCandle.time}`,
           type: 'deep_rebound',
-          entryTime: signal.time,
-          maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
-        });
+          label: '跌到20%+',
+          symbol,
+          time: closedCandle.time + 60 * 1000,
+          dayChangePercent,
+          entryPrice: closedCandle.close,
+          exitParams,
+          details: { deepReboundSignal: deepSig },
+        };
+        if (this.config.preventConflict) {
+          this.registerPosition(symbol, {
+            tradeId: signal.id,
+            type: 'deep_rebound',
+            entryTime: signal.time,
+            maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
+          });
+        }
+        return signal;
       }
-      return signal;
     }
 
     // 3. 信号一: 新高顶背离 (Top N focus, 创24h新高+MACD双背离+悬空假突破收阴，10x 专属闪击战，优先于冲高乖离)
-    if (rank <= this.config.streakConfig.topN) {
+    if (this.config.enableStreak && rank <= this.config.streakConfig.topN) {
       const streakSig = this.checkStreakSignal(symbol, dayChangePercent, candles);
       if (streakSig) {
         const exitParams = {
@@ -421,7 +445,7 @@ export class UnifiedShortStrategyTracker {
     }
 
     // 4. 信号四: 冲高极度乖离 (Extreme MA Extension Short: 未创顶背离但 3m 极端垂直暴涨脱离 MA30)
-    if (rank <= this.config.extremeDevConfig.topN) {
+    if (this.config.enableExtremeDev && rank <= this.config.extremeDevConfig.topN) {
       const devSig = this.checkExtremeDevSignal(symbol, dayChangePercent, candles, now);
       if (devSig) {
         const exitParams = {

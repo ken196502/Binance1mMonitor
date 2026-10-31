@@ -39,6 +39,10 @@ function formatSignalLabel(type?: string, label?: string): string {
   if (type === "extreme_dev") return "冲高极度乖离";
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
+  if (type === "ma30_pullback") return "龙头MA30回踩";
+  if (type === "ma60_support") return "龙头MA60深蹲";
+  if (type === "rank1_first_pullback") return "榜一首次回踩";
+  if (type === "second_wave_expansion") return "龙头二浪突破";
   return "新高顶背离";
 }
 
@@ -314,7 +318,7 @@ export function PaperTradingPanel({
               双速杠杆 ({streakLev}x 闪击 / {trendLev}x 波段) · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions} (每策略 {maxPerStrategy})
             </span>
             <span className="badge-strategy">
-              4大互斥做空策略 · 黄金双速系统 (顺势衰竭 90m波段/10%大止损/动态保本 + 新高背离 15m闪击) · {isLimitEntry ? `限价接针 (N=${config!.limitDivisor})` : "直开市价"} · 两段动态止盈止损
+              5大高胜率精选策略 · 3大做空 (冲高极度乖离90.9% · 跌到20%+ 87.5% · 首次跌10% 80.0%) + 2大涨幅榜做多 (MA30黄金回踩75.7% · MA60深蹲77.8%) · 两段动态止盈止损
             </span>
           </h2>
           <div className="paper-stats-chips">
@@ -462,7 +466,7 @@ export function PaperTradingPanel({
             <div className="empty-paper-state">
               <span className="empty-icon">📡</span>
               <span className="empty-text">
-                当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔，保证四大策略各持仓至少 1 笔) · {isLimitEntry ? `每分钟收盘扫描 Top 10 (以 24h涨幅/${config!.limitDivisor} 向上溢价挂单接针)` : "每分钟收盘对齐直开市价做空"}
+                当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔，保证5大策略各持仓至多 1 笔) · 3大做空 (极度乖离90.9%、跌20%+ 87.5%、跌10% 80.0%) + 2大涨幅榜做多 (MA30黄金回踩75.7%、MA60深蹲77.8%)
               </span>
             </div>
           ) : null
@@ -473,6 +477,7 @@ export function PaperTradingPanel({
               const roe = pos.roePercent;
               const isSelected = selectedSymbol === pos.symbol;
               const remainingTime = formatCountdown(pos.timeoutAt);
+              const isLong = pos.side === "LONG";
 
               return (
                 <div
@@ -494,7 +499,12 @@ export function PaperTradingPanel({
                       <span className={`badge-signal badge-${pos.signalType || "streak"}`}>
                         {formatSignalLabel(pos.signalType, pos.signalLabel)}
                       </span>
-                      <span className="badge-short">{pos.leverage}x 做空</span>
+                      <span
+                        className={isLong ? "badge-long" : "badge-short"}
+                        style={isLong ? { background: "rgba(46, 204, 113, 0.2)", color: "#2ecc71" } : undefined}
+                      >
+                        {pos.leverage}x {isLong ? "做多" : "做空"}
+                      </span>
                       <span className="badge-margin">保 {pos.marginUsdt.toFixed(1)}U</span>
                       {pos.rank && <span className="pos-rank">#{pos.rank}</span>}
                     </div>
@@ -534,8 +544,8 @@ export function PaperTradingPanel({
                         </span>
                       </div>
                       <div className="stage-targets">
-                        <span>止盈1: <b className="target-green">{formatPrice(pos.tp1Price)} (-{pos.tp1Percent.toFixed(2)}%)</b></span>
-                        <span>止损1: <b className="target-red">{formatPrice(pos.sl1Price)} (+{pos.sl1Percent.toFixed(2)}%)</b></span>
+                        <span>止盈1: <b className="target-green">{formatPrice(pos.tp1Price)} ({isLong ? "+" : "-"}{pos.tp1Percent.toFixed(2)}%)</b></span>
+                        <span>止损1: <b className="target-red">{formatPrice(pos.sl1Price)} ({isLong ? "-" : "+"}{pos.sl1Percent.toFixed(2)}%)</b></span>
                       </div>
                     </div>
 
@@ -550,16 +560,16 @@ export function PaperTradingPanel({
                         <span>
                           止损2:{" "}
                           {pos.isBreakevenArmed ? (
-                            <b className="target-green" title="阶段一止盈后已上移锁定保本">
+                            <b className="target-green" title="阶段一止盈后已锁定保本">
                               保本锁定 ({formatPrice(pos.sl2Price)})
                             </b>
                           ) : (
                             <b className="target-red">
-                              {formatPrice(pos.sl2Price)} (+{pos.sl2Percent.toFixed(2)}%)
+                              {formatPrice(pos.sl2Price)} ({isLong ? "-" : "+"}{pos.sl2Percent.toFixed(2)}%)
                             </b>
                           )}
                         </span>
-                        <span>止盈2: <b className="target-green">{formatPrice(pos.tp2Price)} (-{pos.tp2Percent.toFixed(2)}%)</b></span>
+                        <span>止盈2: <b className="target-green">{formatPrice(pos.tp2Price)} ({isLong ? "+" : "-"}{pos.tp2Percent.toFixed(2)}%)</b></span>
                       </div>
                     </div>
                   </div>
@@ -628,7 +638,7 @@ export function PaperTradingPanel({
                         </td>
                         <td>
                           <span className={`badge-signal badge-${item.signalType || "streak"}`}>
-                            {formatSignalLabel(item.signalType, item.signalLabel)}
+                            {item.side === "LONG" ? "做多 · " : "做空 · "}{formatSignalLabel(item.signalType, item.signalLabel)}
                           </span>
                         </td>
                         <td className="pos">+{item.dayChangePercent.toFixed(2)}%</td>

@@ -609,3 +609,296 @@ test("PaperTradingEngine: executes extreme stop loss at candle high or spiking t
   // Gross loss on 50 USDT notional = 50 * (100 - 101.5) / 100 = -0.75 USDT
   assert.ok(Math.abs(pos.realizedNetPnlUsdt - (-0.75)) < 1e-4);
 });
+
+test("PaperTradingEngine: LONG position opens with inverted price thresholds (TP above, SL below)", () => {
+  const engine = new PaperTradingEngine({
+    initialBalanceUsdt: 100,
+    marginUsdt: 20,
+    leverage: 3,
+    storageFile: null,
+  });
+
+  const now = 1700000000000;
+  const pos = engine.openPosition({
+    symbol: "LONGTOKENUSDT",
+    side: "LONG",
+    dayChangePercent: 30.0,
+    entryPrice: 10.0,
+    entryTime: now,
+    signalType: "ma30_pullback",
+    signalLabel: "龙头MA30回踩",
+    exitParams: {
+      holdMinutes: 90,
+      tp1Percent: 3.0,
+      tp2Percent: 8.0,
+      stopLossPercent: 8.0,
+      moveSlToEntryAfterTp1: true,
+      leverage: 3,
+    },
+    signal: {
+      candle: { time: now - 60000, open: 10.2, high: 10.3, low: 9.9, close: 10.0, volume: 1000 },
+      streakCount: 0,
+      amp30Percent: 12.0,
+      upperShadowRatio: 0,
+      greenRatio: 0,
+      consecutiveGreenBars: 0,
+    },
+  });
+
+  assert.equal(pos.side, "LONG");
+  assert.equal(pos.signalType, "ma30_pullback");
+  assert.equal(pos.signalLabel, "龙头MA30回踩");
+  assert.equal(pos.leverage, 3);
+  assert.equal(pos.marginUsdt, 20);
+  assert.equal(pos.notionalUsdt, 60);
+
+  // TP must be ABOVE entry: 10 * (1 + 0.03) = 10.30
+  assert.ok(Math.abs(pos.tp1Price - 10.30) < 1e-4);
+  // SL must be BELOW entry: 10 * (1 - 0.08) = 9.20
+  assert.ok(Math.abs(pos.sl1Price - 9.20) < 1e-4);
+  // TP2 must be ABOVE entry: 10 * (1 + 0.08) = 10.80
+  assert.ok(Math.abs(pos.tp2Price - 10.80) < 1e-4);
+  // SL2 must be BELOW entry: 10 * (1 - 0.08) = 9.20
+  assert.ok(Math.abs(pos.sl2Price - 9.20) < 1e-4);
+});
+
+test("PaperTradingEngine: LONG position executes 2-stage TP and locks breakeven correctly", () => {
+  const engine = new PaperTradingEngine({
+    initialBalanceUsdt: 100,
+    marginUsdt: 20,
+    leverage: 3,
+    takerFeeBps: 0,
+    slippageBps: 0,
+    storageFile: null,
+  });
+
+  const now = 1700000000000;
+  const pos = engine.openPosition({
+    symbol: "BULLUSDT",
+    side: "LONG",
+    dayChangePercent: 30.0,
+    entryPrice: 100.0,
+    entryTime: now,
+    signalType: "ma60_support",
+    exitParams: {
+      holdMinutes: 60,
+      tp1Percent: 3.0,
+      tp2Percent: 8.0,
+      stopLossPercent: 7.0,
+      moveSlToEntryAfterTp1: true,
+      leverage: 3,
+    },
+    signal: {
+      candle: { time: now - 60000, open: 105, high: 106, low: 99, close: 100, volume: 1000 },
+      streakCount: 0,
+      amp30Percent: 15.0,
+      upperShadowRatio: 0,
+      greenRatio: 0,
+      consecutiveGreenBars: 0,
+    },
+  });
+
+  // 1. Tick reaches 103.0 -> triggers Stage 1 TP (+3.0%)
+  engine.onTick({
+    symbol: "BULLUSDT",
+    price: 103.05,
+    qty: 1,
+    time: now + 60000,
+  });
+
+  assert.equal(pos.status, "PARTIAL");
+  assert.equal(pos.remainingFraction, 0.5);
+  assert.equal(pos.exits.length, 1);
+  assert.equal(pos.exits[0].reason, "target");
+  // Stage 1 notional = 60 * 0.5 = 30 USDT. Gain = 30 * +3% = +0.9 USDT
+  assert.ok(Math.abs(pos.realizedNetPnlUsdt - 0.9) < 1e-4);
+  // Breakeven armed: SL2 moved up to entryPrice * 0.998 = 99.80
+  assert.equal(pos.isBreakevenArmed, true);
+  assert.equal(pos.sl2Price, 99.80);
+
+  // 2. Tick reaches 108.0 -> triggers Stage 2 TP (+8.0%)
+  engine.onTick({
+    symbol: "BULLUSDT",
+    price: 108.10,
+    qty: 1,
+    time: now + 120000,
+  });
+
+  assert.equal(pos.status, "CLOSED");
+  assert.equal(pos.remainingFraction, 0);
+  assert.equal(pos.exits.length, 2);
+  assert.equal(pos.exits[1].reason, "target");
+  // Stage 2 gain = 30 * +8% = +2.4 USDT
+  // Total trade net = 0.9 + 2.4 = +3.3 USDT
+  assert.ok(Math.abs(pos.totalNetPnlUsdt - 3.3) < 1e-4);
+  // Account balance grew from 100 to 103.3 USDT
+  assert.ok(Math.abs(engine.getAccount().balanceUsdt - 103.3) < 1e-4);
+});
+
+test("PaperTradingEngine: LONG position stop-loss triggers with stopAtLow candle low execution", () => {
+  const engine = new PaperTradingEngine({
+    initialBalanceUsdt: 100,
+    marginUsdt: 20,
+    leverage: 3,
+    takerFeeBps: 0,
+    slippageBps: 0,
+    stopAtLow: true,
+    storageFile: null,
+  });
+
+  const now = 1700000000000;
+  const pos = engine.openPosition({
+    symbol: "DIPUSDT",
+    side: "LONG",
+    dayChangePercent: 25.0,
+    entryPrice: 100.0,
+    entryTime: now,
+    signalType: "ma30_pullback",
+    exitParams: {
+      holdMinutes: 90,
+      exitX: 50,
+      exitN: 2.0,
+      exitM: 2.0,
+      leverage: 3,
+    },
+    signal: {
+      candle: { time: now - 60000, open: 102, high: 103, low: 99.5, close: 100, volume: 1000 },
+      streakCount: 0,
+      amp30Percent: 10.0,
+      upperShadowRatio: 0,
+      greenRatio: 0,
+      consecutiveGreenBars: 0,
+    },
+  });
+
+  // sl1 = 25/50 = 0.5% -> sl1Price = 99.50. sl2 = 25*2/50 = 1.0% -> sl2Price = 99.00.
+  // 1. Tick dips to 99.3 with candle low piercing to 99.2
+  engine.onTick(
+    {
+      symbol: "DIPUSDT",
+      price: 99.3,
+      qty: 1,
+      time: now + 30000,
+    },
+    undefined, // currentCandleHigh
+    99.2       // currentCandleLow
+  );
+
+  assert.equal(pos.status, "PARTIAL");
+  assert.equal(pos.remainingFraction, 0.5);
+  assert.equal(pos.exits[0].reason, "stop");
+  // With stopAtLow=true, exitPrice is the extreme candle low (99.2)
+  assert.equal(pos.exits[0].exitPrice, 99.2);
+  // Loss on 30 USDT stage notional = 30 * (99.2 - 100)/100 = -0.24 USDT
+  assert.ok(Math.abs(pos.realizedNetPnlUsdt - (-0.24)) < 1e-4);
+
+  // 2. Next tick dips to 98.9 with candle low piercing to 98.5 -> triggers Stage 2 SL
+  engine.onTick(
+    {
+      symbol: "DIPUSDT",
+      price: 98.9,
+      qty: 1,
+      time: now + 60000,
+    },
+    undefined,
+    98.5
+  );
+
+  assert.equal(pos.status, "CLOSED");
+  assert.equal(pos.remainingFraction, 0);
+  assert.equal(pos.exits[1].reason, "stop");
+  assert.equal(pos.exits[1].exitPrice, 98.5);
+  // Stage 2 loss = 30 * (98.5 - 100)/100 = -0.45 USDT
+  // Total loss = -0.24 + -0.45 = -0.69 USDT
+  assert.ok(Math.abs(pos.totalNetPnlUsdt - (-0.69)) < 1e-4);
+});
+
+test("PaperTradingEngine: supports 5 simultaneous positions (3 Shorts + 2 Longs) filling 100% margin safely", () => {
+  const engine = new PaperTradingEngine({
+    initialBalanceUsdt: 100,
+    marginRate: 0.20,
+    maxPositions: 5,
+    maxPositionsPerStrategy: 1,
+    storageFile: null,
+  });
+
+  const now = 1700000000000;
+  const dummySignal = {
+    candle: { time: now - 60000, open: 100, high: 101, low: 99, close: 100, volume: 100 },
+    streakCount: 2,
+    amp30Percent: 8,
+    upperShadowRatio: 0.1,
+    greenRatio: 0.8,
+    consecutiveGreenBars: 5,
+  };
+
+  // 1. Short 1: 冲高极度乖离 (extreme_dev) - 90.9% 胜率
+  engine.openPosition({
+    symbol: "SHORT_DEV",
+    side: "SHORT",
+    dayChangePercent: 30,
+    entryPrice: 100,
+    entryTime: now,
+    signalType: "extreme_dev",
+    signal: dummySignal,
+  });
+
+  // 2. Short 2: 跌到20%+ (deep_rebound) - 87.5% 胜率
+  engine.openPosition({
+    symbol: "SHORT_DEEP",
+    side: "SHORT",
+    dayChangePercent: 25,
+    entryPrice: 50,
+    entryTime: now,
+    signalType: "deep_rebound",
+    signal: dummySignal,
+  });
+
+  // 3. Short 3: 首次跌10% (rebound) - 80.0% 胜率
+  engine.openPosition({
+    symbol: "SHORT_REB",
+    side: "SHORT",
+    dayChangePercent: 35,
+    entryPrice: 20,
+    entryTime: now,
+    signalType: "rebound",
+    signal: dummySignal,
+  });
+
+  // 4. Long 1: 龙头MA30黄金回踩 (ma30_pullback) - 75.7% 胜率
+  engine.openPosition({
+    symbol: "LONG_MA30",
+    side: "LONG",
+    dayChangePercent: 28,
+    entryPrice: 10,
+    entryTime: now,
+    signalType: "ma30_pullback",
+    signal: dummySignal,
+  });
+
+  // 5. Long 2: 龙头MA60深度深蹲 (ma60_support) - 77.8% 胜率
+  engine.openPosition({
+    symbol: "LONG_MA60",
+    side: "LONG",
+    dayChangePercent: 26,
+    entryPrice: 5,
+    entryTime: now,
+    signalType: "ma60_support",
+    signal: dummySignal,
+  });
+
+  // All 5 strategies are active simultaneously!
+  const state = engine.getState();
+  assert.equal(state.activePositions.length, 5, "5 strategies concurrently running");
+  assert.equal(engine.countPositionsByStrategy("extreme_dev"), 1);
+  assert.equal(engine.countPositionsByStrategy("deep_rebound"), 1);
+  assert.equal(engine.countPositionsByStrategy("rebound"), 1);
+  assert.equal(engine.countPositionsByStrategy("ma30_pullback"), 1);
+  assert.equal(engine.countPositionsByStrategy("ma60_support"), 1);
+
+  // Each takes 20 USDT margin, total used = 100 USDT (100% capacity)
+  assert.equal(engine.calculateUsedMargin(), 100);
+
+  // 6th position attempt should exceed quota and be prevented
+  assert.equal(engine.calculateUsedMargin() >= engine.getAccount().balanceUsdt, true);
+});

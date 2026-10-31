@@ -1,7 +1,13 @@
-// Paper Trading Engine for Binance 1m Top-Gainers Short Strategy
-// Implements the ultra-high win rate strategy (100.0% historical win rate, 7 wins 0 losses, PF: ∞)
-// Features: 10x leverage, 10 USDT margin, 100 USDT initial capital,
-// 30m amplitude >= 24h gain / 12, upper shadow 0.5%~30%, 2-stage dynamic exit.
+// Paper Trading Engine for Binance 1m Top-Gainers Dual Strategy (3 Shorts + 2 Longs)
+// Implements the highest win-rate ensemble across 168 hours of historical backtests:
+// - 3 Highest Win-Rate Shorts:
+//   1. 'extreme_dev' (冲高极度乖离做空): 90.9% 胜率, PF 12.09
+//   2. 'deep_rebound' (跌到20%+次级反弹做空): 87.5% 胜率, PF 7.15
+//   3. 'rebound' (首次跌到10%弱反弹做空): 80.0% 胜率, PF 2.67
+// - 2 Highest Win-Rate Longs (24h 涨幅榜专属):
+//   1. 'ma30_pullback' (龙头MA30黄金生命线回踩做多): 75.7% 胜率, +29.74% 净收益
+//   2. 'ma60_support' (龙头MA60深度大蹲强托底做多): 77.8% 胜率, +11.29% 净收益
+// Features: 3x leverage, 20% dynamic equity margin per position, max 5 positions (1 per strategy).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -26,6 +32,15 @@ import {
   DUAL_SPEED_PEAK_REBOUND_CONFIG,
   type PeakReboundLiveConfig,
 } from "./peak-rebound-strategy.ts";
+import {
+  UnifiedLongStrategyTracker,
+  GOLDEN_PULLBACK_LIVE_DEFAULT_CONFIG,
+  DEEP_SUPPORT_LIVE_DEFAULT_CONFIG,
+  type GoldenPullbackLiveConfig,
+  type DeepSupportLiveConfig,
+  type UnifiedLongLiveConfig,
+  type UnifiedLongLiveSignal,
+} from "./unified-long-strategy.ts";
 import type {
   PaperAccount,
   PaperPosition,
@@ -61,21 +76,27 @@ export interface PaperStrategyConfig {
   leverage: number;           // 通用/顺势波段杠杆 (默认 3x)
   streakLeverage?: number;    // 新高顶背离闪击专属杠杆 (回测最优 10x)
   trendLeverage?: number;     // 顺势衰竭专属杠杆 (默认 3x)
+  longLeverage?: number;      // 做多专属杠杆 (默认 3x)
   marginUsdt: number;         // 单笔保证金金额基准 (默认 20 USDT 参考值)
   marginRate?: number;        // 单笔保证金占总资产比例 (默认 0.20 即 20% 资产量)
   marginPercent?: number;     // 百分比格式 (默认 20)
   maxPositions?: number;      // 全局最大同时持仓数 (默认 5)
-  maxPositionsPerStrategy?: number; // 单策略最大同时持仓数 (默认 1，保证四大策略至少各持仓 1 笔)
+  maxPositionsPerStrategy?: number; // 单策略最大同时持仓数 (默认 1，保证5大策略各持仓至多 1 笔)
   takerFeeBps: number;
   slippageBps: number;
   limitDivisor: number; // 挂单上浮幅度分母 N: 挂单上浮 = dayChangePercent / limitDivisor (默认 100)
   limitExpireMinutes: number; // 挂单有效期分钟数 (默认 3 分钟)
   storageFile?: string | null;
-  stopAtHigh?: boolean; // 极端最高点止损模式 (触碰止损时按当根1m K线最高点/Tick最高突破价成交，默认 true)
+  stopAtHigh?: boolean; // 极端最高点止损模式 (触碰做空止损时按当根1m K线最高点/Tick最高突破价成交，默认 true)
+  stopAtLow?: boolean;  // 极端最低点止损模式 (触碰做多止损时按当根1m K线最低点/Tick最低突破价成交，默认 true)
+  enableStreak?: boolean; // 是否启用新高顶背离 (默认 false，仅保留前三最高胜率做空)
+  enableLongs?: boolean;  // 是否启用涨幅榜回踩做多 (默认 true，前二最高胜率做多)
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
   extremeDevConfig?: Partial<ExtremeDevLiveConfig>;
+  goldenPullbackConfig?: Partial<GoldenPullbackLiveConfig>;
+  deepSupportConfig?: Partial<DeepSupportLiveConfig>;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -97,24 +118,29 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   exitM: 3.0,
   firstCloseFraction: 0.5,
   initialBalanceUsdt: 100, // 初始模拟资金 100 USDT
-  leverage: 3,             // 默认通用/顺势衰竭杠杆 3x (黄金收益/回撤比，零爆仓)
-  trendLeverage: 3,        // 顺势衰竭长波段杠杆 3x (10% 大止损)
-  streakLeverage: 10,      // 新高顶背离闪击战杠杆 10x (15m 紧止损，回测最优解，零爆仓)
+  leverage: 3,             // 默认通用杠杆 3x
+  trendLeverage: 3,        // 顺势衰竭长波段杠杆 3x
+  streakLeverage: 10,      // 新高顶背离闪击战杠杆 10x
+  longLeverage: 3,         // 做多专属杠杆 3x (回测黄金参数)
   marginUsdt: 20,          // 单笔保证金基准 20 USDT (100U 初本时对应 20%)
-  marginRate: 0.20,        // 单笔保证金占当前总资产 20% (不写死固定金额)
+  marginRate: 0.20,        // 单笔保证金占当前总资产 20%
   marginPercent: 20,       // 20%
   maxPositions: 5,         // 全局最大同时持仓数 5 笔 (5 × 20% = 100%)
-  maxPositionsPerStrategy: 1, // 单策略最大同时持仓数 1 笔 (确保四大策略各持仓至少 1 笔，互不挤占)
+  maxPositionsPerStrategy: 1, // 单策略最大同时持仓数 1 笔 (确保5大互斥策略各持仓至多 1 笔)
   takerFeeBps: 5,          // 0.05%
   slippageBps: 2,          // 0.02%
-  limitDivisor: 0,         // 默认 0 (直开市价模式，回测胜率 71.2%，PF 3.23)
+  limitDivisor: 0,         // 默认 0 (直开市价模式)
   limitExpireMinutes: 3,   // 默认 3 分钟
-  stopAtHigh: true,        // 默认 true (开启极端最高点止损模式)
+  stopAtHigh: true,        // 开启做空极端最高点止损模式
+  stopAtLow: true,         // 开启做多极端最低点止损模式
+  enableStreak: false,     // 默认 false (保留前三最高胜率做空: 极度乖离 90.9%, 跌20%+ 87.5%, 跌10% 80.0%)
+  enableLongs: true,       // 默认 true (启用涨幅榜前二最高胜率做多: MA30黄金回踩 75.7%, MA60深蹲 77.8%)
   storageFile: STATE_FILE,
-  // 默认启用黄金双速最优组合 (Dual-Speed Ensemble: 首次跌10%、跌到20%、极度乖离走 3x / 10% 止损 / 90m 长波段，新高顶背离保留 15m 闪击战)
   reboundConfig: DUAL_SPEED_PEAK_REBOUND_CONFIG,
   deepReboundConfig: DUAL_SPEED_DEEP_REBOUND_CONFIG,
   extremeDevConfig: DUAL_SPEED_EXTREME_DEV_CONFIG,
+  goldenPullbackConfig: GOLDEN_PULLBACK_LIVE_DEFAULT_CONFIG,
+  deepSupportConfig: DEEP_SUPPORT_LIVE_DEFAULT_CONFIG,
 };
 
 export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLabel): PaperSignalLabel {
@@ -122,6 +148,10 @@ export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLab
   if (type === "extreme_dev") return "冲高极度乖离";
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
+  if (type === "ma30_pullback") return "龙头MA30回踩";
+  if (type === "ma60_support") return "龙头MA60深蹲";
+  if (type === "rank1_first_pullback") return "榜一首次回踩";
+  if (type === "second_wave_expansion") return "龙头二浪突破";
   return "新高顶背离";
 }
 
@@ -227,6 +257,7 @@ export class PaperTradingEngine {
   private stats: PaperTradingStats;
   private saveTimeout: NodeJS.Timeout | null = null;
   private unifiedTracker: UnifiedShortStrategyTracker;
+  private longTracker: UnifiedLongStrategyTracker;
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
     this.config = { ...PAPER_DEFAULT_CONFIG, ...config };
@@ -241,6 +272,9 @@ export class PaperTradingEngine {
       }
       if (config.trendLeverage === undefined) {
         this.config.trendLeverage = config.leverage;
+      }
+      if (config.longLeverage === undefined) {
+        this.config.longLeverage = config.leverage;
       }
     }
     this.unifiedTracker = new UnifiedShortStrategyTracker({
@@ -259,6 +293,19 @@ export class PaperTradingEngine {
       deepReboundConfig: this.config.deepReboundConfig,
       extremeDevConfig: this.config.extremeDevConfig,
       preventConflict: true,
+      enableStreak: this.config.enableStreak ?? false, // 胜率65%不入前三，默认关闭以严格执行前三最高胜率做空
+      enableRebound: true,       // 胜率 80.0% 做空前三
+      enableDeepRebound: true,   // 胜率 87.5% 做空前二
+      enableExtremeDev: true,    // 胜率 90.9% 做空第一
+    });
+    this.longTracker = new UnifiedLongStrategyTracker({
+      goldenPullbackConfig: this.config.goldenPullbackConfig,
+      deepSupportConfig: this.config.deepSupportConfig,
+      preventConflict: true,
+      enableGoldenPullback: true, // 胜率 75.7% 涨幅榜回踩做多
+      enableDeepSupport: true,    // 胜率 77.8% 涨幅榜深蹲做多
+      enableRank1Pullback: false, // 专注前二最高胜率做多
+      enableSecondWave: false,
     });
     this.account = {
       initialBalanceUsdt: this.config.initialBalanceUsdt,
@@ -293,6 +340,10 @@ export class PaperTradingEngine {
     return this.unifiedTracker;
   }
 
+  public getLongTracker(): UnifiedLongStrategyTracker {
+    return this.longTracker;
+  }
+
   public getConfig(): PaperStrategyConfig {
     return { ...this.config };
   }
@@ -300,6 +351,14 @@ export class PaperTradingEngine {
   public getLeverageForSignal(signalType?: PaperSignalType): number {
     if (signalType === "streak") {
       return this.config.streakLeverage ?? 10;
+    }
+    if (
+      signalType === "ma30_pullback" ||
+      signalType === "ma60_support" ||
+      signalType === "rank1_first_pullback" ||
+      signalType === "second_wave_expansion"
+    ) {
+      return this.config.longLeverage ?? 3;
     }
     return this.config.trendLeverage ?? this.config.leverage;
   }
@@ -340,6 +399,9 @@ export class PaperTradingEngine {
     if (typeof updates.trendLeverage === "number" && Number.isFinite(updates.trendLeverage) && updates.trendLeverage >= 1 && updates.trendLeverage <= 100) {
       this.config.trendLeverage = updates.trendLeverage;
     }
+    if (typeof updates.longLeverage === "number" && Number.isFinite(updates.longLeverage) && updates.longLeverage >= 1 && updates.longLeverage <= 100) {
+      this.config.longLeverage = updates.longLeverage;
+    }
     if (typeof updates.marginRate === "number" && Number.isFinite(updates.marginRate) && updates.marginRate > 0 && updates.marginRate <= 1) {
       this.config.marginRate = updates.marginRate;
       this.config.marginPercent = Math.round(updates.marginRate * 100);
@@ -371,13 +433,22 @@ export class PaperTradingEngine {
     if (typeof updates.stopAtHigh === "boolean") {
       this.config.stopAtHigh = updates.stopAtHigh;
     }
+    if (typeof updates.stopAtLow === "boolean") {
+      this.config.stopAtLow = updates.stopAtLow;
+    }
+    if (typeof updates.enableStreak === "boolean") {
+      this.config.enableStreak = updates.enableStreak;
+    }
+    if (typeof updates.enableLongs === "boolean") {
+      this.config.enableLongs = updates.enableLongs;
+    }
     if (typeof updates.holdMinutes === "number" && Number.isFinite(updates.holdMinutes) && updates.holdMinutes > 0) {
       this.config.holdMinutes = updates.holdMinutes;
     }
 
     const currentMargin = this.calculateOrderMargin();
     console.log(
-      `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高闪击杠杆 ${this.config.streakLeverage ?? 10}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 仓位比例 ${((this.config.marginRate ?? 0.2) * 100).toFixed(0)}% (约 ${currentMargin.toFixed(1)}U), 最大持仓 ${this.config.maxPositions ?? 5} 笔 (每策略 ${this.config.maxPositionsPerStrategy ?? 1} 笔)`,
+      `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高闪击杠杆 ${this.config.streakLeverage ?? 10}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 做多杠杆 ${this.config.longLeverage ?? 3}x, 仓位比例 ${((this.config.marginRate ?? 0.2) * 100).toFixed(0)}% (约 ${currentMargin.toFixed(1)}U), 最大持仓 ${this.config.maxPositions ?? 5} 笔 (每策略 ${this.config.maxPositionsPerStrategy ?? 1} 笔)`,
     );
 
     this.scheduleSave();
@@ -500,13 +571,16 @@ export class PaperTradingEngine {
     if (!order) return;
     this.pendingOrders.delete(symbol);
     this.unifiedTracker.closePosition(symbol);
+    this.longTracker.closePosition(symbol);
     this.scheduleSave();
-    console.log(`[paper-trading] ⏱️ 撤销限价做空挂单 [${order.signalLabel ?? "做空"}] ${symbol} @ ${order.limitPrice.toFixed(4)}: ${reason}`);
+    console.log(`[paper-trading] ⏱️ 撤销限价挂单 [${order.signalLabel ?? (order.side === "LONG" ? "做多" : "做空")}] ${symbol} @ ${order.limitPrice.toFixed(4)}: ${reason}`);
   }
 
   /**
    * Called on every scan/refresh at candle close.
-   * Scans gainers for entry signals using Unified 3-Signal strategy (连阳悬空 / 首次跌10% / 跌到20%+).
+   * Scans gainers for entry signals using 5 Top-Winrate Strategies:
+   * 3 Shorts: 冲高极度乖离 (90.9%), 跌到20%+ (87.5%), 首次跌10% (80.0%)
+   * 2 Longs: 龙头MA30黄金回踩 (75.7%), 龙头MA60深度托底 (77.8%)
    */
   public async onScan(
     gainers: Ticker24h[],
@@ -526,7 +600,7 @@ export class PaperTradingEngine {
       this.unifiedTracker.onRankUpdate(topGainer.symbol, topGainer.priceChangePercent, now);
     }
 
-    // 收集所有需要扫描的标的：全量传入标的 (含 Top N 与跌出前十标的) + 处于弱反弹监控中的标的 (三者同时并行判断，任一满足即开仓)
+    // 收集所有需要扫描的标的：全量传入标的 (含 Top N 与跌出前十标的) + 处于弱反弹监控中的标的
     const candidates: Array<{ ticker: Ticker24h; rank: number }> = [];
     const seenSymbols = new Set<string>();
 
@@ -574,7 +648,10 @@ export class PaperTradingEngine {
       const symCache = candleMap.get(ticker.symbol);
       if (!symCache || !symCache.initialized || symCache.candles1m.length < 35) continue;
 
-      const liveSignal = this.unifiedTracker.checkCandles(
+      const targetIdx = symCache.candles1m.length - 2;
+
+      // 3. 做空信号检测 (前三最高胜率做空: 极度乖离 90.9%, 跌20%+ 87.5%, 首次跌10% 80.0%)
+      const shortSignal = this.unifiedTracker.checkCandles(
         ticker.symbol,
         ticker.priceChangePercent,
         rank,
@@ -582,57 +659,106 @@ export class PaperTradingEngine {
         now,
       );
 
-      if (liveSignal) {
-        const targetIdx = symCache.candles1m.length - 2;
-        const forming = symCache.candles1m[symCache.candles1m.length - 1];
-        const basePrice =
-          forming && forming.close > 0 ? forming.close : liveSignal.entryPrice;
+      let chosenSignal: {
+        side: "SHORT" | "LONG";
+        type: PaperSignalType;
+        label: PaperSignalLabel;
+        entryPrice: number;
+        exitParams: PaperExitParams;
+        signalDetails: SignalMatchDetails;
+      } | null = null;
 
-        const signalType = liveSignal.type;
-        const signalLabel = formatSignalLabel(signalType, liveSignal.label);
-        const exitParams = liveSignal.exitParams;
-
-        // 3. 单策略最大持仓限制 (保证四大策略至少各持仓 1 笔，互不挤占)
+      if (shortSignal) {
+        const signalType = shortSignal.type;
         const currentStrategyPositions = this.countPositionsByStrategy(signalType);
         const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
-        if (currentStrategyPositions >= maxPerStrategy) {
+        if (currentStrategyPositions < maxPerStrategy) {
+          const streakCount =
+            shortSignal.details.streakSignal?.streakCount ??
+            shortSignal.details.reboundSignal?.reboundUpCandles ??
+            2;
+          const upperShadowRatio =
+            shortSignal.details.streakSignal?.upperShadowRatio ??
+            shortSignal.details.reboundSignal?.upperShadowRatio ??
+            0;
+          const greenRatio =
+            shortSignal.details.streakSignal?.greenRatio ??
+            shortSignal.details.reboundSignal?.greenRatio20 ??
+            shortSignal.details.deepReboundSignal?.greenRatio20 ??
+            0;
+          const consecutiveGreenBars =
+            shortSignal.details.streakSignal?.consecutiveGreenBars ?? 0;
+          const amp30Percent =
+            shortSignal.details.streakSignal?.amp30Percent ??
+            shortSignal.details.reboundSignal?.reboundPercent ??
+            shortSignal.details.deepReboundSignal?.reboundFrom10m ??
+            0;
+
+          chosenSignal = {
+            side: "SHORT",
+            type: signalType,
+            label: formatSignalLabel(signalType, shortSignal.label),
+            entryPrice: shortSignal.entryPrice,
+            exitParams: shortSignal.exitParams,
+            signalDetails: {
+              candle: symCache.candles1m[targetIdx],
+              streakCount,
+              amp30Percent,
+              upperShadowRatio,
+              greenRatio,
+              consecutiveGreenBars,
+            },
+          };
+        } else {
           console.log(
-            `[paper-trading] 策略 [${signalLabel}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，保留槽位给其他策略，跳过 ${ticker.symbol}`,
+            `[paper-trading] 做空策略 [${formatSignalLabel(signalType, shortSignal.label)}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，跳过 ${ticker.symbol}`,
           );
-          continue;
         }
+      }
 
-        const streakCount =
-          liveSignal.details.streakSignal?.streakCount ??
-          liveSignal.details.reboundSignal?.reboundUpCandles ??
-          2;
-        const upperShadowRatio =
-          liveSignal.details.streakSignal?.upperShadowRatio ??
-          liveSignal.details.reboundSignal?.upperShadowRatio ??
-          0;
-        const greenRatio =
-          liveSignal.details.streakSignal?.greenRatio ??
-          liveSignal.details.reboundSignal?.greenRatio20 ??
-          liveSignal.details.deepReboundSignal?.greenRatio20 ??
-          0;
-        const consecutiveGreenBars =
-          liveSignal.details.streakSignal?.consecutiveGreenBars ?? 0;
-        const amp30Percent =
-          liveSignal.details.streakSignal?.amp30Percent ??
-          liveSignal.details.reboundSignal?.reboundPercent ??
-          liveSignal.details.deepReboundSignal?.reboundFrom10m ??
-          0;
+      // 4. 做多信号检测 (前二最高胜率做多: MA30黄金回踩 75.7%, MA60深蹲 77.8%)
+      if (!chosenSignal && (this.config.enableLongs ?? true)) {
+        const longSignal = this.longTracker.checkCandles(
+          ticker.symbol,
+          ticker.priceChangePercent,
+          rank,
+          symCache.candles1m,
+          now,
+        );
+        if (longSignal) {
+          const signalType = longSignal.type;
+          const currentStrategyPositions = this.countPositionsByStrategy(signalType);
+          const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
+          if (currentStrategyPositions < maxPerStrategy) {
+            chosenSignal = {
+              side: "LONG",
+              type: signalType,
+              label: formatSignalLabel(signalType, longSignal.label as any),
+              entryPrice: longSignal.entryPrice,
+              exitParams: longSignal.exitParams,
+              signalDetails: {
+                candle: symCache.candles1m[targetIdx],
+                streakCount: 0,
+                amp30Percent: longSignal.details.dropFrom24h ?? 0,
+                upperShadowRatio: 0,
+                greenRatio: 0,
+                consecutiveGreenBars: 0,
+              },
+            };
+          } else {
+            console.log(
+              `[paper-trading] 做多策略 [${formatSignalLabel(signalType, longSignal.label as any)}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，跳过 ${ticker.symbol}`,
+            );
+          }
+        }
+      }
 
-        const signalDetails: SignalMatchDetails = {
-          candle: symCache.candles1m[targetIdx],
-          streakCount,
-          amp30Percent,
-          upperShadowRatio,
-          greenRatio,
-          consecutiveGreenBars,
-        };
+      if (chosenSignal) {
+        const forming = symCache.candles1m[symCache.candles1m.length - 1];
+        const basePrice =
+          forming && forming.close > 0 ? forming.close : chosenSignal.entryPrice;
 
-        if (this.config.limitDivisor > 0) {
+        if (chosenSignal.side === "SHORT" && this.config.limitDivisor > 0) {
           // 挂单模式：以 24h涨幅/limitDivisor 向上挂单等待冲高撮合
           this.createPendingOrder({
             symbol: ticker.symbol,
@@ -640,25 +766,26 @@ export class PaperTradingEngine {
             rank,
             basePrice,
             marginUsdt,
-            signal: signalDetails,
-            signalType,
-            signalLabel,
-            exitParams,
+            signal: chosenSignal.signalDetails,
+            signalType: chosenSignal.type,
+            signalLabel: chosenSignal.label,
+            exitParams: chosenSignal.exitParams,
             now,
           });
         } else {
-          // 回退直接市价开仓模式
+          // 直开市价开仓模式 (做多与做空均直接开仓)
           const pos = this.openPosition({
             symbol: ticker.symbol,
+            side: chosenSignal.side,
             dayChangePercent: ticker.priceChangePercent,
             rank,
             entryPrice: basePrice,
             entryTime: now,
             marginUsdt,
-            signal: signalDetails,
-            signalType,
-            signalLabel,
-            exitParams,
+            signal: chosenSignal.signalDetails,
+            signalType: chosenSignal.type,
+            signalLabel: chosenSignal.label,
+            exitParams: chosenSignal.exitParams,
           });
           openedList.push(pos);
         }
@@ -670,6 +797,7 @@ export class PaperTradingEngine {
 
   public openPosition(params: {
     symbol: string;
+    side?: "SHORT" | "LONG";
     dayChangePercent: number;
     rank?: number | null;
     entryPrice: number;
@@ -693,6 +821,17 @@ export class PaperTradingEngine {
       exitParams,
     } = params;
 
+    const signalType = params.signalType ?? "streak";
+    const isLong = (params.side ?? (
+      signalType === "ma30_pullback" ||
+      signalType === "ma60_support" ||
+      signalType === "rank1_first_pullback" ||
+      signalType === "second_wave_expansion"
+        ? "LONG"
+        : "SHORT"
+    )) === "LONG";
+    const side: "SHORT" | "LONG" = isLong ? "LONG" : "SHORT";
+
     const exitX = exitParams?.exitX ?? this.config.exitX;
     const exitN = exitParams?.exitN ?? this.config.exitN;
     const exitM = exitParams?.exitM ?? this.config.exitM;
@@ -705,17 +844,28 @@ export class PaperTradingEngine {
     const sl2Percent = exitParams?.stopLossPercent ?? ((dayChangePercent * exitN) / exitX);
     const tp2Percent = exitParams?.tp2Percent ?? ((dayChangePercent * exitM) / exitX);
 
-    // Short direction price levels:
-    // Target (profit): entry * (1 - tp / 100)
-    // Stop (loss): entry * (1 + sl / 100)
-    const tp1Price = entryPrice * (1 - tp1Percent / 100);
-    const sl1Price = entryPrice * (1 + sl1Percent / 100);
-    const sl2Price = entryPrice * (1 + sl2Percent / 100);
-    const tp2Price = entryPrice * (1 - tp2Percent / 100);
+    // Direction-aware price levels:
+    let tp1Price: number;
+    let sl1Price: number;
+    let sl2Price: number;
+    let tp2Price: number;
+
+    if (isLong) {
+      // Long: Target above entry, Stop below entry
+      tp1Price = entryPrice * (1 + tp1Percent / 100);
+      sl1Price = entryPrice * (1 - sl1Percent / 100);
+      sl2Price = entryPrice * (1 - sl2Percent / 100);
+      tp2Price = entryPrice * (1 + tp2Percent / 100);
+    } else {
+      // Short: Target below entry, Stop above entry
+      tp1Price = entryPrice * (1 - tp1Percent / 100);
+      sl1Price = entryPrice * (1 + sl1Percent / 100);
+      sl2Price = entryPrice * (1 + sl2Percent / 100);
+      tp2Price = entryPrice * (1 - tp2Percent / 100);
+    }
 
     const timeoutAt = entryTime + holdMinutes * 60 * 1000;
 
-    const signalType = params.signalType ?? "streak";
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
     const leverage = params.leverage ?? exitParams?.leverage ?? this.getLeverageForSignal(signalType);
     const marginUsdt = params.marginUsdt ?? this.calculateOrderMargin();
@@ -724,7 +874,7 @@ export class PaperTradingEngine {
     const position: PaperPosition = {
       id: `${symbol}-${entryTime}`,
       symbol,
-      side: "SHORT",
+      side,
       leverage,
       marginUsdt,
       notionalUsdt,
@@ -775,12 +925,21 @@ export class PaperTradingEngine {
     };
 
     this.activePositions.set(symbol, position);
-    this.unifiedTracker.registerPosition(symbol, {
-      tradeId: position.id,
-      type: signalType,
-      entryTime,
-      maxExitTime: timeoutAt,
-    });
+    if (isLong) {
+      this.longTracker.registerPosition(symbol, {
+        tradeId: position.id,
+        type: signalType as any,
+        entryTime,
+        maxExitTime: timeoutAt,
+      });
+    } else {
+      this.unifiedTracker.registerPosition(symbol, {
+        tradeId: position.id,
+        type: signalType as any,
+        entryTime,
+        maxExitTime: timeoutAt,
+      });
+    }
     this.recalculateStats();
     this.scheduleSave();
 
@@ -790,8 +949,11 @@ export class PaperTradingEngine {
     );
 
     const isLimit = limitPrice != null;
+    const actionLabel = isLong
+      ? (isLimit ? "限价挂单成交做多" : "市价开多")
+      : (isLimit ? "限价挂单成交做空" : "市价开空");
     console.log(
-      `[paper-trading] ⚡ ${isLimit ? "限价挂单成交做空" : "市价开空"} [${signalLabel}] ${symbol} @ ${entryPrice.toFixed(4)} ` +
+      `[paper-trading] ⚡ ${actionLabel} [${signalLabel}] ${symbol} @ ${entryPrice.toFixed(4)} ` +
       `(${leverage}x, 保证金 ${position.marginUsdt.toFixed(1)} USDT, 24h: +${dayChangePercent.toFixed(2)}%, 30m振幅: ${signal.amp30Percent.toFixed(2)}%) ` +
       `TP1: ${tp1Price.toFixed(4)} SL1: ${sl1Price.toFixed(4)} SL2: ${sl2Price.toFixed(4)} TP2: ${tp2Price.toFixed(4)} 持仓: ${holdMinutes}m`,
     );
@@ -803,8 +965,8 @@ export class PaperTradingEngine {
    * Real-time trade tick processing.
    * Evaluates pending limit orders, take-profit, stop-loss and timeouts in milliseconds.
    */
-  public onTick(tick: TradeTick, currentCandleHigh?: number): void {
-    // 0. 优先撮合限价做空挂单
+  public onTick(tick: TradeTick, currentCandleHigh?: number, currentCandleLow?: number): void {
+    // 0. 优先撮合限价做空/做多挂单
     const pending = this.pendingOrders.get(tick.symbol);
     if (pending) {
       pending.currentPrice = tick.price;
@@ -812,18 +974,19 @@ export class PaperTradingEngine {
       if (tick.time >= pending.expireAt) {
         this.cancelPendingOrder(pending.symbol, "超时未触碰撤销");
       }
-      // 价格直接下杀跌破预估TP1（行情已走完，撤单）
-      else if (pending.cancelBelowPrice && tick.price <= pending.cancelBelowPrice) {
+      // 价格直接下杀跌破预估TP1（做空行情已走完，撤单）
+      else if (pending.side === "SHORT" && pending.cancelBelowPrice && tick.price <= pending.cancelBelowPrice) {
         this.cancelPendingOrder(pending.symbol, "行情已直接下行提前撤单");
       }
-      // 价格向上冲高打到限价挂单：撮合成交！
-      else if (tick.price >= pending.limitPrice) {
+      // 价格向上冲高打到做空限价挂单：撮合成交！
+      else if (pending.side === "SHORT" && tick.price >= pending.limitPrice) {
         this.pendingOrders.delete(pending.symbol);
         console.log(
           `[paper-trading] 🎯 挂单成交！[${pending.signalLabel ?? "做空"}] ${pending.symbol} 触及做空限价 @ ${pending.limitPrice.toFixed(4)} (成交Tick: ${tick.price.toFixed(4)})`,
         );
         this.openPosition({
           symbol: pending.symbol,
+          side: "SHORT",
           dayChangePercent: pending.dayChangePercent,
           rank: pending.rank,
           entryPrice: pending.limitPrice,
@@ -867,44 +1030,87 @@ export class PaperTradingEngine {
       return;
     }
 
-    // 2. Check Stage 1 if remainingFraction == 1.0
-    if (position.remainingFraction === 1.0) {
-      if (price <= position.tp1Price) {
-        const dualTarget = price <= position.tp2Price;
-        this.closeStage(position, 1, position.tp1Price, time, "target", dualTarget);
-        // In extreme fast drops, check if Stage 2 is also hit on the same tick
-        if (dualTarget) {
-          this.closeStage(position, 2, position.tp2Price, time, "target");
+    const isLong = position.side === "LONG";
+
+    if (isLong) {
+      // ---- 做多撮合逻辑 (LONG) ----
+      // 2. Check Stage 1 if remainingFraction == 1.0
+      if (position.remainingFraction === 1.0) {
+        if (price >= position.tp1Price) {
+          const dualTarget = price >= position.tp2Price;
+          this.closeStage(position, 1, position.tp1Price, time, "target", dualTarget);
+          if (dualTarget) {
+            this.closeStage(position, 2, position.tp2Price, time, "target");
+          }
+          return;
+        } else if (price <= position.sl1Price) {
+          const exitPrice1 = (this.config.stopAtLow ?? true)
+            ? Math.min(price, currentCandleLow ?? price, position.sl1Price)
+            : position.sl1Price;
+          const dualStop = price <= position.sl2Price;
+          this.closeStage(position, 1, exitPrice1, time, "stop", dualStop);
+          if (dualStop) {
+            const exitPrice2 = (this.config.stopAtLow ?? true)
+              ? Math.min(price, currentCandleLow ?? price, position.sl2Price)
+              : position.sl2Price;
+            this.closeStage(position, 2, exitPrice2, time, "stop");
+          }
+          return;
         }
-        return;
-      } else if (price >= position.sl1Price) {
-        const exitPrice1 = this.config.stopAtHigh
-          ? Math.max(price, currentCandleHigh ?? price, position.sl1Price)
-          : position.sl1Price;
-        const dualStop = price >= position.sl2Price;
-        this.closeStage(position, 1, exitPrice1, time, "stop", dualStop);
-        // In extreme fast jumps, check if Stage 2 stop is also hit
-        if (dualStop) {
-          const exitPrice2 = this.config.stopAtHigh
+      }
+
+      // 3. Check Stage 2 if remainingFraction == 0.5
+      if (position.remainingFraction === 0.5) {
+        if (price >= position.tp2Price) {
+          this.closeStage(position, 2, position.tp2Price, time, "target");
+          return;
+        } else if (price <= position.sl2Price) {
+          const exitPrice = (this.config.stopAtLow ?? true)
+            ? Math.min(price, currentCandleLow ?? price, position.sl2Price)
+            : position.sl2Price;
+          this.closeStage(position, 2, exitPrice, time, "stop");
+          return;
+        }
+      }
+    } else {
+      // ---- 做空撮合逻辑 (SHORT) ----
+      // 2. Check Stage 1 if remainingFraction == 1.0
+      if (position.remainingFraction === 1.0) {
+        if (price <= position.tp1Price) {
+          const dualTarget = price <= position.tp2Price;
+          this.closeStage(position, 1, position.tp1Price, time, "target", dualTarget);
+          if (dualTarget) {
+            this.closeStage(position, 2, position.tp2Price, time, "target");
+          }
+          return;
+        } else if (price >= position.sl1Price) {
+          const exitPrice1 = this.config.stopAtHigh
+            ? Math.max(price, currentCandleHigh ?? price, position.sl1Price)
+            : position.sl1Price;
+          const dualStop = price >= position.sl2Price;
+          this.closeStage(position, 1, exitPrice1, time, "stop", dualStop);
+          if (dualStop) {
+            const exitPrice2 = this.config.stopAtHigh
+              ? Math.max(price, currentCandleHigh ?? price, position.sl2Price)
+              : position.sl2Price;
+            this.closeStage(position, 2, exitPrice2, time, "stop");
+          }
+          return;
+        }
+      }
+
+      // 3. Check Stage 2 if remainingFraction == 0.5
+      if (position.remainingFraction === 0.5) {
+        if (price <= position.tp2Price) {
+          this.closeStage(position, 2, position.tp2Price, time, "target");
+          return;
+        } else if (price >= position.sl2Price) {
+          const exitPrice = this.config.stopAtHigh
             ? Math.max(price, currentCandleHigh ?? price, position.sl2Price)
             : position.sl2Price;
-          this.closeStage(position, 2, exitPrice2, time, "stop");
+          this.closeStage(position, 2, exitPrice, time, "stop");
+          return;
         }
-        return;
-      }
-    }
-
-    // 3. Check Stage 2 if remainingFraction == 0.5
-    if (position.remainingFraction === 0.5) {
-      if (price <= position.tp2Price) {
-        this.closeStage(position, 2, position.tp2Price, time, "target");
-        return;
-      } else if (price >= position.sl2Price) {
-        const exitPrice = this.config.stopAtHigh
-          ? Math.max(price, currentCandleHigh ?? price, position.sl2Price)
-          : position.sl2Price;
-        this.closeStage(position, 2, exitPrice, time, "stop");
-        return;
       }
     }
 
@@ -939,8 +1145,10 @@ export class PaperTradingEngine {
     }
 
     const stageNotional = pos.notionalUsdt * pos.remainingFraction;
-    // Short PnL: (entry - current) / entry
-    const grossPnl = stageNotional * ((pos.entryPrice - currentPrice) / pos.entryPrice);
+    const isLong = pos.side === "LONG";
+    const grossPnl = isLong
+      ? stageNotional * ((currentPrice - pos.entryPrice) / pos.entryPrice)
+      : stageNotional * ((pos.entryPrice - currentPrice) / pos.entryPrice);
     const estExitCost =
       stageNotional *
       ((this.config.takerFeeBps + this.config.slippageBps) / 10000) *
@@ -964,8 +1172,10 @@ export class PaperTradingEngine {
     const fraction = this.config.firstCloseFraction;
     const stageNotional = pos.notionalUsdt * fraction;
 
-    // Return calculations matching research backtest (wickReturn)
-    const grossPercent = ((pos.entryPrice - exitPrice) / pos.entryPrice) * 100;
+    const isLong = pos.side === "LONG";
+    const grossPercent = isLong
+      ? ((exitPrice - pos.entryPrice) / pos.entryPrice) * 100
+      : ((pos.entryPrice - exitPrice) / pos.entryPrice) * 100;
     const grossPnlUsdt = stageNotional * (grossPercent / 100);
 
     const entryFeeUsdt = stageNotional * (this.config.takerFeeBps / 10000);
@@ -1000,10 +1210,15 @@ export class PaperTradingEngine {
       pos.remainingFraction = 1 - fraction;
       pos.status = "PARTIAL";
 
-      // 阶段一止盈达成后，若开启保本机制，将剩余仓位止损移动至入场保本价 (微留 0.2% 覆盖手续费)
+      // 阶段一止盈达成后，若开启保本机制，将剩余仓位止损移动至入场保本价 (覆盖手续费)
       if (reason === "target" && pos.moveSlToEntryAfterTp1 !== false) {
-        pos.sl2Price = pos.entryPrice * 1.002;
-        pos.sl2Percent = 0.2;
+        if (isLong) {
+          pos.sl2Price = pos.entryPrice * 0.998;
+          pos.sl2Percent = 0.2;
+        } else {
+          pos.sl2Price = pos.entryPrice * 1.002;
+          pos.sl2Percent = 0.2;
+        }
         pos.isBreakevenArmed = true;
         console.log(
           `[paper-trading] 🛡️ ${pos.symbol} 阶段一止盈达成，剩余仓位止损已锁定保本价 @ ${formatPrice(pos.sl2Price)}`,
@@ -1047,7 +1262,7 @@ export class PaperTradingEngine {
     if (pos.status === "CLOSED" || pos.remainingFraction <= 0) return;
 
     if (pos.remainingFraction === 1.0) {
-      // Both stages close at this price (全额平仓时阶段一跳过虚假通知，由 notifyFinal 汇总发送)
+      // Both stages close at this price
       this.closeStage(pos, 1, exitPrice, exitTime, reason, true);
       this.closeStage(pos, 2, exitPrice, exitTime, reason);
     } else {
@@ -1059,6 +1274,7 @@ export class PaperTradingEngine {
   private finalizePosition(pos: PaperPosition): void {
     this.activePositions.delete(pos.symbol);
     this.unifiedTracker.closePosition(pos.symbol);
+    this.longTracker.closePosition(pos.symbol);
     this.closedPositions.unshift(pos);
     if (this.closedPositions.length > 500) {
       this.closedPositions.length = 500;
@@ -1177,14 +1393,15 @@ export class PaperTradingEngine {
     const rankStr = order.rank ? `(#${order.rank})` : "";
     const label = formatSignalLabel(order.signalType, order.signalLabel);
     const ampStr = order.amp30Percent != null ? `${order.amp30Percent.toFixed(2)}%` : "-";
+    const dirStr = order.side === "LONG" ? "做多" : "做空";
     const msg =
-      `⏳ <b>[模拟交易] 发现做空信号【${label}】，已提交限价做空挂单</b>\n` +
+      `⏳ <b>[模拟交易] 发现${dirStr}信号【${label}】，已提交限价${dirStr}挂单</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${order.symbol}"><b>${order.symbol}</b></a>\n` +
-      `• <b>信号类型</b>: <b>【${label}】</b>\n` +
-      `• <b>挂单限价</b>: <code>${formatPrice(order.limitPrice)}</code> (基准价: <code>${formatPrice(order.basePrice)}</code>, 上浮: <b>+${order.limitOffsetPercent.toFixed(2)}%</b>)\n` +
+      `• <b>信号类型</b>: <b>【${dirStr} · ${label}】</b>\n` +
+      `• <b>挂单限价</b>: <code>${formatPrice(order.limitPrice)}</code> (基准价: <code>${formatPrice(order.basePrice)}</code>, 偏移: <b>${order.limitOffsetPercent >= 0 ? "+" : ""}${order.limitOffsetPercent.toFixed(2)}%</b>)\n` +
       `• <b>杠杆 / 保证金</b>: <b>${order.leverage}x / ${order.marginUsdt.toFixed(1)} USDT</b> (名义仓位: ${order.notionalUsdt.toFixed(1)} USDT)\n` +
       `• <b>24h涨幅</b>: +${order.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${ampStr}\n` +
-      `• <b>撮合机制</b>: 向上冲针触及挂单价即撮合成交 (有效期 ${this.config.limitExpireMinutes}分钟，未触碰或提前下跌自动撤单)`;
+      `• <b>撮合机制</b>: 触及挂单价即撮合成交 (有效期 ${this.config.limitExpireMinutes}分钟，未触碰或提前反向自动撤单)`;
     await this.sendTg(msg, `挂单提交 ${order.symbol}`);
   }
 
@@ -1194,19 +1411,29 @@ export class PaperTradingEngine {
     const label = formatSignalLabel(pos.signalType, pos.signalLabel);
     const holdMin = pos.exitParams?.holdMinutes ?? this.config.holdMinutes;
     const ampStr = pos.amp30Percent != null ? `${pos.amp30Percent.toFixed(2)}%` : "-";
+    const isLong = pos.side === "LONG";
+    const dirStr = isLong ? "做多" : "做空";
+    const actionStr = isLong
+      ? (isLimit ? "限价挂单撮合成交做多" : "发现做多信号，市价开多")
+      : (isLimit ? "限价挂单冲高撮合成交做空" : "发现做空信号，市价开空");
+    const tp1Sign = isLong ? "+" : "-";
+    const sl1Sign = isLong ? "-" : "+";
+    const tp2Sign = isLong ? "+" : "-";
+    const sl2Sign = isLong ? "-" : "+";
+
     const msg =
-      `⚡ <b>[模拟交易] ${isLimit ? "限价挂单冲高撮合成交" : "发现做空信号，市价开空"}【${label}】</b>\n` +
+      `⚡ <b>[模拟交易] ${actionStr}【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
-      `• <b>信号类型</b>: <b>【${label}】</b>\n` +
+      `• <b>方向 / 信号</b>: <b>【${dirStr} · ${label}】</b>\n` +
       `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt.toFixed(1)} USDT</b> (名义仓位: ${pos.notionalUsdt.toFixed(1)} USDT)\n` +
       `• <b>成交开仓价</b>: <code>${formatPrice(pos.entryPrice)}</code>\n` +
       `• <b>24h涨幅</b>: +${pos.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${ampStr}\n` +
       `• <b>阶段一目标 (平50%)</b>:\n` +
-      `   - 止盈1: <b>${formatPrice(pos.tp1Price)}</b> (-${pos.tp1Percent.toFixed(2)}%)\n` +
-      `   - 止损1: <b>${formatPrice(pos.sl1Price)}</b> (+${pos.sl1Percent.toFixed(2)}%)\n` +
+      `   - 止盈1: <b>${formatPrice(pos.tp1Price)}</b> (${tp1Sign}${pos.tp1Percent.toFixed(2)}%)\n` +
+      `   - 止损1: <b>${formatPrice(pos.sl1Price)}</b> (${sl1Sign}${pos.sl1Percent.toFixed(2)}%)\n` +
       `• <b>阶段二目标 (平50%)</b>:\n` +
-      `   - 止盈2: <b>${formatPrice(pos.tp2Price)}</b> (-${pos.tp2Percent.toFixed(2)}%)\n` +
-      `   - 止损2: <b>${formatPrice(pos.sl2Price)}</b> (+${pos.sl2Percent.toFixed(2)}%${pos.moveSlToEntryAfterTp1 !== false ? "，阶段一止盈后自动锁定保本" : ""})\n` +
+      `   - 止盈2: <b>${formatPrice(pos.tp2Price)}</b> (${tp2Sign}${pos.tp2Percent.toFixed(2)}%)\n` +
+      `   - 止损2: <b>${formatPrice(pos.sl2Price)}</b> (${sl2Sign}${pos.sl2Percent.toFixed(2)}%${pos.moveSlToEntryAfterTp1 !== false ? "，阶段一止盈后自动锁定保本" : ""})\n` +
       `• <b>模拟账户状态</b>: 可用保证金 <b>${this.account.availableMarginUsdt.toFixed(2)} USDT</b> (净值 <b>${this.account.equityUsdt.toFixed(2)} USDT</b>)\n` +
       `• <b>最长持仓</b>: ${holdMin}分钟超时市价平仓`;
     await this.sendTg(msg, `开仓 ${pos.symbol}`);
@@ -1223,13 +1450,14 @@ export class PaperTradingEngine {
     const roeSign = exit.netPnlUsdt >= 0 ? "+" : "";
     const stageRoe = ((exit.netPnlUsdt / Math.max(0.01, pos.marginUsdt * 0.5)) * 100).toFixed(1);
     const label = formatSignalLabel(pos.signalType, pos.signalLabel);
+    const dirStr = pos.side === "LONG" ? "做多" : "做空";
     const beStr = pos.isBreakevenArmed
-      ? `\n• <b>保护机制</b>: 🛡️ 剩余仓位止损已上移锁定保本价 <code>${formatPrice(pos.sl2Price)}</code> (锁定无风险交易！)`
+      ? `\n• <b>保护机制</b>: 🛡️ 剩余仓位止损已锁定保本价 <code>${formatPrice(pos.sl2Price)}</code> (锁定无风险交易！)`
       : "";
     const msg =
-      `🎯 <b>[模拟交易] 阶段一达成 (平仓 50%) 【${label}】</b>\n` +
+      `🎯 <b>[模拟交易] 阶段一达成 (平仓 50%) 【${dirStr} · ${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
-      `• <b>信号类型</b>: <b>【${label}】</b>\n` +
+      `• <b>方向 / 信号</b>: <b>【${dirStr} · ${label}】</b>\n` +
       `• <b>动作</b>: ${action}\n` +
       `• <b>成交价</b>: <code>${formatPrice(exit.exitPrice)}</code>\n` +
       `• <b>阶段净盈亏</b>: <b>${pnlSign}${exit.netPnlUsdt.toFixed(2)} USDT (ROE: ${roeSign}${stageRoe}%)</b>\n` +
@@ -1283,11 +1511,12 @@ export class PaperTradingEngine {
     const pnlSign = pos.totalNetPnlUsdt >= 0 ? "+" : "";
     const totSign = this.account.totalPnlUsdt >= 0 ? "+" : "";
     const label = formatSignalLabel(pos.signalType, pos.signalLabel);
+    const dirStr = pos.side === "LONG" ? "做多" : "做空";
 
     const msg =
-      `${headerIcon} <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${label}】</b>\n` +
+      `${headerIcon} <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${dirStr} · ${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
-      `• <b>信号类型</b>: <b>【${label}】</b>\n` +
+      `• <b>方向 / 信号</b>: <b>【${dirStr} · ${label}】</b>\n` +
       `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt.toFixed(1)} USDT</b> (名义仓位: ${pos.notionalUsdt.toFixed(1)} USDT)\n` +
       `• <b>持仓耗时</b>: ${holdMins} 分钟\n` +
       `• <b>结算原因</b>: ${reasonStr}\n` +
@@ -1324,6 +1553,7 @@ export class PaperTradingEngine {
           leverage: this.config.leverage,
           streakLeverage: this.config.streakLeverage,
           trendLeverage: this.config.trendLeverage,
+          longLeverage: this.config.longLeverage,
           marginUsdt: this.config.marginUsdt,
           marginRate: this.config.marginRate,
           marginPercent: this.config.marginPercent,
@@ -1332,6 +1562,9 @@ export class PaperTradingEngine {
           limitDivisor: this.config.limitDivisor,
           limitExpireMinutes: this.config.limitExpireMinutes,
           stopAtHigh: this.config.stopAtHigh,
+          stopAtLow: this.config.stopAtLow,
+          enableStreak: this.config.enableStreak,
+          enableLongs: this.config.enableLongs,
           holdMinutes: this.config.holdMinutes,
         },
       };
@@ -1353,33 +1586,58 @@ export class PaperTradingEngine {
         if (Array.isArray(data.pendingOrders)) {
           this.pendingOrders.clear();
           for (const o of data.pendingOrders) {
+            o.side = o.side ?? "SHORT";
             o.signalType = o.signalType ?? "streak";
             o.signalLabel = formatSignalLabel(o.signalType, o.signalLabel);
             this.pendingOrders.set(o.symbol, o);
-            this.unifiedTracker.registerPosition(o.symbol, {
-              tradeId: o.id,
-              type: o.signalType,
-              entryTime: o.createdAt,
-              maxExitTime: o.expireAt,
-            });
+            if (o.side === "LONG") {
+              this.longTracker.registerPosition(o.symbol, {
+                tradeId: o.id,
+                type: o.signalType as any,
+                entryTime: o.createdAt,
+                maxExitTime: o.expireAt,
+              });
+            } else {
+              this.unifiedTracker.registerPosition(o.symbol, {
+                tradeId: o.id,
+                type: o.signalType as any,
+                entryTime: o.createdAt,
+                maxExitTime: o.expireAt,
+              });
+            }
           }
         }
         if (Array.isArray(data.activePositions)) {
           this.activePositions.clear();
           for (const p of data.activePositions) {
+            p.side = p.side ?? (
+              p.signalType === "ma30_pullback" || p.signalType === "ma60_support" ? "LONG" : "SHORT"
+            );
             p.signalType = p.signalType ?? "streak";
             p.signalLabel = formatSignalLabel(p.signalType, p.signalLabel);
             this.activePositions.set(p.symbol, p);
-            this.unifiedTracker.registerPosition(p.symbol, {
-              tradeId: p.id,
-              type: p.signalType,
-              entryTime: p.entryTime,
-              maxExitTime: p.timeoutAt,
-            });
+            if (p.side === "LONG") {
+              this.longTracker.registerPosition(p.symbol, {
+                tradeId: p.id,
+                type: p.signalType as any,
+                entryTime: p.entryTime,
+                maxExitTime: p.timeoutAt,
+              });
+            } else {
+              this.unifiedTracker.registerPosition(p.symbol, {
+                tradeId: p.id,
+                type: p.signalType as any,
+                entryTime: p.entryTime,
+                maxExitTime: p.timeoutAt,
+              });
+            }
           }
         }
         if (Array.isArray(data.closedPositions)) {
           this.closedPositions = data.closedPositions.map((p) => {
+            p.side = p.side ?? (
+              p.signalType === "ma30_pullback" || p.signalType === "ma60_support" ? "LONG" : "SHORT"
+            );
             p.signalType = p.signalType ?? "streak";
             p.signalLabel = formatSignalLabel(p.signalType, p.signalLabel);
             return p;
@@ -1393,6 +1651,7 @@ export class PaperTradingEngine {
           if (typeof cfg.leverage === "number") this.config.leverage = cfg.leverage;
           if (typeof cfg.streakLeverage === "number") this.config.streakLeverage = cfg.streakLeverage;
           if (typeof cfg.trendLeverage === "number") this.config.trendLeverage = cfg.trendLeverage;
+          if (typeof cfg.longLeverage === "number") this.config.longLeverage = cfg.longLeverage;
           if (typeof cfg.marginUsdt === "number") this.config.marginUsdt = cfg.marginUsdt;
           if (typeof cfg.marginRate === "number") this.config.marginRate = cfg.marginRate;
           if (typeof cfg.marginPercent === "number") this.config.marginPercent = cfg.marginPercent;
@@ -1401,6 +1660,9 @@ export class PaperTradingEngine {
           if (typeof cfg.limitDivisor === "number") this.config.limitDivisor = cfg.limitDivisor;
           if (typeof cfg.limitExpireMinutes === "number") this.config.limitExpireMinutes = cfg.limitExpireMinutes;
           if (typeof cfg.stopAtHigh === "boolean") this.config.stopAtHigh = cfg.stopAtHigh;
+          if (typeof cfg.stopAtLow === "boolean") this.config.stopAtLow = cfg.stopAtLow;
+          if (typeof cfg.enableStreak === "boolean") this.config.enableStreak = cfg.enableStreak;
+          if (typeof cfg.enableLongs === "boolean") this.config.enableLongs = cfg.enableLongs;
           if (typeof cfg.holdMinutes === "number") this.config.holdMinutes = cfg.holdMinutes;
         }
         console.log(
@@ -1432,6 +1694,19 @@ export class PaperTradingEngine {
       deepReboundConfig: this.config.deepReboundConfig,
       extremeDevConfig: this.config.extremeDevConfig,
       preventConflict: true,
+      enableStreak: this.config.enableStreak ?? false,
+      enableRebound: true,
+      enableDeepRebound: true,
+      enableExtremeDev: true,
+    });
+    this.longTracker = new UnifiedLongStrategyTracker({
+      goldenPullbackConfig: this.config.goldenPullbackConfig,
+      deepSupportConfig: this.config.deepSupportConfig,
+      preventConflict: true,
+      enableGoldenPullback: true,
+      enableDeepSupport: true,
+      enableRank1Pullback: false,
+      enableSecondWave: false,
     });
     this.account = {
       initialBalanceUsdt: this.config.initialBalanceUsdt,
@@ -1480,6 +1755,7 @@ export class PaperTradingEngine {
         leverage: this.config.leverage,
         streakLeverage: this.config.streakLeverage ?? 10,
         trendLeverage: this.config.trendLeverage ?? this.config.leverage,
+        longLeverage: this.config.longLeverage ?? 3,
         marginUsdt: this.calculateOrderMargin(),
         marginRate: this.config.marginRate ?? 0.20,
         marginPercent: this.config.marginPercent ?? (this.config.marginRate ? Math.round(this.config.marginRate * 100) : 20),

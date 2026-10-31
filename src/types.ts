@@ -79,14 +79,37 @@ export interface HighBearState extends HighBullSummary {
 
 // ---- 模拟交易 (Paper Trading) ----
 export type PaperExitReason = "target" | "stop" | "timeout";
-export type PaperSignalType = "streak" | "rebound" | "deep_rebound" | "extreme_dev";
-export type PaperSignalLabel = "连阳悬空" | "首次跌10%" | "跌到20%+" | "空连阳" | "空弱反弹" | "超跌反弹" | "新高顶背离" | "冲高极度乖离" | "极度乖离";
+export type PaperSignalType =
+  | "streak"
+  | "rebound"
+  | "deep_rebound"
+  | "extreme_dev"
+  | "ma30_pullback"
+  | "ma60_support"
+  | "rank1_first_pullback"
+  | "second_wave_expansion";
+export type PaperSignalLabel =
+  | "连阳悬空"
+  | "首次跌10%"
+  | "跌到20%+"
+  | "空连阳"
+  | "空弱反弹"
+  | "超跌反弹"
+  | "新高顶背离"
+  | "冲高极度乖离"
+  | "极度乖离"
+  | "龙头MA30回踩"
+  | "龙头MA60深蹲"
+  | "龙头MA30黄金回踩"
+  | "龙头MA60深蹲托底"
+  | "榜一首次回踩"
+  | "龙头二浪突破";
 
 export interface PaperExitParams {
   holdMinutes: number;
-  exitX: number;
-  exitN: number;
-  exitM: number;
+  exitX?: number;
+  exitN?: number;
+  exitM?: number;
   stopLossPercent?: number;       // e.g. 10.0 (%) 显式大止损比例
   tp1Percent?: number;            // e.g. 4.0 (%) 阶段一显式止盈比例
   tp2Percent?: number;            // e.g. 8.0 (%) 阶段二显式止盈比例
@@ -110,16 +133,16 @@ export interface PaperExit {
 export interface PaperPendingOrder {
   id: string; // e.g. `pending-${symbol}-${createdAt}`
   symbol: string;
-  side: "SHORT";
-  leverage: number;     // 10x
+  side: "SHORT" | "LONG";
+  leverage: number;     // 10x or 3x
   marginUsdt: number;   // 10 USDT
   notionalUsdt: number; // 100 USDT
   signalType?: PaperSignalType;
   signalLabel?: PaperSignalLabel;
   exitParams?: PaperExitParams;
   basePrice: number;    // 信号产生时的基准价
-  limitPrice: number;   // 做空挂单价 = basePrice * (1 + offsetPercent / 100)
-  limitOffsetPercent: number; // 上浮比例% = dayChangePercent / N
+  limitPrice: number;   // 做空/做多挂单价
+  limitOffsetPercent: number; // 上浮/下浮比例%
   currentPrice: number; // 最新市价
   dayChangePercent: number;
   rank?: number | null;
@@ -131,12 +154,13 @@ export interface PaperPendingOrder {
   createdAt: number;
   expireAt: number;     // 超时未成交自动撤单
   cancelBelowPrice?: number; // 若行情直接跌破该价格（如跌穿预估TP1），提前撤销挂单
+  cancelAbovePrice?: number; // 做多时若行情直接暴涨超过该价格，提前撤销挂单
 }
 
 export interface PaperPosition {
   id: string; // e.g. `${symbol}-${entryTime}`
   symbol: string;
-  side: "SHORT";
+  side: "SHORT" | "LONG";
   leverage: number;     // 10x
   marginUsdt: number;   // 10 USDT
   notionalUsdt: number; // 100 USDT (margin * leverage)
@@ -223,6 +247,7 @@ export interface PaperTradingSummaryConfig {
   leverage: number;
   streakLeverage?: number;
   trendLeverage?: number;
+  longLeverage?: number;
   marginUsdt: number;
   marginRate?: number;             // 单笔保证金占总资产比例 (默认 0.20 即 20%)
   marginPercent?: number;          // 百分比格式 (默认 20%)
