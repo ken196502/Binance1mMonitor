@@ -554,7 +554,7 @@ async function main() {
   console.log(`   - 跌到20%+ (90m 波段)   : ${signals.filter(s => s.type === 'deep_rebound').length} 笔`);
   console.log(`   - 冲高极度乖离 (90m 波段): ${signals.filter(s => s.type === 'extreme_dev').length} 笔\n`);
 
-  // 1. 运行动态 20% 资产量 + 限仓 5 笔 (每策略至多 2 笔，既保障策略多样性又释放高胜率策略产能)
+  // 1. 运行皇冠推荐：动态 20% 资产量 + 全局限仓 5 笔 (严格每策略至多 1 仓，四大策略均衡各持仓 1 笔)
   const dynamicResults: any[] = [];
   const testLeverages = [1, 2, 3, 5, 8, 10, 12, 15];
 
@@ -563,41 +563,41 @@ async function main() {
       useDynamicMargin: true,
       marginRate: 0.20,
       maxPositions: 5,
-      maxPositionsPerStrategy: 2,
+      maxPositionsPerStrategy: 1,
     }));
   }
 
   console.log('========================================================================================');
-  console.log('📊【动态 20% 资产量保证金】(初本 100 USDT · 单笔 20% 资产 · 全局限 5 仓 · 每策略至多 2 仓)');
+  console.log('👑【皇冠最优推荐：动态 20% 资产量保证金】(初本 100 USDT · 单笔 20% 资产 · 全局限 5 仓 · 严格每策略 1 仓)');
   console.log('========================================================================================');
   console.table(dynamicResults);
 
-  // 2. 对比固定 20U 保证金模式
+  // 2. 对比固定 20U 保证金模式 (严格每策略至多 1 仓)
   const fixedResults: any[] = [];
   for (const lev of testLeverages) {
     fixedResults.push(runPortfolioSimulation(signals, minuteData, lev, 3, {
       useDynamicMargin: false,
       fixedMarginUsdt: 20.0,
       maxPositions: 5,
-      maxPositionsPerStrategy: 2,
+      maxPositionsPerStrategy: 1,
     }));
   }
 
   console.log('\n========================================================================================');
-  console.log('📊【固定 20U 保证金模式对比】(单笔固定 20 USDT · 全局限 5 仓 · 每策略至多 2 仓)');
+  console.log('📊【固定 20U 保证金模式对比】(单笔固定 20 USDT · 全局限 5 仓 · 严格每策略 1 仓)');
   console.log('========================================================================================');
   console.table(fixedResults);
 
-  // 打印四大子策略在 10x vs 3x 下的细分贡献
+  // 打印四大子策略在 10x vs 3x 下的细分贡献 (严格每策略至多 1 仓)
   console.log('\n========================================================================================');
-  console.log('🔍【四大子策略分项贡献拆解 (动态 20% 仓位 · 新高顶背离 10x vs 3x · 每策略至多 2 仓)】');
+  console.log('🔍【四大子策略分项贡献拆解 (动态 20% 仓位 · 新高顶背离 10x vs 3x · 严格每策略 1 仓)】');
   console.log('========================================================================================');
   for (const lev of [3, 5, 10]) {
     const res = runPortfolioSimulation(signals, minuteData, lev, 3, {
       useDynamicMargin: true,
       marginRate: 0.20,
       maxPositions: 5,
-      maxPositionsPerStrategy: 2,
+      maxPositionsPerStrategy: 1,
     });
     console.log(`\n▶️ 当【新高顶背离】采用 ${lev}x 杠杆 (顺势衰竭保持 3x) 时各子策略明细:`);
     console.table(Object.values(res.subStats));

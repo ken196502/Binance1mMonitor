@@ -663,7 +663,7 @@ export function PaperTradingPanel({
                   type="button"
                   className="btn-preset-reset"
                   onClick={handleResetOptimal}
-                  title="恢复量化研究皇冠最优配置：新高背离10x、顺势衰竭3x、单笔20U、市价直开"
+                  title="恢复量化研究皇冠最优推荐：新高背离10x、顺势衰竭3x、动态20%仓位、限5仓(每策略至多1仓)、市价直开"
                 >
                   恢复皇冠最优推荐
                 </button>
