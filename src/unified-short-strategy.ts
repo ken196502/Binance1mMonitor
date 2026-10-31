@@ -307,6 +307,14 @@ export class UnifiedShortStrategyTracker {
     return this.reboundTracker.getWatchlist();
   }
 
+  public updateConfig(updates: Partial<UnifiedLiveConfig>): void {
+    if (typeof updates.enableStreak === "boolean") this.config.enableStreak = updates.enableStreak;
+    if (typeof updates.enableRebound === "boolean") this.config.enableRebound = updates.enableRebound;
+    if (typeof updates.enableDeepRebound === "boolean") this.config.enableDeepRebound = updates.enableDeepRebound;
+    if (typeof updates.enableExtremeDev === "boolean") this.config.enableExtremeDev = updates.enableExtremeDev;
+    if (typeof updates.preventConflict === "boolean") this.config.preventConflict = updates.preventConflict;
+  }
+
   /**
    * Process newly closed 1m candle for a given symbol.
    * Evaluates all 3 signals without conflict:

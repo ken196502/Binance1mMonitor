@@ -1,13 +1,14 @@
 // Paper Trading Engine for Binance 1m Top-Gainers Dual Strategy (3 Shorts + 2 Longs)
 // Implements the highest win-rate ensemble across 168 hours of historical backtests:
 // - 3 Highest Win-Rate Shorts:
-//   1. 'extreme_dev' (冲高极度乖离做空): 90.9% 胜率, PF 12.09
-//   2. 'deep_rebound' (跌到20%+次级反弹做空): 87.5% 胜率, PF 7.15
-//   3. 'rebound' (首次跌到10%弱反弹做空): 80.0% 胜率, PF 2.67
+//   1. 'streak' (新高顶背离闪击做空): 10x 闪击战, 15m 紧止损
+//   2. 'deep_rebound' (跌到20%+次级反弹做空): 87.5% 胜率, PF 7.15, 3x 波段
+//   3. 'rebound' (首次跌到10%弱反弹做空): 80.0% 胜率, PF 2.67, 3x 波段
+//   (注: 'extreme_dev' 冲高极度乖离已关闭)
 // - 2 Highest Win-Rate Longs (24h 涨幅榜专属):
 //   1. 'ma30_pullback' (龙头MA30黄金生命线回踩做多): 75.7% 胜率, +29.74% 净收益
 //   2. 'ma60_support' (龙头MA60深度大蹲强托底做多): 77.8% 胜率, +11.29% 净收益
-// Features: 3x leverage, 20% dynamic equity margin per position, max 5 positions (1 per strategy).
+// Features: 3x leverage / 10x streak, 20% dynamic equity margin per position, max 5 positions (1 per strategy).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -89,8 +90,11 @@ export interface PaperStrategyConfig {
   storageFile?: string | null;
   stopAtHigh?: boolean; // 极端最高点止损模式 (触碰做空止损时按当根1m K线最高点/Tick最高突破价成交，默认 true)
   stopAtLow?: boolean;  // 极端最低点止损模式 (触碰做多止损时按当根1m K线最低点/Tick最低突破价成交，默认 true)
-  enableStreak?: boolean; // 是否启用新高顶背离 (默认 false，仅保留前三最高胜率做空)
-  enableLongs?: boolean;  // 是否启用涨幅榜回踩做多 (默认 true，前二最高胜率做多)
+  enableStreak?: boolean;     // 是否启用新高顶背离闪击做空 (默认 true)
+  enableExtremeDev?: boolean; // 是否启用冲高极度乖离做空 (默认 false)
+  enableRebound?: boolean;    // 是否启用首次跌10%弱反弹做空 (默认 true)
+  enableDeepRebound?: boolean;// 是否启用跌到20%+次级反弹做空 (默认 true)
+  enableLongs?: boolean;      // 是否启用涨幅榜回踩做多 (默认 true，前二最高胜率做多)
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
@@ -133,8 +137,11 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   limitExpireMinutes: 3,   // 默认 3 分钟
   stopAtHigh: true,        // 开启做空极端最高点止损模式
   stopAtLow: true,         // 开启做多极端最低点止损模式
-  enableStreak: false,     // 默认 false (保留前三最高胜率做空: 极度乖离 90.9%, 跌20%+ 87.5%, 跌10% 80.0%)
-  enableLongs: true,       // 默认 true (启用涨幅榜前二最高胜率做多: MA30黄金回踩 75.7%, MA60深蹲 77.8%)
+  enableStreak: true,      // 默认 true (开启新高顶背离 10x 闪击做空)
+  enableExtremeDev: false, // 默认 false (关闭冲高极度乖离)
+  enableRebound: true,     // 默认 true (开启首次跌10%做空)
+  enableDeepRebound: true, // 默认 true (开启跌到20%+做空)
+  enableLongs: true,       // 默认 true (开启涨幅榜前二最高胜率做多: MA30黄金回踩 75.7%, MA60深蹲 77.8%)
   storageFile: STATE_FILE,
   reboundConfig: DUAL_SPEED_PEAK_REBOUND_CONFIG,
   deepReboundConfig: DUAL_SPEED_DEEP_REBOUND_CONFIG,
@@ -293,10 +300,10 @@ export class PaperTradingEngine {
       deepReboundConfig: this.config.deepReboundConfig,
       extremeDevConfig: this.config.extremeDevConfig,
       preventConflict: true,
-      enableStreak: this.config.enableStreak ?? false, // 胜率65%不入前三，默认关闭以严格执行前三最高胜率做空
-      enableRebound: true,       // 胜率 80.0% 做空前三
-      enableDeepRebound: true,   // 胜率 87.5% 做空前二
-      enableExtremeDev: true,    // 胜率 90.9% 做空第一
+      enableStreak: this.config.enableStreak ?? true, // 开启新高顶背离 10x 闪击
+      enableRebound: this.config.enableRebound ?? true,
+      enableDeepRebound: this.config.enableDeepRebound ?? true,
+      enableExtremeDev: this.config.enableExtremeDev ?? false, // 关闭冲高极度乖离
     });
     this.longTracker = new UnifiedLongStrategyTracker({
       goldenPullbackConfig: this.config.goldenPullbackConfig,
@@ -438,6 +445,19 @@ export class PaperTradingEngine {
     }
     if (typeof updates.enableStreak === "boolean") {
       this.config.enableStreak = updates.enableStreak;
+      this.unifiedTracker.updateConfig({ enableStreak: updates.enableStreak });
+    }
+    if (typeof updates.enableExtremeDev === "boolean") {
+      this.config.enableExtremeDev = updates.enableExtremeDev;
+      this.unifiedTracker.updateConfig({ enableExtremeDev: updates.enableExtremeDev });
+    }
+    if (typeof updates.enableRebound === "boolean") {
+      this.config.enableRebound = updates.enableRebound;
+      this.unifiedTracker.updateConfig({ enableRebound: updates.enableRebound });
+    }
+    if (typeof updates.enableDeepRebound === "boolean") {
+      this.config.enableDeepRebound = updates.enableDeepRebound;
+      this.unifiedTracker.updateConfig({ enableDeepRebound: updates.enableDeepRebound });
     }
     if (typeof updates.enableLongs === "boolean") {
       this.config.enableLongs = updates.enableLongs;
@@ -1564,6 +1584,9 @@ export class PaperTradingEngine {
           stopAtHigh: this.config.stopAtHigh,
           stopAtLow: this.config.stopAtLow,
           enableStreak: this.config.enableStreak,
+          enableExtremeDev: this.config.enableExtremeDev,
+          enableRebound: this.config.enableRebound,
+          enableDeepRebound: this.config.enableDeepRebound,
           enableLongs: this.config.enableLongs,
           holdMinutes: this.config.holdMinutes,
         },
@@ -1661,7 +1684,22 @@ export class PaperTradingEngine {
           if (typeof cfg.limitExpireMinutes === "number") this.config.limitExpireMinutes = cfg.limitExpireMinutes;
           if (typeof cfg.stopAtHigh === "boolean") this.config.stopAtHigh = cfg.stopAtHigh;
           if (typeof cfg.stopAtLow === "boolean") this.config.stopAtLow = cfg.stopAtLow;
-          if (typeof cfg.enableStreak === "boolean") this.config.enableStreak = cfg.enableStreak;
+          if (typeof cfg.enableStreak === "boolean") {
+            this.config.enableStreak = cfg.enableStreak;
+            this.unifiedTracker.updateConfig({ enableStreak: cfg.enableStreak });
+          }
+          if (typeof cfg.enableExtremeDev === "boolean") {
+            this.config.enableExtremeDev = cfg.enableExtremeDev;
+            this.unifiedTracker.updateConfig({ enableExtremeDev: cfg.enableExtremeDev });
+          }
+          if (typeof cfg.enableRebound === "boolean") {
+            this.config.enableRebound = cfg.enableRebound;
+            this.unifiedTracker.updateConfig({ enableRebound: cfg.enableRebound });
+          }
+          if (typeof cfg.enableDeepRebound === "boolean") {
+            this.config.enableDeepRebound = cfg.enableDeepRebound;
+            this.unifiedTracker.updateConfig({ enableDeepRebound: cfg.enableDeepRebound });
+          }
           if (typeof cfg.enableLongs === "boolean") this.config.enableLongs = cfg.enableLongs;
           if (typeof cfg.holdMinutes === "number") this.config.holdMinutes = cfg.holdMinutes;
         }
@@ -1694,10 +1732,10 @@ export class PaperTradingEngine {
       deepReboundConfig: this.config.deepReboundConfig,
       extremeDevConfig: this.config.extremeDevConfig,
       preventConflict: true,
-      enableStreak: this.config.enableStreak ?? false,
-      enableRebound: true,
-      enableDeepRebound: true,
-      enableExtremeDev: true,
+      enableStreak: this.config.enableStreak ?? true,
+      enableRebound: this.config.enableRebound ?? true,
+      enableDeepRebound: this.config.enableDeepRebound ?? true,
+      enableExtremeDev: this.config.enableExtremeDev ?? false,
     });
     this.longTracker = new UnifiedLongStrategyTracker({
       goldenPullbackConfig: this.config.goldenPullbackConfig,

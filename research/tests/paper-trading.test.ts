@@ -902,3 +902,14 @@ test("PaperTradingEngine: supports 5 simultaneous positions (3 Shorts + 2 Longs)
   // 6th position attempt should exceed quota and be prevented
   assert.equal(engine.calculateUsedMargin() >= engine.getAccount().balanceUsdt, true);
 });
+
+test("PaperTradingEngine: default enables streak (新高顶背离) and disables extreme_dev (冲高极度乖离)", () => {
+  const engine = new PaperTradingEngine({ storageFile: null });
+  const cfg = engine.getConfig();
+
+  assert.equal(cfg.enableStreak, true, "enableStreak must be true by default");
+  assert.equal(cfg.enableExtremeDev, false, "enableExtremeDev must be false by default");
+  assert.equal(cfg.enableRebound, true, "enableRebound must be true by default");
+  assert.equal(cfg.enableDeepRebound, true, "enableDeepRebound must be true by default");
+  assert.equal(cfg.enableLongs, true, "enableLongs must be true by default");
+});

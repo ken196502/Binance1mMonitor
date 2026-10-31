@@ -237,6 +237,14 @@ export class UnifiedLongStrategyTracker {
     return true;
   }
 
+  public updateConfig(updates: Partial<UnifiedLongLiveConfig>): void {
+    if (typeof updates.enableGoldenPullback === "boolean") this.config.enableGoldenPullback = updates.enableGoldenPullback;
+    if (typeof updates.enableDeepSupport === "boolean") this.config.enableDeepSupport = updates.enableDeepSupport;
+    if (typeof updates.enableRank1Pullback === "boolean") this.config.enableRank1Pullback = updates.enableRank1Pullback;
+    if (typeof updates.enableSecondWave === "boolean") this.config.enableSecondWave = updates.enableSecondWave;
+    if (typeof updates.preventConflict === "boolean") this.config.preventConflict = updates.preventConflict;
+  }
+
   /**
    * Evaluate a newly closed 1m candle for 24h Top Gainers Long entries.
    * Order of evaluation:
