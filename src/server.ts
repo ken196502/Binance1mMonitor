@@ -514,6 +514,7 @@ async function getStatus(): Promise<Status> {
         return {
           ...lastKnownStatus,
           at: new Date().toISOString(),
+          paperTrading: paperTrading.getSummary(),
           error: errorMsg,
         };
       }
@@ -526,6 +527,7 @@ async function getStatus(): Promise<Status> {
         gainers: [],
         losers: [],
         volume: [],
+        paperTrading: paperTrading.getSummary(),
         error: errorMsg,
       };
     });
@@ -689,14 +691,21 @@ function readJsonBody(req: http.IncomingMessage): Promise<any> {
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.url === "/api/status") {
+  if (req.url === "/api/status" || req.url?.startsWith("/api/status?")) {
     try {
       const status = await getStatus();
-      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(status));
+      const responseStatus: Status = {
+        ...status,
+        paperTrading: paperTrading.getSummary(),
+      };
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(JSON.stringify(responseStatus));
     } catch (e) {
-      res.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+      res.writeHead(502, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({
+        error: e instanceof Error ? e.message : String(e),
+        paperTrading: paperTrading.getSummary(),
+      }));
     }
     return;
   }

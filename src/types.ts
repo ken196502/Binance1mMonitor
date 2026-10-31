@@ -216,6 +216,7 @@ export interface PaperTradingState {
   closedPositions: PaperPosition[];
   stats: PaperTradingStats;
   updatedAt: string;
+  summary?: PaperTradingSummary;
 }
 
 export interface PaperTradingSummaryConfig {

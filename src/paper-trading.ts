@@ -11,7 +11,7 @@ import {
   computeMacd,
   type Candle,
 } from "./macd.ts";
-import { sendTelegramMessage } from "./telegram.ts";
+import { sendTelegramMessage, telegramConfigured } from "./telegram.ts";
 import {
   UnifiedShortStrategyTracker,
   STREAK_LIVE_DEFAULT_CONFIG,
@@ -123,6 +123,19 @@ export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLab
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
   return "新高顶背离";
+}
+
+/**
+ * 自适应价格格式化：避免低价山寨币（如 SLP/PEPE 价格 <0.001）在四位小数时发生截断失真
+ */
+export function formatPrice(price: number): string {
+  if (!Number.isFinite(price) || price === 0) return "0";
+  const abs = Math.abs(price);
+  if (abs >= 100) return price.toFixed(2);
+  if (abs >= 1) return price.toFixed(4);
+  if (abs >= 0.01) return price.toFixed(5);
+  if (abs >= 0.0001) return price.toFixed(6);
+  return price.toFixed(8);
 }
 
 export interface SignalMatchDetails {
@@ -857,9 +870,10 @@ export class PaperTradingEngine {
     // 2. Check Stage 1 if remainingFraction == 1.0
     if (position.remainingFraction === 1.0) {
       if (price <= position.tp1Price) {
-        this.closeStage(position, 1, position.tp1Price, time, "target");
+        const dualTarget = price <= position.tp2Price;
+        this.closeStage(position, 1, position.tp1Price, time, "target", dualTarget);
         // In extreme fast drops, check if Stage 2 is also hit on the same tick
-        if (price <= position.tp2Price) {
+        if (dualTarget) {
           this.closeStage(position, 2, position.tp2Price, time, "target");
         }
         return;
@@ -867,9 +881,10 @@ export class PaperTradingEngine {
         const exitPrice1 = this.config.stopAtHigh
           ? Math.max(price, currentCandleHigh ?? price, position.sl1Price)
           : position.sl1Price;
-        this.closeStage(position, 1, exitPrice1, time, "stop");
+        const dualStop = price >= position.sl2Price;
+        this.closeStage(position, 1, exitPrice1, time, "stop", dualStop);
         // In extreme fast jumps, check if Stage 2 stop is also hit
-        if (price >= position.sl2Price) {
+        if (dualStop) {
           const exitPrice2 = this.config.stopAtHigh
             ? Math.max(price, currentCandleHigh ?? price, position.sl2Price)
             : position.sl2Price;
@@ -944,6 +959,7 @@ export class PaperTradingEngine {
     exitPrice: number,
     exitTime: number,
     reason: PaperExitReason,
+    skipNotify = false,
   ): PaperExit {
     const fraction = this.config.firstCloseFraction;
     const stageNotional = pos.notionalUsdt * fraction;
@@ -990,18 +1006,20 @@ export class PaperTradingEngine {
         pos.sl2Percent = 0.2;
         pos.isBreakevenArmed = true;
         console.log(
-          `[paper-trading] 🛡️ ${pos.symbol} 阶段一止盈达成，剩余仓位止损已锁定保本价 @ ${pos.sl2Price.toFixed(4)}`,
+          `[paper-trading] 🛡️ ${pos.symbol} 阶段一止盈达成，剩余仓位止损已锁定保本价 @ ${formatPrice(pos.sl2Price)}`,
         );
       }
 
       this.updateUnrealizedPnl(pos, exitPrice);
 
-      this.notifyStage1(pos, exit).catch((e) =>
-        console.warn(`[paper-trading] 发送阶段一平仓通知异常:`, (e as any)?.message ?? e),
-      );
+      if (!skipNotify) {
+        this.notifyStage1(pos, exit).catch((e) =>
+          console.warn(`[paper-trading] 发送阶段一平仓通知异常:`, (e as any)?.message ?? e),
+        );
+      }
 
       console.log(
-        `[paper-trading] 🎯 ${pos.symbol} 阶段一完成 (${reason}) @ ${exitPrice.toFixed(4)} | ` +
+        `[paper-trading] 🎯 ${pos.symbol} 阶段一完成 (${reason}) @ ${formatPrice(exitPrice)} | ` +
         `阶段净盈亏: ${netPnlUsdt >= 0 ? "+" : ""}${netPnlUsdt.toFixed(2)} USDT (ROE: ${pos.roePercent >= 0 ? "+" : ""}${pos.roePercent.toFixed(1)}%)`,
       );
     } else {
@@ -1029,8 +1047,8 @@ export class PaperTradingEngine {
     if (pos.status === "CLOSED" || pos.remainingFraction <= 0) return;
 
     if (pos.remainingFraction === 1.0) {
-      // Both stages close at this price
-      this.closeStage(pos, 1, exitPrice, exitTime, reason);
+      // Both stages close at this price (全额平仓时阶段一跳过虚假通知，由 notifyFinal 汇总发送)
+      this.closeStage(pos, 1, exitPrice, exitTime, reason, true);
       this.closeStage(pos, 2, exitPrice, exitTime, reason);
     } else {
       // Stage 2 closes
@@ -1143,18 +1161,31 @@ export class PaperTradingEngine {
   }
 
   // --- Telegram Alerts ---
+  private async sendTg(text: string, title: string): Promise<void> {
+    if (!telegramConfigured()) {
+      return;
+    }
+    const res = await sendTelegramMessage(text);
+    if (!res.ok) {
+      console.error(`[paper-trading] TG 播报 [${title}] 发送失败: ${res.error}`);
+    } else {
+      console.log(`[paper-trading] TG 播报 [${title}] 发送成功`);
+    }
+  }
+
   private async notifyPendingOrder(order: PaperPendingOrder): Promise<void> {
     const rankStr = order.rank ? `(#${order.rank})` : "";
     const label = formatSignalLabel(order.signalType, order.signalLabel);
+    const ampStr = order.amp30Percent != null ? `${order.amp30Percent.toFixed(2)}%` : "-";
     const msg =
       `⏳ <b>[模拟交易] 发现做空信号【${label}】，已提交限价做空挂单</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${order.symbol}"><b>${order.symbol}</b></a>\n` +
       `• <b>信号类型</b>: <b>【${label}】</b>\n` +
-      `• <b>挂单限价</b>: <code>${order.limitPrice.toFixed(4)}</code> (基准价: <code>${order.basePrice.toFixed(4)}</code>, 上浮: <b>+${order.limitOffsetPercent.toFixed(2)}%</b>)\n` +
-      `• <b>杠杆 / 保证金</b>: <b>${order.leverage}x / ${order.marginUsdt} USDT</b> (名义仓位: ${order.notionalUsdt} USDT)\n` +
-      `• <b>24h涨幅</b>: +${order.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${order.amp30Percent.toFixed(2)}%\n` +
+      `• <b>挂单限价</b>: <code>${formatPrice(order.limitPrice)}</code> (基准价: <code>${formatPrice(order.basePrice)}</code>, 上浮: <b>+${order.limitOffsetPercent.toFixed(2)}%</b>)\n` +
+      `• <b>杠杆 / 保证金</b>: <b>${order.leverage}x / ${order.marginUsdt.toFixed(1)} USDT</b> (名义仓位: ${order.notionalUsdt.toFixed(1)} USDT)\n` +
+      `• <b>24h涨幅</b>: +${order.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${ampStr}\n` +
       `• <b>撮合机制</b>: 向上冲针触及挂单价即撮合成交 (有效期 ${this.config.limitExpireMinutes}分钟，未触碰或提前下跌自动撤单)`;
-    await sendTelegramMessage(msg);
+    await this.sendTg(msg, `挂单提交 ${order.symbol}`);
   }
 
   private async notifyEntry(pos: PaperPosition): Promise<void> {
@@ -1162,22 +1193,23 @@ export class PaperTradingEngine {
     const isLimit = pos.limitPrice != null;
     const label = formatSignalLabel(pos.signalType, pos.signalLabel);
     const holdMin = pos.exitParams?.holdMinutes ?? this.config.holdMinutes;
+    const ampStr = pos.amp30Percent != null ? `${pos.amp30Percent.toFixed(2)}%` : "-";
     const msg =
       `⚡ <b>[模拟交易] ${isLimit ? "限价挂单冲高撮合成交" : "发现做空信号，市价开空"}【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
       `• <b>信号类型</b>: <b>【${label}】</b>\n` +
-      `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt} USDT</b> (名义仓位: ${pos.notionalUsdt} USDT)\n` +
-      `• <b>成交开仓价</b>: <code>${pos.entryPrice.toFixed(4)}</code>\n` +
-      `• <b>24h涨幅</b>: +${pos.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${pos.amp30Percent.toFixed(2)}%\n` +
+      `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt.toFixed(1)} USDT</b> (名义仓位: ${pos.notionalUsdt.toFixed(1)} USDT)\n` +
+      `• <b>成交开仓价</b>: <code>${formatPrice(pos.entryPrice)}</code>\n` +
+      `• <b>24h涨幅</b>: +${pos.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${ampStr}\n` +
       `• <b>阶段一目标 (平50%)</b>:\n` +
-      `   - 止盈1: <b>${pos.tp1Price.toFixed(4)}</b> (-${pos.tp1Percent.toFixed(2)}%)\n` +
-      `   - 止损1: <b>${pos.sl1Price.toFixed(4)}</b> (+${pos.sl1Percent.toFixed(2)}%)\n` +
+      `   - 止盈1: <b>${formatPrice(pos.tp1Price)}</b> (-${pos.tp1Percent.toFixed(2)}%)\n` +
+      `   - 止损1: <b>${formatPrice(pos.sl1Price)}</b> (+${pos.sl1Percent.toFixed(2)}%)\n` +
       `• <b>阶段二目标 (平50%)</b>:\n` +
-      `   - 止损2: <b>${pos.sl2Price.toFixed(4)}</b> (+${pos.sl2Percent.toFixed(2)}%)\n` +
-      `   - 止盈2: <b>${pos.tp2Price.toFixed(4)}</b> (-${pos.tp2Percent.toFixed(2)}%)\n` +
+      `   - 止盈2: <b>${formatPrice(pos.tp2Price)}</b> (-${pos.tp2Percent.toFixed(2)}%)\n` +
+      `   - 止损2: <b>${formatPrice(pos.sl2Price)}</b> (+${pos.sl2Percent.toFixed(2)}%${pos.moveSlToEntryAfterTp1 !== false ? "，阶段一止盈后自动锁定保本" : ""})\n` +
       `• <b>模拟账户状态</b>: 可用保证金 <b>${this.account.availableMarginUsdt.toFixed(2)} USDT</b> (净值 <b>${this.account.equityUsdt.toFixed(2)} USDT</b>)\n` +
       `• <b>最长持仓</b>: ${holdMin}分钟超时市价平仓`;
-    await sendTelegramMessage(msg);
+    await this.sendTg(msg, `开仓 ${pos.symbol}`);
   }
 
   private async notifyStage1(pos: PaperPosition, exit: PaperExit): Promise<void> {
@@ -1188,51 +1220,82 @@ export class PaperTradingEngine {
           ? "止损减仓 🛑"
           : "超时平仓 ⏱️";
     const pnlSign = exit.netPnlUsdt >= 0 ? "+" : "";
+    const roeSign = exit.netPnlUsdt >= 0 ? "+" : "";
+    const stageRoe = ((exit.netPnlUsdt / Math.max(0.01, pos.marginUsdt * 0.5)) * 100).toFixed(1);
     const label = formatSignalLabel(pos.signalType, pos.signalLabel);
     const beStr = pos.isBreakevenArmed
-      ? `\n• <b>保护机制</b>: 🛡️ 剩余仓位止损已上移锁定保本价 <code>${pos.sl2Price.toFixed(4)}</code> (锁定无风险交易！)`
+      ? `\n• <b>保护机制</b>: 🛡️ 剩余仓位止损已上移锁定保本价 <code>${formatPrice(pos.sl2Price)}</code> (锁定无风险交易！)`
       : "";
     const msg =
       `🎯 <b>[模拟交易] 阶段一达成 (平仓 50%) 【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
       `• <b>信号类型</b>: <b>【${label}】</b>\n` +
       `• <b>动作</b>: ${action}\n` +
-      `• <b>成交价</b>: <code>${exit.exitPrice.toFixed(4)}</code>\n` +
-      `• <b>阶段净盈亏</b>: <b>${pnlSign}${exit.netPnlUsdt.toFixed(2)} USDT</b>\n` +
-      `• <b>剩余仓位</b>: 50% (等待阶段二: 止盈 <code>${pos.tp2Price.toFixed(4)}</code> / 止损 <code>${pos.sl2Price.toFixed(4)}</code>)${beStr}`;
-    await sendTelegramMessage(msg);
+      `• <b>成交价</b>: <code>${formatPrice(exit.exitPrice)}</code>\n` +
+      `• <b>阶段净盈亏</b>: <b>${pnlSign}${exit.netPnlUsdt.toFixed(2)} USDT (ROE: ${roeSign}${stageRoe}%)</b>\n` +
+      `• <b>剩余仓位</b>: 50% (等待阶段二: 止盈 <code>${formatPrice(pos.tp2Price)}</code> / 止损 <code>${formatPrice(pos.sl2Price)}</code>)${beStr}`;
+    await this.sendTg(msg, `阶段一平仓 ${pos.symbol}`);
   }
 
   private async notifyFinal(pos: PaperPosition): Promise<void> {
     const holdMins = pos.closedAt
       ? ((pos.closedAt - pos.entryTime) / 60000).toFixed(1)
       : (pos.exitParams?.holdMinutes ?? this.config.holdMinutes).toFixed(1);
-    const reasonStr =
-      pos.finalReason === "target"
-        ? "两阶段全部止盈 🎯"
-        : pos.finalReason === "stop"
-          ? (pos.isBreakevenArmed ? "触发保本止损 🛡️" : "触发止损 🛑")
-          : `${holdMins}分钟超时市价平仓 ⏱️`;
+
+    const exit1 = pos.exits.find((e) => e.stage === 1);
+    const exit2 = pos.exits.find((e) => e.stage === 2);
+
+    let reasonStr = "";
+    if (exit1?.reason === "target" && exit2?.reason === "target") {
+      reasonStr = "两阶段全部止盈 🎯";
+    } else if (exit1?.reason === "target" && exit2?.reason === "stop" && pos.isBreakevenArmed) {
+      reasonStr = "阶段一止盈 + 阶段二保本锁定 🎯🛡️";
+    } else if (exit1?.reason === "target" && exit2?.reason === "timeout") {
+      reasonStr = "阶段一止盈 + 阶段二超时平仓 🎯⏱️";
+    } else if (exit1?.reason === "target" && exit2?.reason === "stop") {
+      reasonStr = "阶段一止盈 + 阶段二止损 🎯🛑";
+    } else if (exit1?.reason === "stop" && exit2?.reason === "target") {
+      reasonStr = "阶段一止损 + 阶段二止盈 🛑🎯";
+    } else if (exit1?.reason === "stop" && exit2?.reason === "timeout") {
+      reasonStr = "阶段一止损 + 阶段二超时 🛑⏱️";
+    } else if (exit1?.reason === "stop" && exit2?.reason === "stop") {
+      reasonStr = "触发全额止损 🛑";
+    } else if (exit1?.reason === "timeout" && exit2?.reason === "timeout") {
+      reasonStr = `${holdMins}分钟超时市价平仓 ⏱️`;
+    } else {
+      reasonStr =
+        pos.finalReason === "target"
+          ? "目标达成止盈 🎯"
+          : pos.finalReason === "stop"
+            ? (pos.isBreakevenArmed ? "保本止损锁定 🛡️" : "触发止损 🛑")
+            : `${holdMins}分钟超时市价平仓 ⏱️`;
+    }
+
+    const headerIcon =
+      pos.totalNetPnlUsdt > 0.001 ? "🏆" : pos.totalNetPnlUsdt < -0.001 ? "🛑" : "🛡️";
+
+    const totalFraction = pos.exits.reduce((sum, e) => sum + e.fraction, 0);
     const avgExitPrice =
-      pos.exits.length > 0
-        ? pos.exits.reduce((sum, e) => sum + e.exitPrice * e.fraction, 0)
+      totalFraction > 0
+        ? pos.exits.reduce((sum, e) => sum + e.exitPrice * e.fraction, 0) / totalFraction
         : pos.currentPrice;
+
     const pnlSign = pos.totalNetPnlUsdt >= 0 ? "+" : "";
     const totSign = this.account.totalPnlUsdt >= 0 ? "+" : "";
     const label = formatSignalLabel(pos.signalType, pos.signalLabel);
 
     const msg =
-      `🏆 <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${label}】</b>\n` +
+      `${headerIcon} <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
       `• <b>信号类型</b>: <b>【${label}】</b>\n` +
-      `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt} USDT</b> (名义仓位: ${pos.notionalUsdt} USDT)\n` +
+      `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt.toFixed(1)} USDT</b> (名义仓位: ${pos.notionalUsdt.toFixed(1)} USDT)\n` +
       `• <b>持仓耗时</b>: ${holdMins} 分钟\n` +
       `• <b>结算原因</b>: ${reasonStr}\n` +
-      `• <b>成交明细</b>: 开 <code>${pos.entryPrice.toFixed(4)}</code> → 平均 <code>${avgExitPrice.toFixed(4)}</code>\n` +
+      `• <b>成交明细</b>: 开 <code>${formatPrice(pos.entryPrice)}</code> → 平均 <code>${formatPrice(avgExitPrice)}</code>\n` +
       `• <b>整单净盈亏</b>: <b>${pnlSign}${pos.totalNetPnlUsdt.toFixed(2)} USDT (ROE: ${pnlSign}${pos.roePercent.toFixed(1)}%)</b>\n` +
       `• <b>模拟账户总览</b>: 余额 <b>${this.account.balanceUsdt.toFixed(2)} USDT</b> (净值 <b>${this.account.equityUsdt.toFixed(2)} USDT</b>, 累计回报 <b>${totSign}${this.account.accountRoiPercent.toFixed(2)}%</b>)\n` +
       `• <b>累计模拟战绩</b>: 共 ${this.stats.totalTrades} 笔 | 胜率 <b>${this.stats.winRate.toFixed(1)}%</b> | PF <b>${Number.isFinite(this.stats.profitFactor) ? this.stats.profitFactor.toFixed(2) : "∞"}</b>`;
-    await sendTelegramMessage(msg);
+    await this.sendTg(msg, `订单结清 ${pos.symbol}`);
   }
 
   // --- Persistence ---
@@ -1429,7 +1492,7 @@ export class PaperTradingEngine {
     };
   }
 
-  public getState(): PaperTradingState & { config: PaperStrategyConfig } {
+  public getState(): PaperTradingState & { config: PaperStrategyConfig; summary: PaperTradingSummary } {
     return {
       account: this.account,
       pendingOrders: Array.from(this.pendingOrders.values()),
@@ -1438,6 +1501,7 @@ export class PaperTradingEngine {
       stats: this.stats,
       updatedAt: new Date().toISOString(),
       config: this.config,
+      summary: this.getSummary(),
     };
   }
 }

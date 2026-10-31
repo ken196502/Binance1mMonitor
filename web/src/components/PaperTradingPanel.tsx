@@ -42,11 +42,57 @@ function formatSignalLabel(type?: string, label?: string): string {
   return "新高顶背离";
 }
 
+function formatPrice(price?: number): string {
+  if (price == null || !Number.isFinite(price) || price === 0) return "0";
+  const abs = Math.abs(price);
+  if (abs >= 100) return price.toFixed(2);
+  if (abs >= 1) return price.toFixed(4);
+  if (abs >= 0.01) return price.toFixed(5);
+  if (abs >= 0.0001) return price.toFixed(6);
+  return price.toFixed(8);
+}
+
+function formatExitReason(item: ClosedTradeItem): string {
+  const exit1 = item.exits?.find((e) => e.stage === 1);
+  const exit2 = item.exits?.find((e) => e.stage === 2);
+
+  if (exit1?.reason === "target" && exit2?.reason === "target") {
+    return "两段全部止盈 🎯";
+  }
+  if (exit1?.reason === "target" && exit2?.reason === "stop" && item.isBreakevenArmed) {
+    return "阶段一止盈 + 阶段二保本 🎯🛡️";
+  }
+  if (exit1?.reason === "target" && exit2?.reason === "timeout") {
+    return "阶段一止盈 + 阶段二超时 🎯⏱️";
+  }
+  if (exit1?.reason === "target" && exit2?.reason === "stop") {
+    return "阶段一止盈 + 阶段二止损 🎯🛑";
+  }
+  if (exit1?.reason === "stop" && exit2?.reason === "target") {
+    return "阶段一止损 + 阶段二止盈 🛑🎯";
+  }
+  if (exit1?.reason === "stop" && exit2?.reason === "timeout") {
+    return "阶段一止损 + 阶段二超时 🛑⏱️";
+  }
+  if (exit1?.reason === "stop" && exit2?.reason === "stop") {
+    return "触发全额止损 🛑";
+  }
+  if (exit1?.reason === "timeout" && exit2?.reason === "timeout") {
+    return "超时平仓 ⏱️";
+  }
+
+  if (item.finalReason === "target") return "两段全部止盈 🎯";
+  if (item.finalReason === "stop") return item.isBreakevenArmed ? "保本止损锁定 🛡️" : "触发止损 🛑";
+  if (item.finalReason === "timeout") return "超时平仓 ⏱️";
+  return item.finalReason ?? "-";
+}
+
 export function PaperTradingPanel({
-  summary,
+  summary: propSummary,
   onSelectSymbol,
   selectedSymbol,
 }: PaperTradingPanelProps) {
+  const [liveSummary, setLiveSummary] = useState<PaperTradingSummary | undefined>(propSummary);
   const [showHistory, setShowHistory] = useState(false);
   const [historyList, setHistoryList] = useState<ClosedTradeItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -63,6 +109,63 @@ export function PaperTradingPanel({
   const [limitDivisorInput, setLimitDivisorInput] = useState<number>(0);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
+  // 自主同步与高频轮询 /api/paper-trading，彻底摆脱主状态依赖与轮询迟滞
+  const fetchLive = async () => {
+    try {
+      const res = await fetch("/api/paper-trading", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.summary) {
+        setLiveSummary(data.summary);
+      } else if (data.account && data.stats) {
+        setLiveSummary({
+          account: data.account,
+          pendingOrders: data.pendingOrders ?? [],
+          pendingCount: data.pendingOrders?.length ?? 0,
+          activeCount: data.activePositions?.length ?? 0,
+          totalTrades: data.stats.totalTrades ?? 0,
+          winningTrades: data.stats.winningTrades ?? 0,
+          losingTrades: data.stats.losingTrades ?? 0,
+          winRate: data.stats.winRate ?? 0,
+          totalNetPnlUsdt: data.stats.totalNetPnlUsdt ?? 0,
+          profitFactor: data.stats.profitFactor ?? 1,
+          activePositions: data.activePositions ?? [],
+          config: {
+            leverage: data.config?.leverage ?? 3,
+            streakLeverage: data.config?.streakLeverage ?? 10,
+            trendLeverage: data.config?.trendLeverage ?? 3,
+            marginUsdt: data.config?.marginUsdt ?? 20,
+            marginRate: data.config?.marginRate ?? 0.2,
+            marginPercent: data.config?.marginPercent ?? 20,
+            maxPositions: data.config?.maxPositions ?? 5,
+            maxPositionsPerStrategy: data.config?.maxPositionsPerStrategy ?? 1,
+            limitDivisor: data.config?.limitDivisor ?? 0,
+            holdMinutes: data.config?.holdMinutes ?? 15,
+            initialBalanceUsdt: data.config?.initialBalanceUsdt ?? 100,
+          },
+        });
+      }
+      if (Array.isArray(data.closedPositions)) {
+        setHistoryList(data.closedPositions.slice().reverse());
+      }
+    } catch {
+      // 忽略偶发网络波动
+    }
+  };
+
+  // 挂载时立即拉取，并以 3 秒高频间隔后台轮询模拟实盘最新状态
+  useEffect(() => {
+    let active = true;
+    fetchLive();
+    const interval = setInterval(() => {
+      if (active) fetchLive();
+    }, 3000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   // Update timer every second for countdowns
   useEffect(() => {
     const timer = setInterval(() => {
@@ -70,6 +173,14 @@ export function PaperTradingPanel({
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (propSummary) {
+      setLiveSummary(propSummary);
+    }
+  }, [propSummary]);
+
+  const summary = liveSummary ?? propSummary;
 
   useEffect(() => {
     if (summary?.config) {
@@ -104,6 +215,7 @@ export function PaperTradingPanel({
       if (data.ok) {
         alert("✅ 模拟交易策略配置已通过 API 成功更新并持久化！");
         setShowConfigModal(false);
+        fetchLive();
       } else {
         alert("❌ 更新配置失败: " + (data.error ?? "未知错误"));
       }
@@ -159,7 +271,7 @@ export function PaperTradingPanel({
       const res = await fetch("/api/paper-trading");
       const data = await res.json();
       if (Array.isArray(data.closedPositions)) {
-        setHistoryList(data.closedPositions);
+        setHistoryList(data.closedPositions.slice().reverse());
       }
     } catch (e) {
       console.warn("加载模拟交易历史记录失败:", e);
@@ -299,7 +411,7 @@ export function PaperTradingPanel({
                         <span className="badge-short" style={{ background: "rgba(245, 166, 35, 0.2)", color: "#f5a623" }}>
                           {order.leverage}x 限价挂单
                         </span>
-                        <span className="badge-margin">保 {order.marginUsdt}U</span>
+                        <span className="badge-margin">保 {order.marginUsdt.toFixed(1)}U</span>
                         {order.rank && <span className="pos-rank">#{order.rank}</span>}
                       </div>
                       <div className="pos-card-timer" title="有效期内冲针触碰即成交，超时自动撤单">
@@ -311,14 +423,14 @@ export function PaperTradingPanel({
                       <div className="pos-info-col">
                         <span className="label">做空挂单价</span>
                         <span className="val" style={{ color: "#f5a623", fontWeight: "bold" }}>
-                          {order.limitPrice.toFixed(4)}
+                          {formatPrice(order.limitPrice)}
                           <small style={{ fontSize: "10px", marginLeft: "2px" }}>(+{order.limitOffsetPercent.toFixed(2)}%)</small>
                         </span>
                       </div>
                       <div className="pos-info-col">
                         <span className="label">最新价 (距离)</span>
                         <span className="val current-val">
-                          {order.currentPrice.toFixed(4)}
+                          {formatPrice(order.currentPrice)}
                           <small style={{ fontSize: "10px", color: distPercent > 0 ? "#2ecc71" : "#e74c3c", marginLeft: "2px" }}>
                             (还差 {distPercent > 0 ? "+" : ""}{distPercent.toFixed(2)}%)
                           </small>
@@ -327,7 +439,7 @@ export function PaperTradingPanel({
                       <div className="pos-info-col">
                         <span className="label">基准价 (24h涨幅)</span>
                         <span className="val pos-gain">
-                          {order.basePrice.toFixed(4)} (+{order.dayChangePercent.toFixed(1)}%)
+                          {formatPrice(order.basePrice)} (+{order.dayChangePercent.toFixed(1)}%)
                         </span>
                       </div>
                       <div className="pos-info-col">
@@ -383,7 +495,7 @@ export function PaperTradingPanel({
                         {formatSignalLabel(pos.signalType, pos.signalLabel)}
                       </span>
                       <span className="badge-short">{pos.leverage}x 做空</span>
-                      <span className="badge-margin">保 {pos.marginUsdt}U</span>
+                      <span className="badge-margin">保 {pos.marginUsdt.toFixed(1)}U</span>
                       {pos.rank && <span className="pos-rank">#{pos.rank}</span>}
                     </div>
                     <div className="pos-card-timer" title="到期后将以市价超时平仓">
@@ -394,11 +506,11 @@ export function PaperTradingPanel({
                   <div className="pos-card-main">
                     <div className="pos-info-col">
                       <span className="label">开仓价</span>
-                      <span className="val">{pos.entryPrice.toFixed(4)}</span>
+                      <span className="val">{formatPrice(pos.entryPrice)}</span>
                     </div>
                     <div className="pos-info-col">
                       <span className="label">最新价</span>
-                      <span className="val current-val">{pos.currentPrice.toFixed(4)}</span>
+                      <span className="val current-val">{formatPrice(pos.currentPrice)}</span>
                     </div>
                     <div className="pos-info-col">
                       <span className="label">24h / 30m振幅</span>
@@ -416,20 +528,20 @@ export function PaperTradingPanel({
                   <div className="pos-card-stages">
                     <div className={`stage-block ${pos.remainingFraction === 1.0 ? "stage-active" : "stage-done"}`}>
                       <div className="stage-title">
-                        <span>阶段一 (50% 仓位 · {(pos.marginUsdt * 0.5).toFixed(0)}U 保证金)</span>
+                        <span>阶段一 (50% 仓位 · {(pos.marginUsdt * 0.5).toFixed(1)}U 保证金)</span>
                         <span className="stage-status">
                           {pos.remainingFraction === 1.0 ? "待触发" : "已平仓 ✅"}
                         </span>
                       </div>
                       <div className="stage-targets">
-                        <span>止盈1: <b className="target-green">{pos.tp1Price.toFixed(4)} (-{pos.tp1Percent.toFixed(2)}%)</b></span>
-                        <span>止损1: <b className="target-red">{pos.sl1Price.toFixed(4)} (+{pos.sl1Percent.toFixed(2)}%)</b></span>
+                        <span>止盈1: <b className="target-green">{formatPrice(pos.tp1Price)} (-{pos.tp1Percent.toFixed(2)}%)</b></span>
+                        <span>止损1: <b className="target-red">{formatPrice(pos.sl1Price)} (+{pos.sl1Percent.toFixed(2)}%)</b></span>
                       </div>
                     </div>
 
                     <div className={`stage-block ${pos.remainingFraction === 0.5 ? "stage-active" : "stage-pending"}`}>
                       <div className="stage-title">
-                        <span>阶段二 (剩余 50% · {(pos.marginUsdt * 0.5).toFixed(0)}U 保证金)</span>
+                        <span>阶段二 (剩余 50% · {(pos.marginUsdt * 0.5).toFixed(1)}U 保证金)</span>
                         <span className="stage-status">
                           {pos.remainingFraction === 0.5 ? "运行中 ⏳" : "等待中"}
                         </span>
@@ -439,15 +551,15 @@ export function PaperTradingPanel({
                           止损2:{" "}
                           {pos.isBreakevenArmed ? (
                             <b className="target-green" title="阶段一止盈后已上移锁定保本">
-                              保本锁定 ({pos.sl2Price.toFixed(4)})
+                              保本锁定 ({formatPrice(pos.sl2Price)})
                             </b>
                           ) : (
                             <b className="target-red">
-                              {pos.sl2Price.toFixed(4)} (+{pos.sl2Percent.toFixed(2)}%)
+                              {formatPrice(pos.sl2Price)} (+{pos.sl2Percent.toFixed(2)}%)
                             </b>
                           )}
                         </span>
-                        <span>止盈2: <b className="target-green">{pos.tp2Price.toFixed(4)} (-{pos.tp2Percent.toFixed(2)}%)</b></span>
+                        <span>止盈2: <b className="target-green">{formatPrice(pos.tp2Price)} (-{pos.tp2Percent.toFixed(2)}%)</b></span>
                       </div>
                     </div>
                   </div>
@@ -494,13 +606,6 @@ export function PaperTradingPanel({
                     const pnl = item.totalNetPnlUsdt;
                     const roe = item.roePercent ?? (pnl / item.marginUsdt) * 100;
                     const holdDuration = formatHoldDuration(item.closedAt, item.entryTime);
-                    const reasonMap: Record<string, string> = {
-                      target: "两段全部止盈 🎯",
-                      stop: item.isBreakevenArmed ? "保本止损 🛡️" : "触发止损 🛑",
-                      timeout: "超时平仓 ⏱️",
-                      breakeven_stop: "保本止损 🛡️",
-                    };
-                    const reasonText = reasonMap[item.finalReason ?? ""] ?? item.finalReason ?? "-";
 
                     return (
                       <tr
@@ -528,10 +633,10 @@ export function PaperTradingPanel({
                         </td>
                         <td className="pos">+{item.dayChangePercent.toFixed(2)}%</td>
                         <td>{item.amp30Percent ? `${item.amp30Percent.toFixed(2)}%` : "-"}</td>
-                        <td>{item.entryPrice.toFixed(4)}</td>
-                        <td>{avgExit.toFixed(4)}</td>
+                        <td>{formatPrice(item.entryPrice)}</td>
+                        <td>{formatPrice(avgExit)}</td>
                         <td>{holdDuration}</td>
-                        <td>{reasonText}</td>
+                        <td>{formatExitReason(item)}</td>
                         <td className={pnl >= 0 ? "pos" : "neg"}>
                           <b>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} U</b>
                         </td>

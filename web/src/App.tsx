@@ -73,7 +73,7 @@ export default function App() {
       </header>
 
       <PaperTradingPanel
-        summary={status && !status.error ? status.paperTrading : undefined}
+        summary={status?.paperTrading}
         onSelectSymbol={selectSymbol}
         selectedSymbol={chartSymbol}
       />
