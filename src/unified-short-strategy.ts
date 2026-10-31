@@ -381,46 +381,7 @@ export class UnifiedShortStrategyTracker {
       return signal;
     }
 
-    // 4. 信号四: 冲高极度乖离 (Extreme MA Extension Short)
-    if (rank <= this.config.extremeDevConfig.topN) {
-      const devSig = this.checkExtremeDevSignal(symbol, dayChangePercent, candles, now);
-      if (devSig) {
-        const exitParams = {
-          holdMinutes: this.config.extremeDevConfig.holdMinutes,
-          exitX: this.config.extremeDevConfig.exitX,
-          exitN: this.config.extremeDevConfig.exitN,
-          exitM: this.config.extremeDevConfig.exitM,
-          stopLossPercent: this.config.extremeDevConfig.stopLossPercent,
-          tp1Percent: this.config.extremeDevConfig.tp1Percent,
-          tp2Percent: this.config.extremeDevConfig.tp2Percent,
-          moveSlToEntryAfterTp1: this.config.extremeDevConfig.moveSlToEntryAfterTp1,
-        };
-        const closedCandle = candles[candles.length - 2];
-        const signalLabel: PaperSignalLabel = '冲高极度乖离';
-        const signal: UnifiedLiveSignal = {
-          id: `dev-${symbol}-${closedCandle.time}`,
-          type: 'extreme_dev',
-          label: signalLabel,
-          symbol,
-          time: closedCandle.time + 60 * 1000,
-          dayChangePercent,
-          entryPrice: closedCandle.close,
-          exitParams,
-          details: { extremeDevSignal: devSig },
-        };
-        if (this.config.preventConflict) {
-          this.registerPosition(symbol, {
-            tradeId: signal.id,
-            type: 'extreme_dev',
-            entryTime: signal.time,
-            maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
-          });
-        }
-        return signal;
-      }
-    }
-
-    // 5. 信号一: 新高顶背离 (Top N focus, 彻底替换连阳空)
+    // 3. 信号一: 新高顶背离 (Top N focus, 创24h新高+MACD双背离+悬空假突破收阴，10x 专属闪击战，优先于冲高乖离)
     if (rank <= this.config.streakConfig.topN) {
       const streakSig = this.checkStreakSignal(symbol, dayChangePercent, candles);
       if (streakSig) {
@@ -451,6 +412,45 @@ export class UnifiedShortStrategyTracker {
           this.registerPosition(symbol, {
             tradeId: signal.id,
             type: 'streak',
+            entryTime: signal.time,
+            maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
+          });
+        }
+        return signal;
+      }
+    }
+
+    // 4. 信号四: 冲高极度乖离 (Extreme MA Extension Short: 未创顶背离但 3m 极端垂直暴涨脱离 MA30)
+    if (rank <= this.config.extremeDevConfig.topN) {
+      const devSig = this.checkExtremeDevSignal(symbol, dayChangePercent, candles, now);
+      if (devSig) {
+        const exitParams = {
+          holdMinutes: this.config.extremeDevConfig.holdMinutes,
+          exitX: this.config.extremeDevConfig.exitX,
+          exitN: this.config.extremeDevConfig.exitN,
+          exitM: this.config.extremeDevConfig.exitM,
+          stopLossPercent: this.config.extremeDevConfig.stopLossPercent,
+          tp1Percent: this.config.extremeDevConfig.tp1Percent,
+          tp2Percent: this.config.extremeDevConfig.tp2Percent,
+          moveSlToEntryAfterTp1: this.config.extremeDevConfig.moveSlToEntryAfterTp1,
+        };
+        const closedCandle = candles[candles.length - 2];
+        const signalLabel: PaperSignalLabel = '冲高极度乖离';
+        const signal: UnifiedLiveSignal = {
+          id: `dev-${symbol}-${closedCandle.time}`,
+          type: 'extreme_dev',
+          label: signalLabel,
+          symbol,
+          time: closedCandle.time + 60 * 1000,
+          dayChangePercent,
+          entryPrice: closedCandle.close,
+          exitParams,
+          details: { extremeDevSignal: devSig },
+        };
+        if (this.config.preventConflict) {
+          this.registerPosition(symbol, {
+            tradeId: signal.id,
+            type: 'extreme_dev',
             entryTime: signal.time,
             maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
           });
@@ -668,15 +668,18 @@ export class UnifiedShortStrategyTracker {
       return null; // Supported by MA -> do not short
     }
 
-    // 4. 可选：显式指定了最小连阳数时才校验连阳 (向下兼容自定义测试，默认不管连阳)
+    // 4. 可选：显式指定了最小连阳数时才校验连阳 (向下兼容自定义测试；若开启 requireBearish 则校验冲高至顶点的前置连阳)
     if (cfg.minStreakCount !== undefined && cfg.minStreakCount > 0) {
-      const streak = consecutiveStreakAt(candles, targetIndex);
-      if (streak.direction !== 'up' || streak.count < cfg.minStreakCount) return null;
+      const evalIndex = cfg.requireBearish ? targetIndex - 1 : targetIndex;
+      if (evalIndex >= 0) {
+        const streak = consecutiveStreakAt(candles, evalIndex);
+        if (streak.direction !== 'up' || streak.count < cfg.minStreakCount) return null;
+      }
     }
 
-    // 5. 可选：显式指定了上影线比例时才校验上影线
-    const body = candle.close - candle.open;
-    const upperShadow = Math.max(0, candle.high - candle.close);
+    // 5. 可选：显式指定了上影线比例时才校验上影线 (兼顾阳线与假突破冲高收阴线)
+    const body = Math.abs(candle.close - candle.open);
+    const upperShadow = Math.max(0, candle.high - Math.max(candle.close, candle.open));
     const upperShadowRatio = body > 0 ? upperShadow / body : 0;
     if (cfg.minUpperShadowRatio !== undefined && cfg.maxUpperShadowRatio !== undefined) {
       if (upperShadowRatio < cfg.minUpperShadowRatio || upperShadowRatio >= cfg.maxUpperShadowRatio) {

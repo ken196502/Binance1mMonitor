@@ -223,6 +223,10 @@ export interface PaperTradingSummaryConfig {
   streakLeverage?: number;
   trendLeverage?: number;
   marginUsdt: number;
+  marginRate?: number;             // 单笔保证金占总资产比例 (默认 0.20 即 20%)
+  marginPercent?: number;          // 百分比格式 (默认 20%)
+  maxPositions?: number;           // 全局最大同时持仓数 (默认 5)
+  maxPositionsPerStrategy?: number;// 单策略最大同时持仓数 (默认 1)
   limitDivisor: number;
   holdMinutes: number;
   initialBalanceUsdt: number;

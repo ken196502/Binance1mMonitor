@@ -61,7 +61,11 @@ export interface PaperStrategyConfig {
   leverage: number;           // 通用/顺势波段杠杆 (默认 3x)
   streakLeverage?: number;    // 新高顶背离闪击专属杠杆 (回测最优 10x)
   trendLeverage?: number;     // 顺势衰竭专属杠杆 (默认 3x)
-  marginUsdt: number;         // 20 USDT 单笔保证金 (名义本金 60/200 USDT)
+  marginUsdt: number;         // 单笔保证金金额基准 (默认 20 USDT 参考值)
+  marginRate?: number;        // 单笔保证金占总资产比例 (默认 0.20 即 20% 资产量)
+  marginPercent?: number;     // 百分比格式 (默认 20)
+  maxPositions?: number;      // 全局最大同时持仓数 (默认 5)
+  maxPositionsPerStrategy?: number; // 单策略最大同时持仓数 (默认 1，保证四大策略至少各持仓 1 笔)
   takerFeeBps: number;
   slippageBps: number;
   limitDivisor: number; // 挂单上浮幅度分母 N: 挂单上浮 = dayChangePercent / limitDivisor (默认 100)
@@ -96,7 +100,11 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   leverage: 3,             // 默认通用/顺势衰竭杠杆 3x (黄金收益/回撤比，零爆仓)
   trendLeverage: 3,        // 顺势衰竭长波段杠杆 3x (10% 大止损)
   streakLeverage: 10,      // 新高顶背离闪击战杠杆 10x (15m 紧止损，回测最优解，零爆仓)
-  marginUsdt: 20,          // 单笔保证金 20 USDT
+  marginUsdt: 20,          // 单笔保证金基准 20 USDT (100U 初本时对应 20%)
+  marginRate: 0.20,        // 单笔保证金占当前总资产 20% (不写死固定金额)
+  marginPercent: 20,       // 20%
+  maxPositions: 5,         // 全局最大同时持仓数 5 笔 (5 × 20% = 100%)
+  maxPositionsPerStrategy: 1, // 单策略最大同时持仓数 1 笔 (确保四大策略各持仓至少 1 笔，互不挤占)
   takerFeeBps: 5,          // 0.05%
   slippageBps: 2,          // 0.02%
   limitDivisor: 0,         // 默认 0 (直开市价模式，回测胜率 71.2%，PF 3.23)
@@ -209,6 +217,11 @@ export class PaperTradingEngine {
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
     this.config = { ...PAPER_DEFAULT_CONFIG, ...config };
+    if (config.marginUsdt !== undefined && config.marginRate === undefined && config.marginPercent === undefined) {
+      const initBal = this.config.initialBalanceUsdt || 100;
+      this.config.marginRate = config.marginUsdt / initBal;
+      this.config.marginPercent = (config.marginUsdt / initBal) * 100;
+    }
     if (config.leverage !== undefined) {
       if (config.streakLeverage === undefined) {
         this.config.streakLeverage = config.leverage;
@@ -227,12 +240,6 @@ export class PaperTradingEngine {
         exitX: this.config.exitX,
         exitN: this.config.exitN,
         exitM: this.config.exitM,
-        minStreakCount: this.config.minStreakCount,
-        minUpperShadowRatio: this.config.minUpperShadowRatio,
-        maxUpperShadowRatio: this.config.maxUpperShadowRatio,
-        greenWindow: this.config.greenWindow,
-        minGreenRatio: this.config.minGreenRatio,
-        minConsecutiveGreenBars: this.config.minConsecutiveGreenBars,
         ...this.config.streakConfig,
       },
       reboundConfig: this.config.reboundConfig,
@@ -284,6 +291,32 @@ export class PaperTradingEngine {
     return this.config.trendLeverage ?? this.config.leverage;
   }
 
+  public countPositionsByStrategy(type?: PaperSignalType): number {
+    if (!type) return 0;
+    let count = 0;
+    for (const p of this.activePositions.values()) {
+      if (p.signalType === type) count++;
+    }
+    for (const o of this.pendingOrders.values()) {
+      if (o.signalType === type) count++;
+    }
+    return count;
+  }
+
+  public calculateUsedMargin(): number {
+    const activeMargin = Array.from(this.activePositions.values()).reduce((sum, p) => sum + p.marginUsdt, 0);
+    const pendingMargin = Array.from(this.pendingOrders.values()).reduce((sum, o) => sum + o.marginUsdt, 0);
+    return activeMargin + pendingMargin;
+  }
+
+  public calculateOrderMargin(): number {
+    const rate = this.config.marginRate ?? (this.config.marginPercent != null ? this.config.marginPercent / 100 : 0.20);
+    const totalAssets = Math.max(0, this.account.equityUsdt > 0 ? this.account.equityUsdt : this.account.balanceUsdt);
+    const computed = totalAssets * rate;
+    const margin = computed > 0 ? computed : (this.config.marginUsdt ?? 20);
+    return Math.max(5, Math.round(margin * 100) / 100);
+  }
+
   public updateConfig(updates: Partial<PaperStrategyConfig>): PaperStrategyConfig {
     if (typeof updates.leverage === "number" && Number.isFinite(updates.leverage) && updates.leverage >= 1 && updates.leverage <= 100) {
       this.config.leverage = updates.leverage;
@@ -294,8 +327,27 @@ export class PaperTradingEngine {
     if (typeof updates.trendLeverage === "number" && Number.isFinite(updates.trendLeverage) && updates.trendLeverage >= 1 && updates.trendLeverage <= 100) {
       this.config.trendLeverage = updates.trendLeverage;
     }
+    if (typeof updates.marginRate === "number" && Number.isFinite(updates.marginRate) && updates.marginRate > 0 && updates.marginRate <= 1) {
+      this.config.marginRate = updates.marginRate;
+      this.config.marginPercent = Math.round(updates.marginRate * 100);
+    }
+    if (typeof updates.marginPercent === "number" && Number.isFinite(updates.marginPercent) && updates.marginPercent > 0 && updates.marginPercent <= 100) {
+      this.config.marginPercent = updates.marginPercent;
+      this.config.marginRate = updates.marginPercent / 100;
+    }
+    if (typeof updates.maxPositions === "number" && Number.isFinite(updates.maxPositions) && updates.maxPositions >= 1) {
+      this.config.maxPositions = Math.floor(updates.maxPositions);
+    }
+    if (typeof updates.maxPositionsPerStrategy === "number" && Number.isFinite(updates.maxPositionsPerStrategy) && updates.maxPositionsPerStrategy >= 1) {
+      this.config.maxPositionsPerStrategy = Math.floor(updates.maxPositionsPerStrategy);
+    }
     if (typeof updates.marginUsdt === "number" && Number.isFinite(updates.marginUsdt) && updates.marginUsdt > 0) {
       this.config.marginUsdt = updates.marginUsdt;
+      if (updates.marginRate === undefined && updates.marginPercent === undefined) {
+        const totalAssets = Math.max(1, this.account.equityUsdt > 0 ? this.account.equityUsdt : this.account.balanceUsdt);
+        this.config.marginRate = updates.marginUsdt / totalAssets;
+        this.config.marginPercent = (updates.marginUsdt / totalAssets) * 100;
+      }
     }
     if (typeof updates.limitDivisor === "number" && Number.isFinite(updates.limitDivisor) && updates.limitDivisor >= 0) {
       this.config.limitDivisor = updates.limitDivisor;
@@ -310,8 +362,9 @@ export class PaperTradingEngine {
       this.config.holdMinutes = updates.holdMinutes;
     }
 
+    const currentMargin = this.calculateOrderMargin();
     console.log(
-      `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高背离闪击杠杆 ${this.config.streakLeverage ?? 10}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 单笔保证金 ${this.config.marginUsdt} USDT`,
+      `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高闪击杠杆 ${this.config.streakLeverage ?? 10}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 仓位比例 ${((this.config.marginRate ?? 0.2) * 100).toFixed(0)}% (约 ${currentMargin.toFixed(1)}U), 最大持仓 ${this.config.maxPositions ?? 5} 笔 (每策略 ${this.config.maxPositionsPerStrategy ?? 1} 笔)`,
     );
 
     this.scheduleSave();
@@ -355,6 +408,7 @@ export class PaperTradingEngine {
     dayChangePercent: number;
     rank?: number | null;
     basePrice: number;
+    marginUsdt?: number;
     signal: SignalMatchDetails;
     signalType?: PaperSignalType;
     signalLabel?: PaperSignalLabel;
@@ -376,14 +430,15 @@ export class PaperTradingEngine {
     const signalType = params.signalType ?? "streak";
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
     const leverage = exitParams?.leverage ?? this.getLeverageForSignal(signalType);
-    const notionalUsdt = this.config.marginUsdt * leverage;
+    const marginUsdt = params.marginUsdt ?? this.calculateOrderMargin();
+    const notionalUsdt = marginUsdt * leverage;
 
     const order: PaperPendingOrder = {
       id: `pending-${symbol}-${now}`,
       symbol,
       side: "SHORT",
       leverage,
-      marginUsdt: this.config.marginUsdt,
+      marginUsdt,
       notionalUsdt,
       signalType,
       signalLabel,
@@ -485,13 +540,20 @@ export class PaperTradingEngine {
       if (ticker.priceChangePercent <= 0) continue;
       if (this.hasActivePosition(ticker.symbol) || this.hasPendingOrder(ticker.symbol)) continue;
 
-      // Check available margin (including reserved pending orders)
-      const reservedCount = this.activePositions.size + this.pendingOrders.size;
-      const usedMargin = reservedCount * this.config.marginUsdt;
+      // 1. 全局最大持仓限制检查 (默认 5 个)
+      const currentTotalPositions = this.activePositions.size + this.pendingOrders.size;
+      const maxPositions = this.config.maxPositions ?? 5;
+      if (currentTotalPositions >= maxPositions) {
+        break;
+      }
+
+      // 2. 动态单笔保证金计算与可用资金检查 (资产量 20%)
+      const marginUsdt = this.calculateOrderMargin();
+      const usedMargin = this.calculateUsedMargin();
       const availableMargin = this.account.balanceUsdt - usedMargin;
-      if (availableMargin < this.config.marginUsdt) {
+      if (availableMargin < marginUsdt) {
         console.warn(
-          `[paper-trading] 可用保证金不足 (${availableMargin.toFixed(2)} USDT < ${this.config.marginUsdt} USDT)，跳过扫描 ${ticker.symbol}`,
+          `[paper-trading] 可用保证金不足 (${availableMargin.toFixed(2)} USDT < ${marginUsdt.toFixed(2)} USDT)，跳过扫描 ${ticker.symbol}`,
         );
         break;
       }
@@ -516,6 +578,16 @@ export class PaperTradingEngine {
         const signalType = liveSignal.type;
         const signalLabel = formatSignalLabel(signalType, liveSignal.label);
         const exitParams = liveSignal.exitParams;
+
+        // 3. 单策略最大持仓限制 (保证四大策略至少各持仓 1 笔，互不挤占)
+        const currentStrategyPositions = this.countPositionsByStrategy(signalType);
+        const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
+        if (currentStrategyPositions >= maxPerStrategy) {
+          console.log(
+            `[paper-trading] 策略 [${signalLabel}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，保留槽位给其他策略，跳过 ${ticker.symbol}`,
+          );
+          continue;
+        }
 
         const streakCount =
           liveSignal.details.streakSignal?.streakCount ??
@@ -554,6 +626,7 @@ export class PaperTradingEngine {
             dayChangePercent: ticker.priceChangePercent,
             rank,
             basePrice,
+            marginUsdt,
             signal: signalDetails,
             signalType,
             signalLabel,
@@ -568,6 +641,7 @@ export class PaperTradingEngine {
             rank,
             entryPrice: basePrice,
             entryTime: now,
+            marginUsdt,
             signal: signalDetails,
             signalType,
             signalLabel,
@@ -588,6 +662,7 @@ export class PaperTradingEngine {
     entryPrice: number;
     entryTime: number;
     limitPrice?: number;
+    marginUsdt?: number;
     signal: SignalMatchDetails;
     signalType?: PaperSignalType;
     signalLabel?: PaperSignalLabel;
@@ -630,14 +705,15 @@ export class PaperTradingEngine {
     const signalType = params.signalType ?? "streak";
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
     const leverage = params.leverage ?? exitParams?.leverage ?? this.getLeverageForSignal(signalType);
-    const notionalUsdt = this.config.marginUsdt * leverage;
+    const marginUsdt = params.marginUsdt ?? this.calculateOrderMargin();
+    const notionalUsdt = marginUsdt * leverage;
 
     const position: PaperPosition = {
       id: `${symbol}-${entryTime}`,
       symbol,
       side: "SHORT",
       leverage,
-      marginUsdt: this.config.marginUsdt,
+      marginUsdt,
       notionalUsdt,
       status: "OPEN",
       signalType,
@@ -703,7 +779,7 @@ export class PaperTradingEngine {
     const isLimit = limitPrice != null;
     console.log(
       `[paper-trading] ⚡ ${isLimit ? "限价挂单成交做空" : "市价开空"} [${signalLabel}] ${symbol} @ ${entryPrice.toFixed(4)} ` +
-      `(${leverage}x, 保证金 ${this.config.marginUsdt} USDT, 24h: +${dayChangePercent.toFixed(2)}%, 30m振幅: ${signal.amp30Percent.toFixed(2)}%) ` +
+      `(${leverage}x, 保证金 ${position.marginUsdt.toFixed(1)} USDT, 24h: +${dayChangePercent.toFixed(2)}%, 30m振幅: ${signal.amp30Percent.toFixed(2)}%) ` +
       `TP1: ${tp1Price.toFixed(4)} SL1: ${sl1Price.toFixed(4)} SL2: ${sl2Price.toFixed(4)} TP2: ${tp2Price.toFixed(4)} 持仓: ${holdMinutes}m`,
     );
 
@@ -740,6 +816,7 @@ export class PaperTradingEngine {
           entryPrice: pending.limitPrice,
           entryTime: tick.time,
           limitPrice: pending.limitPrice,
+          marginUsdt: pending.marginUsdt,
           signalType: pending.signalType,
           signalLabel: pending.signalLabel,
           exitParams: pending.exitParams,
@@ -1026,8 +1103,9 @@ export class PaperTradingEngine {
     for (const p of this.activePositions.values()) {
       totalUnrealized += p.unrealizedNetPnlUsdt;
     }
-    const usedMargin = this.activePositions.size * this.config.marginUsdt;
-    const availableMargin = Math.max(0, this.account.balanceUsdt - usedMargin);
+    const usedMargin = Array.from(this.activePositions.values()).reduce((sum, p) => sum + p.marginUsdt, 0);
+    const pendingMargin = Array.from(this.pendingOrders.values()).reduce((sum, o) => sum + o.marginUsdt, 0);
+    const availableMargin = Math.max(0, this.account.balanceUsdt - usedMargin - pendingMargin);
     const equity = this.account.balanceUsdt + totalUnrealized;
     const totalPnl = equity - this.account.initialBalanceUsdt;
     const accountRoiPercent =
@@ -1147,7 +1225,7 @@ export class PaperTradingEngine {
       `🏆 <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
       `• <b>信号类型</b>: <b>【${label}】</b>\n` +
-      `• <b>杠杆 / 保证金</b>: 10x / ${pos.marginUsdt} USDT\n` +
+      `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt} USDT</b> (名义仓位: ${pos.notionalUsdt} USDT)\n` +
       `• <b>持仓耗时</b>: ${holdMins} 分钟\n` +
       `• <b>结算原因</b>: ${reasonStr}\n` +
       `• <b>成交明细</b>: 开 <code>${pos.entryPrice.toFixed(4)}</code> → 平均 <code>${avgExitPrice.toFixed(4)}</code>\n` +
@@ -1184,6 +1262,10 @@ export class PaperTradingEngine {
           streakLeverage: this.config.streakLeverage,
           trendLeverage: this.config.trendLeverage,
           marginUsdt: this.config.marginUsdt,
+          marginRate: this.config.marginRate,
+          marginPercent: this.config.marginPercent,
+          maxPositions: this.config.maxPositions,
+          maxPositionsPerStrategy: this.config.maxPositionsPerStrategy,
           limitDivisor: this.config.limitDivisor,
           limitExpireMinutes: this.config.limitExpireMinutes,
           stopAtHigh: this.config.stopAtHigh,
@@ -1249,6 +1331,10 @@ export class PaperTradingEngine {
           if (typeof cfg.streakLeverage === "number") this.config.streakLeverage = cfg.streakLeverage;
           if (typeof cfg.trendLeverage === "number") this.config.trendLeverage = cfg.trendLeverage;
           if (typeof cfg.marginUsdt === "number") this.config.marginUsdt = cfg.marginUsdt;
+          if (typeof cfg.marginRate === "number") this.config.marginRate = cfg.marginRate;
+          if (typeof cfg.marginPercent === "number") this.config.marginPercent = cfg.marginPercent;
+          if (typeof cfg.maxPositions === "number") this.config.maxPositions = cfg.maxPositions;
+          if (typeof cfg.maxPositionsPerStrategy === "number") this.config.maxPositionsPerStrategy = cfg.maxPositionsPerStrategy;
           if (typeof cfg.limitDivisor === "number") this.config.limitDivisor = cfg.limitDivisor;
           if (typeof cfg.limitExpireMinutes === "number") this.config.limitExpireMinutes = cfg.limitExpireMinutes;
           if (typeof cfg.stopAtHigh === "boolean") this.config.stopAtHigh = cfg.stopAtHigh;
@@ -1271,14 +1357,8 @@ export class PaperTradingEngine {
       streakConfig: {
         ...STREAK_LIVE_DEFAULT_CONFIG,
         topN: this.config.topN,
-        minStreakCount: this.config.minStreakCount,
         supportMaPeriods: this.config.supportMaPeriods,
         ampDivisor: this.config.ampDivisor,
-        minUpperShadowRatio: this.config.minUpperShadowRatio,
-        maxUpperShadowRatio: this.config.maxUpperShadowRatio,
-        greenWindow: this.config.greenWindow,
-        minGreenRatio: this.config.minGreenRatio,
-        minConsecutiveGreenBars: this.config.minConsecutiveGreenBars,
         holdMinutes: this.config.holdMinutes,
         exitX: this.config.exitX,
         exitN: this.config.exitN,
@@ -1337,7 +1417,11 @@ export class PaperTradingEngine {
         leverage: this.config.leverage,
         streakLeverage: this.config.streakLeverage ?? 10,
         trendLeverage: this.config.trendLeverage ?? this.config.leverage,
-        marginUsdt: this.config.marginUsdt,
+        marginUsdt: this.calculateOrderMargin(),
+        marginRate: this.config.marginRate ?? 0.20,
+        marginPercent: this.config.marginPercent ?? (this.config.marginRate ? Math.round(this.config.marginRate * 100) : 20),
+        maxPositions: this.config.maxPositions ?? 5,
+        maxPositionsPerStrategy: this.config.maxPositionsPerStrategy ?? 1,
         limitDivisor: this.config.limitDivisor,
         holdMinutes: this.config.holdMinutes,
         initialBalanceUsdt: this.config.initialBalanceUsdt,

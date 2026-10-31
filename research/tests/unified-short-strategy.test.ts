@@ -284,3 +284,68 @@ test('UnifiedShortStrategyTracker triggers 冲高极度乖离 signal when 3m sur
   const duplicateSig = tracker.checkCandles('SURGEUSDT', 25.0, 1, candles, checkTime);
   assert.equal(duplicateSig, null, 'Duplicate signal should be prevented while position active');
 });
+
+test('Priority hierarchy: 新高顶背离 (10x 闪击) takes priority over 冲高极度乖离 (3x 波段) on ATH divergence', () => {
+  const tracker = new UnifiedShortStrategyTracker({
+    streakConfig: {
+      ampDivisor: 25,
+      requireMacdDivergence: true,
+      requireDoubleDivergence: true,
+      divergenceLookbackMin: 10,
+      divergenceLookbackMax: 50,
+      requireBearish: true,
+    },
+  });
+
+  const now = 1700000000000;
+  const candles: Candle[] = [];
+  let basePrice = 100;
+
+  // Wave 1: 0..30 (Fast rise to establish peak 1 with high MACD)
+  for (let i = 0; i < 30; i++) {
+    const time = now + i * 60000;
+    const open = basePrice;
+    const close = basePrice + 1.2;
+    const high = close + 0.1;
+    const low = open + 0.2;
+    basePrice = close;
+    candles.push({ time, open, high, low, close, volume: 1000 });
+  }
+
+  // Pullback: 30..42
+  for (let i = 30; i < 42; i++) {
+    const time = now + i * 60000;
+    const open = basePrice;
+    const close = basePrice - 0.3;
+    const high = open + 0.1;
+    const low = close - 0.1;
+    basePrice = close;
+    candles.push({ time, open, high, low, close, volume: 1000 });
+  }
+
+  // Wave 2: 42..55 (Rise to higher high with 3m surge & MA30 deviation > 1.5%, ending with red confirmation candle)
+  for (let i = 42; i < 55; i++) {
+    const time = now + i * 60000;
+    let open = basePrice;
+    let close = basePrice + 0.35;
+    let high = close + 0.05;
+    let low = open + 0.1;
+    if (i === 53) {
+      // Completed signal candle closes red to confirm false breakout
+      open = basePrice + 0.5;
+      close = basePrice - 0.2;
+      high = open + 0.5;
+      low = close - 0.1;
+    }
+    basePrice = close;
+    candles.push({ time, open, high, low, close, volume: 1000 });
+  }
+
+  // Day change is 30% (which easily qualifies for extremeDev minDayChange 20%), rank 1
+  const sig = tracker.checkCandles('PRIORITYUSDT', 30.0, 1, candles, now + 55 * 60000);
+  assert.ok(sig !== null, 'Signal should trigger');
+  // Must trigger 新高顶背离 instead of being intercepted by 冲高极度乖离!
+  assert.equal(sig.type, 'streak', '新高顶背离 should take precedence over 冲高极度乖离');
+  assert.equal(sig.label, '新高顶背离');
+  assert.equal(sig.exitParams.holdMinutes, 15);
+});

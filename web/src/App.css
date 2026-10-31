@@ -695,6 +695,12 @@ tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
   border: 1px solid rgba(230, 126, 34, 0.4);
 }
 
+.badge-signal.badge-extreme_dev {
+  background: rgba(52, 152, 219, 0.2);
+  color: #5dade2;
+  border: 1px solid rgba(52, 152, 219, 0.4);
+}
+
 .badge-short {
   font-size: 10px;
   font-weight: 700;

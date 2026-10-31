@@ -57,7 +57,9 @@ export function PaperTradingPanel({
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [streakLevInput, setStreakLevInput] = useState<number>(10);
   const [trendLevInput, setTrendLevInput] = useState<number>(3);
-  const [marginUsdtInput, setMarginUsdtInput] = useState<number>(20);
+  const [marginPercentInput, setMarginPercentInput] = useState<number>(20);
+  const [maxPositionsInput, setMaxPositionsInput] = useState<number>(5);
+  const [maxPerStrategyInput, setMaxPerStrategyInput] = useState<number>(1);
   const [limitDivisorInput, setLimitDivisorInput] = useState<number>(0);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
@@ -73,7 +75,9 @@ export function PaperTradingPanel({
     if (summary?.config) {
       setStreakLevInput(summary.config.streakLeverage ?? 10);
       setTrendLevInput(summary.config.trendLeverage ?? summary.config.leverage ?? 3);
-      setMarginUsdtInput(summary.config.marginUsdt ?? 20);
+      setMarginPercentInput(summary.config.marginPercent ?? 20);
+      setMaxPositionsInput(summary.config.maxPositions ?? 5);
+      setMaxPerStrategyInput(summary.config.maxPositionsPerStrategy ?? 1);
       setLimitDivisorInput(summary.config.limitDivisor ?? 0);
     }
   }, [summary?.config]);
@@ -89,7 +93,10 @@ export function PaperTradingPanel({
           streakLeverage: Number(streakLevInput),
           trendLeverage: Number(trendLevInput),
           leverage: Number(trendLevInput),
-          marginUsdt: Number(marginUsdtInput),
+          marginRate: Number(marginPercentInput) / 100,
+          marginPercent: Number(marginPercentInput),
+          maxPositions: Number(maxPositionsInput),
+          maxPositionsPerStrategy: Number(maxPerStrategyInput),
           limitDivisor: Number(limitDivisorInput),
         }),
       });
@@ -110,7 +117,9 @@ export function PaperTradingPanel({
   const handleResetOptimal = () => {
     setStreakLevInput(10);
     setTrendLevInput(3);
-    setMarginUsdtInput(20);
+    setMarginPercentInput(20);
+    setMaxPositionsInput(5);
+    setMaxPerStrategyInput(1);
     setLimitDivisorInput(0);
   };
 
@@ -177,7 +186,10 @@ export function PaperTradingPanel({
   const config = summary?.config;
   const streakLev = config?.streakLeverage ?? 10;
   const trendLev = config?.trendLeverage ?? (config?.leverage ?? 3);
+  const marginPercent = config?.marginPercent ?? 20;
   const marginUsdt = config?.marginUsdt ?? (activePositions[0]?.marginUsdt ?? 20);
+  const maxPositions = config?.maxPositions ?? 5;
+  const maxPerStrategy = config?.maxPositionsPerStrategy ?? 1;
   const isLimitEntry = (config?.limitDivisor ?? 0) > 0;
 
   return (
@@ -186,8 +198,8 @@ export function PaperTradingPanel({
         <div className="paper-title-wrap">
           <h2 style={{ margin: 0 }}>
             <span>⚡ 模拟实盘交易</span>
-            <span className="badge-leverage" title={`新高顶背离闪击 ${streakLev}x · 顺势衰竭长波段 ${trendLev}x · 单笔 ${marginUsdt}U`}>
-              双速杠杆 ({streakLev}x 闪击 / {trendLev}x 波段) · 保证金 {marginUsdt}U
+            <span className="badge-leverage" title={`新高顶背离闪击 ${streakLev}x · 顺势衰竭长波段 ${trendLev}x · 动态仓位 ${marginPercent}% (当前约 ${marginUsdt}U) · 最大 ${maxPositions} 仓 (每策略 ${maxPerStrategy})`}>
+              双速杠杆 ({streakLev}x 闪击 / {trendLev}x 波段) · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions} (每策略 {maxPerStrategy})
             </span>
             <span className="badge-strategy">
               4大互斥做空策略 · 黄金双速系统 (顺势衰竭 90m波段/10%大止损/动态保本 + 新高背离 15m闪击) · {isLimitEntry ? `限价接针 (N=${config!.limitDivisor})` : "直开市价"} · 两段动态止盈止损
@@ -338,7 +350,7 @@ export function PaperTradingPanel({
             <div className="empty-paper-state">
               <span className="empty-icon">📡</span>
               <span className="empty-text">
-                当前暂无活跃持仓与挂单 · 账户资金 {account.initialBalanceUsdt.toFixed(0)} USDT · 单笔保证金 {marginUsdt} USDT (新高闪击 {streakLev}x / 顺势波段 {trendLev}x) · 四大最高胜率做空策略 (顺势衰竭 90m波段/10%大止损/动态保本 + 新高背离 15m闪击) · {isLimitEntry ? `每分钟收盘扫描 Top 10 (以 24h涨幅/${config!.limitDivisor} 向上溢价挂单接针)` : "每分钟收盘对齐直开市价做空"}
+                当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔，保证四大策略各持仓至少 1 笔) · {isLimitEntry ? `每分钟收盘扫描 Top 10 (以 24h涨幅/${config!.limitDivisor} 向上溢价挂单接针)` : "每分钟收盘对齐直开市价做空"}
               </span>
             </div>
           ) : null
@@ -584,16 +596,48 @@ export function PaperTradingPanel({
 
               <div className="config-form-group">
                 <label>
-                  <span>💰 单笔订单保证金 (Margin USDT)</span>
-                  <small>默认 20 USDT (100U 账户可开 3~5 笔)</small>
+                  <span>💰 单笔仓位比例 (Margin % of Equity)</span>
+                  <small>默认 20% (动态按账户当前净资产 20% 计算单笔保证金，当前约 {(account.equityUsdt * (marginPercentInput / 100)).toFixed(1)} USDT)</small>
                 </label>
                 <input
                   type="number"
                   min="5"
-                  max="1000"
+                  max="100"
                   step="5"
-                  value={marginUsdtInput}
-                  onChange={(e) => setMarginUsdtInput(Number(e.target.value))}
+                  value={marginPercentInput}
+                  onChange={(e) => setMarginPercentInput(Number(e.target.value))}
+                  required
+                />
+              </div>
+
+              <div className="config-form-group">
+                <label>
+                  <span>📊 全局最大同时持仓数 (Max Positions)</span>
+                  <small>默认 5 笔 (5 笔 × 20% = 100% 满仓风控上限)</small>
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="20"
+                  step="1"
+                  value={maxPositionsInput}
+                  onChange={(e) => setMaxPositionsInput(Number(e.target.value))}
+                  required
+                />
+              </div>
+
+              <div className="config-form-group">
+                <label>
+                  <span>⚖️ 单策略最大持仓数 (Max Per Strategy)</span>
+                  <small>默认 1 笔 (保证四大做空策略各持仓至少 1 笔，互不挤占)</small>
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={maxPerStrategyInput}
+                  onChange={(e) => setMaxPerStrategyInput(Number(e.target.value))}
                   required
                 />
               </div>

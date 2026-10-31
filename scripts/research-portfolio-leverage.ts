@@ -270,13 +270,28 @@ async function extractAllSignals(
   return signals;
 }
 
+export interface PortfolioSimOptions {
+  marginRate?: number;             // 默认 0.20 (20% 资产量)
+  useDynamicMargin?: boolean;      // 是否按资产量 20% 动态计算保证金 (默认 true)
+  fixedMarginUsdt?: number;        // 固定保证金模式金额 (默认 20 USDT)
+  maxPositions?: number;           // 最大同时持仓数 (默认 5)
+  maxPositionsPerStrategy?: number;// 每个策略最大同时持仓数 (默认 1，保证四大策略至少各持仓 1 笔)
+}
+
 // 模拟组合执行
-function runPortfolioSimulation(
+export function runPortfolioSimulation(
   signals: EnsembleSignal[],
   minuteData: MinuteDataset,
   streakLeverage: number,
-  trendLeverage: number = 3
+  trendLeverage: number = 3,
+  options: PortfolioSimOptions = {}
 ) {
+  const marginRate = options.marginRate ?? 0.20;
+  const useDynamicMargin = options.useDynamicMargin ?? true;
+  const fixedMarginUsdt = options.fixedMarginUsdt ?? 20.0;
+  const maxPositions = options.maxPositions ?? 5;
+  const maxPositionsPerStrategy = options.maxPositionsPerStrategy ?? 1;
+
   const occupiedUntil = new Map<string, number>();
   let balance = 100.0;
   let peak = 100.0;
@@ -284,9 +299,48 @@ function runPortfolioSimulation(
   const trades: any[] = [];
   const feeRate = 0.0014; // 14 bps 双边
 
+  const activePositions: Array<{
+    symbol: string;
+    type: string;
+    exitTime: number;
+    marginUsdt: number;
+    pnlPct: number;
+    tradeObj: any;
+  }> = [];
+
   for (const sig of signals) {
+    // 1. 释放已在 sig.entryTime 前结清的活跃持仓，并结算盈亏
+    for (let i = activePositions.length - 1; i >= 0; i--) {
+      if (activePositions[i].exitTime <= sig.entryTime) {
+        const closed = activePositions[i];
+        const pnlUsdt = closed.marginUsdt * (closed.pnlPct / 100);
+        balance += pnlUsdt;
+        if (balance > peak) peak = balance;
+        const curDd = ((peak - balance) / peak) * 100;
+        if (curDd > maxDd) maxDd = curDd;
+        closed.tradeObj.pnlUsdt = pnlUsdt;
+        closed.tradeObj.isWin = pnlUsdt > 0.001;
+        trades.push(closed.tradeObj);
+        activePositions.splice(i, 1);
+      }
+    }
+
+    // 2. 检查同币互斥 (同一币种同时只持有一笔仓位)
     const occ = occupiedUntil.get(sig.symbol) ?? -Infinity;
-    if (sig.entryTime < occ) continue; // 同币互斥
+    if (sig.entryTime < occ) continue;
+
+    // 3. 全局最大同时持仓数限制
+    if (maxPositions && activePositions.length >= maxPositions) {
+      continue;
+    }
+
+    // 4. 单策略最大同时持仓数限制 (保证四大策略至少各持仓 1 笔，互不挤占)
+    if (maxPositionsPerStrategy) {
+      const stratCount = activePositions.filter((p) => p.type === sig.type).length;
+      if (stratCount >= maxPositionsPerStrategy) {
+        continue;
+      }
+    }
 
     const bars = minuteData.candles.get(sig.symbol);
     if (!bars) continue;
@@ -295,7 +349,6 @@ function runPortfolioSimulation(
     if (fillIdx < 0) continue;
 
     const leverage = sig.type === 'streak' ? streakLeverage : trendLeverage;
-    occupiedUntil.set(sig.symbol, sig.entryTime + sig.holdMinutes * 60 * 1000);
 
     const entry = sig.entryPrice;
     const dayChange = Math.max(10, sig.dayChangePercent);
@@ -320,6 +373,7 @@ function runPortfolioSimulation(
     let remainingFraction = 1.0;
     let exitReason = 'timeout';
     let isLiquidated = false;
+    let exitTime = sig.entryTime + sig.holdMinutes * 60 * 1000;
 
     const maxSteps = Math.min(sig.holdMinutes, bars.length - fillIdx);
 
@@ -328,6 +382,7 @@ function runPortfolioSimulation(
       const high = b[2];
       const low = b[3];
       const close = b[4];
+      const curTime = b[0];
 
       if (high >= liqPrice) {
         isLiquidated = true;
@@ -335,6 +390,7 @@ function runPortfolioSimulation(
         stage1Return = -0.5;
         stage2Return = -0.5;
         remainingFraction = 0;
+        exitTime = curTime;
         break;
       }
 
@@ -360,48 +416,76 @@ function runPortfolioSimulation(
           stage2Return = (tp2Pct / 100 - feeRate) * 0.5;
           remainingFraction = 0;
           exitReason = 'target';
+          exitTime = curTime;
           break;
         } else if (high >= sl2Price) {
           const gross = -((high - entry) / entry);
           stage2Return = (gross - feeRate) * 0.5;
           remainingFraction = 0;
           exitReason = 'stop';
+          exitTime = curTime;
           break;
         }
       }
 
       if (step === maxSteps - 1) {
         exitReason = 'timeout';
+        exitTime = curTime;
         const closeReturn = ((entry - close) / entry) - feeRate;
         if (!stage1Done) stage1Return = closeReturn * 0.5;
         if (remainingFraction > 0) stage2Return = closeReturn * remainingFraction;
       }
     }
 
+    // 币种冷却锁：同币种在当前波段未结束前（或 holdMinutes 期间）禁止重复重入做空
+    // 避免在同一波暴涨行情中提前止盈/止损后，立刻在更高点被二次拉升打穿
+    occupiedUntil.set(sig.symbol, Math.max(sig.entryTime + sig.holdMinutes * 60 * 1000, exitTime));
+
     const netFraction = stage1Return + stage2Return;
     const unleveragedPct = netFraction * 100;
     const leveragedPct = unleveragedPct * leverage;
 
-    // 单笔固定 20 USDT 保证金，总本金 100 USDT
-    const marginUsdt = 20.0;
-    const pnlUsdt = marginUsdt * (leveragedPct / 100);
-    balance += pnlUsdt;
-    if (balance > peak) peak = balance;
-    const curDd = ((peak - balance) / peak) * 100;
-    if (curDd > maxDd) maxDd = curDd;
+    // 单笔保证金：支持动态资产量 20% 或固定金额
+    const marginUsdt = useDynamicMargin
+      ? Math.max(5.0, balance * marginRate)
+      : fixedMarginUsdt;
 
-    trades.push({
+    const tradeObj = {
       symbol: sig.symbol,
       type: sig.type,
       name: sig.name,
       leverage,
       unleveragedPct,
       leveragedPct,
-      pnlUsdt,
-      isWin: pnlUsdt > 0.001,
+      marginUsdt,
+      pnlUsdt: 0,
+      isWin: false,
       exitReason,
       isLiquidated,
+      entryTime: sig.entryTime,
+      exitTime,
+    };
+
+    activePositions.push({
+      symbol: sig.symbol,
+      type: sig.type,
+      exitTime,
+      marginUsdt,
+      pnlPct: leveragedPct,
+      tradeObj,
     });
+  }
+
+  // 释放剩余未结清仓位
+  for (const closed of activePositions) {
+    const pnlUsdt = closed.marginUsdt * (closed.pnlPct / 100);
+    balance += pnlUsdt;
+    if (balance > peak) peak = balance;
+    const curDd = ((peak - balance) / peak) * 100;
+    if (curDd > maxDd) maxDd = curDd;
+    closed.tradeObj.pnlUsdt = pnlUsdt;
+    closed.tradeObj.isWin = pnlUsdt > 0.001;
+    trades.push(closed.tradeObj);
   }
 
   const wins = trades.filter(t => t.isWin).length;
@@ -455,6 +539,7 @@ async function main() {
   console.log('👑【四大策略联合实盘组合回测】新高背离独立杠杆对比测试');
   console.log('  • 顺势衰竭三大策略: 固定 3x 杠杆 · 10% 大止损 · 90m 长波段 · TP 4%/8% 动态保本');
   console.log('  • 新高顶背离闪击战: 对比 1x, 2x, 3x, 5x, 8x, 10x 独立杠杆');
+  console.log('  • 仓位管理: 动态 20% 资产量保证金 (复利风控) · 全局最大 5 仓 · 每策略至多 1 仓 (保证四大策略均可开仓)');
   console.log('========================================================================================\n');
 
   const minuteData = await loadAllMinutes();
@@ -469,24 +554,51 @@ async function main() {
   console.log(`   - 跌到20%+ (90m 波段)   : ${signals.filter(s => s.type === 'deep_rebound').length} 笔`);
   console.log(`   - 冲高极度乖离 (90m 波段): ${signals.filter(s => s.type === 'extreme_dev').length} 笔\n`);
 
-  const results: any[] = [];
+  // 1. 运行动态 20% 资产量 + 限仓 5 笔 (每策略至多 2 笔，既保障策略多样性又释放高胜率策略产能)
+  const dynamicResults: any[] = [];
   const testLeverages = [1, 2, 3, 5, 8, 10, 12, 15];
 
   for (const lev of testLeverages) {
-    results.push(runPortfolioSimulation(signals, minuteData, lev, 3));
+    dynamicResults.push(runPortfolioSimulation(signals, minuteData, lev, 3, {
+      useDynamicMargin: true,
+      marginRate: 0.20,
+      maxPositions: 5,
+      maxPositionsPerStrategy: 2,
+    }));
   }
 
   console.log('========================================================================================');
-  console.log('📊【全账户组合实测绩效矩阵】(账户初本 100 USDT · 单笔 20 USDT 保证金 · 互斥防重)');
+  console.log('📊【动态 20% 资产量保证金】(初本 100 USDT · 单笔 20% 资产 · 全局限 5 仓 · 每策略至多 2 仓)');
   console.log('========================================================================================');
-  console.table(results);
+  console.table(dynamicResults);
+
+  // 2. 对比固定 20U 保证金模式
+  const fixedResults: any[] = [];
+  for (const lev of testLeverages) {
+    fixedResults.push(runPortfolioSimulation(signals, minuteData, lev, 3, {
+      useDynamicMargin: false,
+      fixedMarginUsdt: 20.0,
+      maxPositions: 5,
+      maxPositionsPerStrategy: 2,
+    }));
+  }
+
+  console.log('\n========================================================================================');
+  console.log('📊【固定 20U 保证金模式对比】(单笔固定 20 USDT · 全局限 5 仓 · 每策略至多 2 仓)');
+  console.log('========================================================================================');
+  console.table(fixedResults);
 
   // 打印四大子策略在 10x vs 3x 下的细分贡献
   console.log('\n========================================================================================');
-  console.log('🔍【四大子策略分项贡献拆解 (当 新高顶背离 分别为 3x vs 5x vs 10x 时)】');
+  console.log('🔍【四大子策略分项贡献拆解 (动态 20% 仓位 · 新高顶背离 10x vs 3x · 每策略至多 2 仓)】');
   console.log('========================================================================================');
   for (const lev of [3, 5, 10]) {
-    const res = runPortfolioSimulation(signals, minuteData, lev, 3);
+    const res = runPortfolioSimulation(signals, minuteData, lev, 3, {
+      useDynamicMargin: true,
+      marginRate: 0.20,
+      maxPositions: 5,
+      maxPositionsPerStrategy: 2,
+    });
     console.log(`\n▶️ 当【新高顶背离】采用 ${lev}x 杠杆 (顺势衰竭保持 3x) 时各子策略明细:`);
     console.table(Object.values(res.subStats));
   }
