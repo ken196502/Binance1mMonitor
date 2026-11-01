@@ -1,14 +1,9 @@
-// Paper Trading Engine for Binance 1m Top-Gainers Dual Strategy (3 Shorts + 2 Longs)
-// Implements the highest win-rate ensemble across 168 hours of historical backtests:
-// - 3 Highest Win-Rate Shorts:
-//   1. 'streak' (新高顶背离闪击做空): 10x 闪击战, 15m 紧止损
-//   2. 'deep_rebound' (跌到20%+次级反弹做空): 87.5% 胜率, PF 7.15, 3x 波段
-//   3. 'rebound' (首次跌到10%弱反弹做空): 80.0% 胜率, PF 2.67, 3x 波段
-//   (注: 'extreme_dev' 冲高极度乖离已关闭)
-// - 2 Highest Win-Rate Longs (24h 涨幅榜专属):
-//   1. 'ma30_pullback' (龙头MA30黄金生命线回踩做多): 75.7% 胜率, +29.74% 净收益
-//   2. 'ma60_support' (龙头MA60深度大蹲强托底做多): 77.8% 胜率, +11.29% 净收益
-// Features: 3x leverage / 10x streak, 20% dynamic equity margin per position, max 5 positions (1 per strategy).
+// Paper Trading Engine for Binance 1m Top-Gainers Core Strategy Suite (1 Long + 3 Shorts)
+// Implements the verified 1245 core strategies:
+// - 策略 1: 'w_bottom_divergence' (左侧3W底背离弹射做多): 3x 杠杆, 30m 动态退出
+// - 策略 2: 'rebound' (首次跌10%弱反弹做空): 3x 波段, 30m 动态退出
+// - 策略 4: 'streak' (新高顶背离闪击做空): 10x 闪击战, 15m 紧止损
+// - 策略 5: 'deep_rebound' (跌到20%+次级反弹做空): 3x 波段, 30m 动态退出
 
 import fs from "node:fs";
 import path from "node:path";
@@ -22,9 +17,7 @@ import { sendTelegramMessage, telegramConfigured } from "./telegram.ts";
 import {
   UnifiedShortStrategyTracker,
   STREAK_LIVE_DEFAULT_CONFIG,
-  DUAL_SPEED_EXTREME_DEV_CONFIG,
   DUAL_SPEED_DEEP_REBOUND_CONFIG,
-  type ExtremeDevLiveConfig,
   type StreakStrategyLiveConfig,
   type DeepReboundLiveConfig,
   type UnifiedLiveConfig,
@@ -35,18 +28,8 @@ import {
 } from "./peak-rebound-strategy.ts";
 import {
   UnifiedLongStrategyTracker,
-  PULLBACK_REBOUND_DEFAULT_CONFIG,
   W_BOTTOM_DIVERGENCE_DEFAULT_CONFIG,
-  GOLDEN_PULLBACK_LIVE_DEFAULT_CONFIG,
-  DEEP_SUPPORT_LIVE_DEFAULT_CONFIG,
-  CONSOLIDATION_SUPPORT_DEFAULT_CONFIG,
-  CONSOLIDATION_BREAKOUT_DEFAULT_CONFIG,
-  type PullbackReboundLiveConfig,
   type WBottomDivergenceLiveConfig,
-  type ConsolidationSupportLiveConfig,
-  type ConsolidationBreakoutLiveConfig,
-  type GoldenPullbackLiveConfig,
-  type DeepSupportLiveConfig,
   type UnifiedLongLiveConfig,
   type UnifiedLongLiveSignal,
 } from "./unified-long-strategy.ts";
@@ -99,24 +82,14 @@ export interface PaperStrategyConfig {
   stopAtHigh?: boolean; // 极端最高点止损模式 (触碰做空止损时按当根1m K线最高点/Tick最高突破价成交，默认 true)
   stopAtLow?: boolean;  // 极端最低点止损模式 (触碰做多止损时按当根1m K线最低点/Tick最低突破价成交，默认 true)
   enableStreak?: boolean;     // 是否启用新高顶背离闪击做空 (默认 true)
-  enableExtremeDev?: boolean; // 是否启用冲高极度乖离做空 (默认 false)
   enableRebound?: boolean;    // 是否启用首次跌10%弱反弹做空 (默认 true)
   enableDeepRebound?: boolean;// 是否启用跌到20%+次级反弹做空 (默认 true)
   enableLongs?: boolean;      // 是否启用涨幅榜做多 (默认 true)
-  enablePullbackRebound?: boolean;      // 是否启用右侧回调反弹做多 (默认 true)
-  enableWBottomDivergence?: boolean;    // 是否启用左侧3W底背离弹射做多 (默认 true)
-  enableConsolidationSupport?: boolean; // 是否启用震荡托底做多 (默认 false)
-  enableConsolidationBreakout?: boolean;// 是否启用震荡突破做多 (默认 false: 避免假突破)
+  enableWBottomDivergence?: boolean; // 是否启用左侧3W底背离弹射做多 (默认 true)
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
-  extremeDevConfig?: Partial<ExtremeDevLiveConfig>;
-  pullbackReboundConfig?: Partial<PullbackReboundLiveConfig>;
   wBottomDivergenceConfig?: Partial<WBottomDivergenceLiveConfig>;
-  consolidationSupportConfig?: Partial<ConsolidationSupportLiveConfig>;
-  consolidationBreakoutConfig?: Partial<ConsolidationBreakoutLiveConfig>;
-  goldenPullbackConfig?: Partial<GoldenPullbackLiveConfig>;
-  deepSupportConfig?: Partial<DeepSupportLiveConfig>;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -154,15 +127,15 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   stopAtHigh: true,        // 开启做空极端最高点止损模式
   stopAtLow: true,         // 开启做多极端最低点止损模式
   enableStreak: true,      // 策略 4: 开启新高顶背离 10x 闪击做空 (15m 持仓)
-  enableExtremeDev: false, // 默认 false (关闭冲高极度乖离)
   enableRebound: true,     // 策略 2: 开启首次跌10%弱反弹做空 (最大 30m 持仓)
   enableDeepRebound: true, // 策略 5: 开启跌到20%+次级反弹做空 (最大 30m 持仓)
   enableLongs: true,       // 默认 true (开启涨幅榜做多)
-  enablePullbackRebound: false,     // 策略 3: 排除右侧回调反弹做多 (默认 false，避免低胜率磨损)
-  enableWBottomDivergence: true,    // 策略 1: 开启左侧3W底背离弹射做多 (最大 30m 持仓)
-  enableConsolidationSupport: false,// 默认 false
-  enableConsolidationBreakout: false,// 默认 false (不要搞突破做多，假突破太多)
+  enableWBottomDivergence: true, // 策略 1: 开启左侧3W底背离弹射做多 (最大 30m 持仓)
   storageFile: STATE_FILE,
+  streakConfig: {
+    ...STREAK_LIVE_DEFAULT_CONFIG,
+    divergenceLookbackMax: 45, // 平滑背离回测窗口至 10~45 根 K 线，避免错失双顶
+  },
   reboundConfig: {
     ...DUAL_SPEED_PEAK_REBOUND_CONFIG,
     holdMinutes: 30,
@@ -170,6 +143,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     tp2Percent: 8.0,
     stopLossPercent: 7.0,
     moveSlToEntryAfterTp1: true,
+    minGreenRatio20: 0.35, // 优化：由 0.65 调整为 0.35，避免在见顶深度回撤空头排列中因 MACD 绿柱比例过高而窒息拦截
   },
   deepReboundConfig: {
     ...DUAL_SPEED_DEEP_REBOUND_CONFIG,
@@ -178,15 +152,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     tp2Percent: 8.0,
     stopLossPercent: 7.0,
     moveSlToEntryAfterTp1: true,
-  },
-  extremeDevConfig: DUAL_SPEED_EXTREME_DEV_CONFIG,
-  pullbackReboundConfig: {
-    ...PULLBACK_REBOUND_DEFAULT_CONFIG,
-    holdMinutes: 30,
-    tp1Percent: 3.0,
-    tp2Percent: 8.0,
-    stopLossPercent: 7.0,
-    moveSlToEntryAfterTp1: true,
+    minGreenRatio20: 0.35, // 优化：跌20%+深跌空头行情中，放宽至近20根1m MACD绿柱 >= 35%
   },
   wBottomDivergenceConfig: {
     ...W_BOTTOM_DIVERGENCE_DEFAULT_CONFIG,
@@ -196,26 +162,13 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     stopLossPercent: 7.0,
     moveSlToEntryAfterTp1: true,
   },
-  consolidationSupportConfig: CONSOLIDATION_SUPPORT_DEFAULT_CONFIG,
-  consolidationBreakoutConfig: CONSOLIDATION_BREAKOUT_DEFAULT_CONFIG,
-  goldenPullbackConfig: GOLDEN_PULLBACK_LIVE_DEFAULT_CONFIG,
-  deepSupportConfig: DEEP_SUPPORT_LIVE_DEFAULT_CONFIG,
 };
 
 export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLabel): PaperSignalLabel {
   if (label) return label;
-  if (type === "extreme_dev") return "冲高极度乖离";
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
-  if (type === "pullback_rebound") return "右侧回调反弹";
   if (type === "w_bottom_divergence") return "左侧3W底背离";
-  if (type === "consolidation_support") return "震荡托底做多";
-  if (type === "consolidation_breakout") return "震荡突破做多";
-  if (type === "consolidation_long") return "震荡蓄势做多";
-  if (type === "ma30_pullback") return "龙头MA30回踩";
-  if (type === "ma60_support") return "龙头MA60深蹲";
-  if (type === "rank1_first_pullback") return "榜一首次回踩";
-  if (type === "second_wave_expansion") return "龙头二浪突破";
   return "新高顶背离";
 }
 
@@ -355,29 +308,15 @@ export class PaperTradingEngine {
       },
       reboundConfig: this.config.reboundConfig,
       deepReboundConfig: this.config.deepReboundConfig,
-      extremeDevConfig: this.config.extremeDevConfig,
       preventConflict: true,
       enableStreak: this.config.enableStreak ?? true, // 开启新高顶背离 10x 闪击
       enableRebound: this.config.enableRebound ?? true,
       enableDeepRebound: this.config.enableDeepRebound ?? true,
-      enableExtremeDev: this.config.enableExtremeDev ?? false, // 关闭冲高极度乖离
     });
     this.longTracker = new UnifiedLongStrategyTracker({
-      pullbackReboundConfig: this.config.pullbackReboundConfig,
       wBottomDivergenceConfig: this.config.wBottomDivergenceConfig,
-      consolidationSupportConfig: this.config.consolidationSupportConfig,
-      consolidationBreakoutConfig: this.config.consolidationBreakoutConfig,
-      goldenPullbackConfig: this.config.goldenPullbackConfig,
-      deepSupportConfig: this.config.deepSupportConfig,
       preventConflict: true,
-      enablePullbackRebound: this.config.enablePullbackRebound ?? false,
       enableWBottomDivergence: this.config.enableWBottomDivergence ?? true,
-      enableConsolidationSupport: this.config.enableConsolidationSupport ?? false,
-      enableConsolidationBreakout: this.config.enableConsolidationBreakout ?? false,
-      enableGoldenPullback: false,
-      enableDeepSupport: false,
-      enableRank1Pullback: false,
-      enableSecondWave: false,
     });
     this.account = {
       initialBalanceUsdt: this.config.initialBalanceUsdt,
@@ -424,17 +363,7 @@ export class PaperTradingEngine {
     if (signalType === "streak") {
       return this.config.streakLeverage ?? 10;
     }
-    if (
-      signalType === "w_bottom_divergence" ||
-      signalType === "pullback_rebound" ||
-      signalType === "consolidation_support" ||
-      signalType === "consolidation_breakout" ||
-      signalType === "consolidation_long" ||
-      signalType === "ma30_pullback" ||
-      signalType === "ma60_support" ||
-      signalType === "rank1_first_pullback" ||
-      signalType === "second_wave_expansion"
-    ) {
+    if (signalType === "w_bottom_divergence") {
       return this.config.longLeverage ?? 3;
     }
     return this.config.trendLeverage ?? this.config.leverage;
@@ -517,10 +446,6 @@ export class PaperTradingEngine {
       this.config.enableStreak = updates.enableStreak;
       this.unifiedTracker.updateConfig({ enableStreak: updates.enableStreak });
     }
-    if (typeof updates.enableExtremeDev === "boolean") {
-      this.config.enableExtremeDev = updates.enableExtremeDev;
-      this.unifiedTracker.updateConfig({ enableExtremeDev: updates.enableExtremeDev });
-    }
     if (typeof updates.enableRebound === "boolean") {
       this.config.enableRebound = updates.enableRebound;
       this.unifiedTracker.updateConfig({ enableRebound: updates.enableRebound });
@@ -532,21 +457,9 @@ export class PaperTradingEngine {
     if (typeof updates.enableLongs === "boolean") {
       this.config.enableLongs = updates.enableLongs;
     }
-    if (typeof updates.enablePullbackRebound === "boolean") {
-      this.config.enablePullbackRebound = updates.enablePullbackRebound;
-      this.longTracker.updateConfig({ enablePullbackRebound: updates.enablePullbackRebound });
-    }
     if (typeof updates.enableWBottomDivergence === "boolean") {
       this.config.enableWBottomDivergence = updates.enableWBottomDivergence;
       this.longTracker.updateConfig({ enableWBottomDivergence: updates.enableWBottomDivergence });
-    }
-    if (typeof updates.enableConsolidationSupport === "boolean") {
-      this.config.enableConsolidationSupport = updates.enableConsolidationSupport;
-      this.longTracker.updateConfig({ enableConsolidationSupport: updates.enableConsolidationSupport });
-    }
-    if (typeof updates.enableConsolidationBreakout === "boolean") {
-      this.config.enableConsolidationBreakout = updates.enableConsolidationBreakout;
-      this.longTracker.updateConfig({ enableConsolidationBreakout: updates.enableConsolidationBreakout });
     }
     if (typeof updates.holdMinutes === "number" && Number.isFinite(updates.holdMinutes) && updates.holdMinutes > 0) {
       this.config.holdMinutes = updates.holdMinutes;
@@ -684,9 +597,9 @@ export class PaperTradingEngine {
 
   /**
    * Called on every scan/refresh at candle close.
-   * Scans gainers for entry signals using 5 Top-Winrate Strategies:
-   * 3 Shorts: 冲高极度乖离 (90.9%), 跌到20%+ (87.5%), 首次跌10% (80.0%)
-   * 2 Longs: 龙头MA30黄金回踩 (75.7%), 龙头MA60深度托底 (77.8%)
+   * Scans gainers for entry signals using 4 Core Strategies:
+   * 3 Shorts: 首次跌10%弱反弹, 跌20%+次级反弹, 新高顶背离闪击
+   * 1 Long: 左侧3W底背离弹射
    */
   public async onScan(
     gainers: Ticker24h[],
@@ -756,7 +669,7 @@ export class PaperTradingEngine {
 
       const targetIdx = symCache.candles1m.length - 2;
 
-      // 3. 做空信号检测 (前三最高胜率做空: 极度乖离 90.9%, 跌20%+ 87.5%, 首次跌10% 80.0%)
+      // 3. 做空信号检测 (3个核心做空: 首次跌10%, 跌20%+, 新高顶背离闪击)
       const shortSignal = this.unifiedTracker.checkCandles(
         ticker.symbol,
         ticker.priceChangePercent,
@@ -822,7 +735,7 @@ export class PaperTradingEngine {
         }
       }
 
-      // 4. 做多信号检测 (前二最高胜率做多: MA30黄金回踩 75.7%, MA60深蹲 77.8%)
+      // 4. 做多信号检测 (核心做多: 左侧3W底背离弹射)
       if (!chosenSignal && (this.config.enableLongs ?? true)) {
         const longSignal = this.longTracker.checkCandles(
           ticker.symbol,
@@ -928,19 +841,7 @@ export class PaperTradingEngine {
     } = params;
 
     const signalType = params.signalType ?? "streak";
-    const isLong = (params.side ?? (
-      signalType === "pullback_rebound" ||
-      signalType === "w_bottom_divergence" ||
-      signalType === "consolidation_support" ||
-      signalType === "consolidation_breakout" ||
-      signalType === "consolidation_long" ||
-      signalType === "ma30_pullback" ||
-      signalType === "ma60_support" ||
-      signalType === "rank1_first_pullback" ||
-      signalType === "second_wave_expansion"
-        ? "LONG"
-        : "SHORT"
-    )) === "LONG";
+    const isLong = (params.side ?? (signalType === "w_bottom_divergence" ? "LONG" : "SHORT")) === "LONG";
     const side: "SHORT" | "LONG" = isLong ? "LONG" : "SHORT";
 
     const exitX = exitParams?.exitX ?? this.config.exitX;
@@ -1659,6 +1560,7 @@ export class PaperTradingEngine {
         activePositions: Array.from(this.activePositions.values()),
         closedPositions: this.closedPositions,
         stats: this.stats,
+        reboundWatchlist: this.unifiedTracker.getReboundWatchlist(),
         updatedAt: new Date().toISOString(),
         configOverrides: {
           leverage: this.config.leverage,
@@ -1675,10 +1577,10 @@ export class PaperTradingEngine {
           stopAtHigh: this.config.stopAtHigh,
           stopAtLow: this.config.stopAtLow,
           enableStreak: this.config.enableStreak,
-          enableExtremeDev: this.config.enableExtremeDev,
           enableRebound: this.config.enableRebound,
           enableDeepRebound: this.config.enableDeepRebound,
           enableLongs: this.config.enableLongs,
+          enableWBottomDivergence: this.config.enableWBottomDivergence,
           holdMinutes: this.config.holdMinutes,
         },
       };
@@ -1725,7 +1627,7 @@ export class PaperTradingEngine {
           this.activePositions.clear();
           for (const p of data.activePositions) {
             p.side = p.side ?? (
-              p.signalType === "ma30_pullback" || p.signalType === "ma60_support" ? "LONG" : "SHORT"
+              p.signalType === "w_bottom_divergence" ? "LONG" : "SHORT"
             );
             p.signalType = p.signalType ?? "streak";
             p.signalLabel = formatSignalLabel(p.signalType, p.signalLabel);
@@ -1750,12 +1652,15 @@ export class PaperTradingEngine {
         if (Array.isArray(data.closedPositions)) {
           this.closedPositions = data.closedPositions.map((p) => {
             p.side = p.side ?? (
-              p.signalType === "ma30_pullback" || p.signalType === "ma60_support" ? "LONG" : "SHORT"
+              p.signalType === "w_bottom_divergence" ? "LONG" : "SHORT"
             );
             p.signalType = p.signalType ?? "streak";
             p.signalLabel = formatSignalLabel(p.signalType, p.signalLabel);
             return p;
           });
+        }
+        if (Array.isArray(data.reboundWatchlist) && data.reboundWatchlist.length > 0) {
+          this.unifiedTracker.restoreReboundWatchlist(data.reboundWatchlist);
         }
         if (data.stats) {
           this.stats = data.stats;
@@ -1779,10 +1684,6 @@ export class PaperTradingEngine {
             this.config.enableStreak = cfg.enableStreak;
             this.unifiedTracker.updateConfig({ enableStreak: cfg.enableStreak });
           }
-          if (typeof cfg.enableExtremeDev === "boolean") {
-            this.config.enableExtremeDev = cfg.enableExtremeDev;
-            this.unifiedTracker.updateConfig({ enableExtremeDev: cfg.enableExtremeDev });
-          }
           if (typeof cfg.enableRebound === "boolean") {
             this.config.enableRebound = cfg.enableRebound;
             this.unifiedTracker.updateConfig({ enableRebound: cfg.enableRebound });
@@ -1792,6 +1693,10 @@ export class PaperTradingEngine {
             this.unifiedTracker.updateConfig({ enableDeepRebound: cfg.enableDeepRebound });
           }
           if (typeof cfg.enableLongs === "boolean") this.config.enableLongs = cfg.enableLongs;
+          if (typeof cfg.enableWBottomDivergence === "boolean") {
+            this.config.enableWBottomDivergence = cfg.enableWBottomDivergence;
+            this.longTracker.updateConfig({ enableWBottomDivergence: cfg.enableWBottomDivergence });
+          }
           if (typeof cfg.holdMinutes === "number") this.config.holdMinutes = cfg.holdMinutes;
         }
         console.log(
@@ -1821,29 +1726,15 @@ export class PaperTradingEngine {
       },
       reboundConfig: this.config.reboundConfig,
       deepReboundConfig: this.config.deepReboundConfig,
-      extremeDevConfig: this.config.extremeDevConfig,
       preventConflict: true,
       enableStreak: this.config.enableStreak ?? true,
       enableRebound: this.config.enableRebound ?? true,
       enableDeepRebound: this.config.enableDeepRebound ?? true,
-      enableExtremeDev: this.config.enableExtremeDev ?? false,
     });
     this.longTracker = new UnifiedLongStrategyTracker({
-      pullbackReboundConfig: this.config.pullbackReboundConfig,
       wBottomDivergenceConfig: this.config.wBottomDivergenceConfig,
-      consolidationSupportConfig: this.config.consolidationSupportConfig,
-      consolidationBreakoutConfig: this.config.consolidationBreakoutConfig,
-      goldenPullbackConfig: this.config.goldenPullbackConfig,
-      deepSupportConfig: this.config.deepSupportConfig,
       preventConflict: true,
-      enablePullbackRebound: this.config.enablePullbackRebound ?? false,
       enableWBottomDivergence: this.config.enableWBottomDivergence ?? true,
-      enableConsolidationSupport: this.config.enableConsolidationSupport ?? false,
-      enableConsolidationBreakout: this.config.enableConsolidationBreakout ?? false,
-      enableGoldenPullback: false,
-      enableDeepSupport: false,
-      enableRank1Pullback: false,
-      enableSecondWave: false,
     });
     this.account = {
       initialBalanceUsdt: this.config.initialBalanceUsdt,

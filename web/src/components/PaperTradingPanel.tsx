@@ -36,18 +36,9 @@ function formatHoldDuration(closedAt?: number, entryTime?: number): string {
 
 function formatSignalLabel(type?: string, label?: string): string {
   if (label) return label;
-  if (type === "extreme_dev") return "冲高极度乖离";
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
-  if (type === "pullback_rebound") return "右侧回调反弹";
   if (type === "w_bottom_divergence") return "左侧3W底背离";
-  if (type === "consolidation_support") return "震荡托底做多";
-  if (type === "consolidation_breakout") return "震荡突破做多";
-  if (type === "consolidation_long") return "震荡蓄势做多";
-  if (type === "ma30_pullback") return "龙头MA30回踩";
-  if (type === "ma60_support") return "龙头MA60深蹲";
-  if (type === "rank1_first_pullback") return "榜一首次回踩";
-  if (type === "second_wave_expansion") return "龙头二浪突破";
   return "新高顶背离";
 }
 

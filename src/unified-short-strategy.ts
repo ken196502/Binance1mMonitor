@@ -1,9 +1,8 @@
 // Unified Multi-Signal Short Strategy Engine
-// Coordinates:
-// 1. 'Extreme MA Extension Short' (冲高极度乖离 - 3m surge >= 24h / 3.5 + MA30 deviation >= 1.5%)
-// 2. 'New High Bearish Divergence Short' (新高顶背离 - 24h new high + no MA support + 5m surge + MACD divergence)
-// 3. 'Weak Rebound Short' (首次跌到10% / 空弱反弹 - Right-side post-drop rebound MA ceiling)
-// 4. 'Deep Rebound Short' (跌到20%+ / 超跌反弹 - Post-dump secondary bounce MA15/30 suppression)
+// Coordinates 3 Highest Win-Rate Shorts:
+// 1. 'New High Bearish Divergence Short' (新高顶背离 - 24h new high + no MA support + 5m surge + MACD divergence)
+// 2. 'Weak Rebound Short' (首次跌到10% / 空弱反弹 - Right-side post-drop rebound MA ceiling)
+// 3. 'Deep Rebound Short' (跌到20%+ / 超跌反弹 - Post-dump secondary bounce MA15/30 suppression)
 
 import { Candle, computeMacd, consecutiveStreakAt, calculateSupportMaAt, calculateSma } from './macd.ts';
 import {
@@ -15,51 +14,7 @@ import {
 } from './peak-rebound-strategy.ts';
 import type { PaperSignalLabel } from './types.ts';
 
-export type UnifiedSignalType = 'streak' | 'rebound' | 'deep_rebound' | 'extreme_dev';
-
-export interface ExtremeDevLiveConfig {
-  topN: number;               // 默认 10 (涨幅榜 Top 10)
-  minDayChange: number;       // 默认 20.0 (24h 涨幅 >= 20%)
-  xMinutes: number;           // 默认 3 (3 分钟回溯窗口)
-  ampDivisor: number;         // 默认 3.5 (3m 涨幅 >= 24h / 3.5)
-  minAbsoluteSurge: number;   // 默认 4.0% (绝对冲高下限)
-  deviationPeriod: number;    // 默认 30 (MA30 偏离基准)
-  minDeviationPercent: number;// 默认 1.5% (MA30 乖离率 >= 1.5%)
-  holdMinutes: number;        // 默认 90 分钟 (大止损长持仓最优波段)
-  exitX: number;              // 默认 30
-  exitN: number;              // 默认 2.0
-  exitM: number;              // 默认 2.0
-  stopLossPercent?: number;   // 显式大止损比例 (默认 10.0%)
-  tp1Percent?: number;        // 阶段一止盈比例 (默认 4.0%)
-  tp2Percent?: number;        // 阶段二止盈比例 (默认 8.0%)
-  moveSlToEntryAfterTp1?: boolean; // 阶段一达标后移动保本止损
-  cooldownMinutes: number;    // 默认 20 分钟
-}
-
-export const EXTREME_DEV_LIVE_DEFAULT_CONFIG: ExtremeDevLiveConfig = {
-  topN: 10,
-  minDayChange: 20.0,
-  xMinutes: 3,
-  ampDivisor: 3.5,
-  minAbsoluteSurge: 4.0,
-  deviationPeriod: 30,
-  minDeviationPercent: 1.5,
-  holdMinutes: 20,
-  exitX: 30,
-  exitN: 2.0,
-  exitM: 2.0,
-  cooldownMinutes: 20,
-};
-
-// 黄金双速最优组合 (Dual-Speed Ensemble): 冲高极度乖离长波段参数 (胜率 72.7%, PF 2.18, 3x 杠杆累计收益 +75.5%)
-export const DUAL_SPEED_EXTREME_DEV_CONFIG: ExtremeDevLiveConfig = {
-  ...EXTREME_DEV_LIVE_DEFAULT_CONFIG,
-  holdMinutes: 90,
-  stopLossPercent: 10.0,
-  tp1Percent: 4.0,
-  tp2Percent: 8.0,
-  moveSlToEntryAfterTp1: true,
-};
+export type UnifiedSignalType = 'streak' | 'rebound' | 'deep_rebound';
 
 export interface StreakStrategyLiveConfig {
   topN: number;
@@ -129,7 +84,7 @@ export const DEEP_REBOUND_LIVE_DEFAULT_CONFIG: DeepReboundLiveConfig = {
   lowWindowMinutes: 10,
   shortMa: 15,
   longMa: 30,
-  minGreenRatio20: 0.65,
+  minGreenRatio20: 0.35,
   requireMaSlopeDown: true,
   holdMinutes: 30,
   exitX: 35,
@@ -151,38 +106,32 @@ export const DUAL_SPEED_DEEP_REBOUND_CONFIG: DeepReboundLiveConfig = {
 export interface UnifiedLiveConfig {
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
-  extremeDevConfig?: Partial<ExtremeDevLiveConfig>;
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   preventConflict?: boolean; // Prevent double-entry if the same symbol has an active trade (default true)
   enableStreak?: boolean;     // 是否启用新高顶背离做空 (默认 true)
   enableRebound?: boolean;    // 是否启用首次跌10%弱反弹做空 (默认 true)
   enableDeepRebound?: boolean;// 是否启用跌20%+超跌反弹做空 (默认 true)
-  enableExtremeDev?: boolean; // 是否启用冲高极度乖离做空 (默认 true)
 }
 
 export const UNIFIED_LIVE_DEFAULT_CONFIG: Required<UnifiedLiveConfig> = {
   reboundConfig: PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
   deepReboundConfig: DEEP_REBOUND_LIVE_DEFAULT_CONFIG,
-  extremeDevConfig: EXTREME_DEV_LIVE_DEFAULT_CONFIG,
   streakConfig: STREAK_LIVE_DEFAULT_CONFIG,
   preventConflict: true,
   enableStreak: true,
   enableRebound: true,
   enableDeepRebound: true,
-  enableExtremeDev: true,
 };
 
-// 黄金双速最优组合 (Dual-Speed Ensemble): 首次跌10%、跌到20%+、冲高极度乖离走 3x / 10%大止损 / 90m 长波段，新高顶背离保留 15m 闪击战
+// 黄金双速最优组合 (Dual-Speed Ensemble): 首次跌10%、跌到20%+ 走 3x / 10%大止损 / 90m 长波段，新高顶背离保留 15m 闪击战
 export const DUAL_SPEED_UNIFIED_CONFIG: Required<UnifiedLiveConfig> = {
   reboundConfig: DUAL_SPEED_PEAK_REBOUND_CONFIG,
   deepReboundConfig: DUAL_SPEED_DEEP_REBOUND_CONFIG,
-  extremeDevConfig: DUAL_SPEED_EXTREME_DEV_CONFIG,
   streakConfig: STREAK_LIVE_DEFAULT_CONFIG,
   preventConflict: true,
   enableStreak: true,
   enableRebound: true,
   enableDeepRebound: true,
-  enableExtremeDev: true,
 };
 
 export interface UnifiedLiveSignal {
@@ -210,12 +159,6 @@ export interface UnifiedLiveSignal {
       reboundFrom10m: number;
       greenRatio20: number;
       ma15: number;
-      ma30: number;
-    };
-    extremeDevSignal?: {
-      surgePercent: number;
-      requiredSurge: number;
-      maDeviation: number;
       ma30: number;
     };
     streakSignal?: {
@@ -247,30 +190,25 @@ export class UnifiedShortStrategyTracker {
   private config: {
     reboundConfig: PeakReboundLiveConfig;
     deepReboundConfig: DeepReboundLiveConfig;
-    extremeDevConfig: ExtremeDevLiveConfig;
     streakConfig: StreakStrategyLiveConfig;
     preventConflict: boolean;
     enableStreak: boolean;
     enableRebound: boolean;
     enableDeepRebound: boolean;
-    enableExtremeDev: boolean;
   };
   private reboundTracker: PeakReboundStrategyTracker;
   private activePositions = new Map<string, ActivePositionInfo>();
   private deepCooldown = new Map<string, number>();
-  private extremeDevCooldown = new Map<string, number>();
 
   constructor(config: UnifiedLiveConfig = {}) {
     this.config = {
       reboundConfig: { ...PEAK_REBOUND_LIVE_DEFAULT_CONFIG, ...config.reboundConfig },
       deepReboundConfig: { ...DEEP_REBOUND_LIVE_DEFAULT_CONFIG, ...config.deepReboundConfig },
-      extremeDevConfig: { ...EXTREME_DEV_LIVE_DEFAULT_CONFIG, ...config.extremeDevConfig },
       streakConfig: { ...STREAK_LIVE_DEFAULT_CONFIG, ...config.streakConfig },
       preventConflict: config.preventConflict ?? true,
       enableStreak: config.enableStreak ?? true,
       enableRebound: config.enableRebound ?? true,
       enableDeepRebound: config.enableDeepRebound ?? true,
-      enableExtremeDev: config.enableExtremeDev ?? true,
     };
     this.reboundTracker = new PeakReboundStrategyTracker(this.config.reboundConfig);
   }
@@ -307,11 +245,14 @@ export class UnifiedShortStrategyTracker {
     return this.reboundTracker.getWatchlist();
   }
 
+  public restoreReboundWatchlist(states: any[]): void {
+    this.reboundTracker.restoreWatchlist(states);
+  }
+
   public updateConfig(updates: Partial<UnifiedLiveConfig>): void {
     if (typeof updates.enableStreak === "boolean") this.config.enableStreak = updates.enableStreak;
     if (typeof updates.enableRebound === "boolean") this.config.enableRebound = updates.enableRebound;
     if (typeof updates.enableDeepRebound === "boolean") this.config.enableDeepRebound = updates.enableDeepRebound;
-    if (typeof updates.enableExtremeDev === "boolean") this.config.enableExtremeDev = updates.enableExtremeDev;
     if (typeof updates.preventConflict === "boolean") this.config.preventConflict = updates.preventConflict;
   }
 
@@ -452,45 +393,6 @@ export class UnifiedShortStrategyTracker {
       }
     }
 
-    // 4. 信号四: 冲高极度乖离 (Extreme MA Extension Short: 未创顶背离但 3m 极端垂直暴涨脱离 MA30)
-    if (this.config.enableExtremeDev && rank <= this.config.extremeDevConfig.topN) {
-      const devSig = this.checkExtremeDevSignal(symbol, dayChangePercent, candles, now);
-      if (devSig) {
-        const exitParams = {
-          holdMinutes: this.config.extremeDevConfig.holdMinutes,
-          exitX: this.config.extremeDevConfig.exitX,
-          exitN: this.config.extremeDevConfig.exitN,
-          exitM: this.config.extremeDevConfig.exitM,
-          stopLossPercent: this.config.extremeDevConfig.stopLossPercent,
-          tp1Percent: this.config.extremeDevConfig.tp1Percent,
-          tp2Percent: this.config.extremeDevConfig.tp2Percent,
-          moveSlToEntryAfterTp1: this.config.extremeDevConfig.moveSlToEntryAfterTp1,
-        };
-        const closedCandle = candles[candles.length - 2];
-        const signalLabel: PaperSignalLabel = '冲高极度乖离';
-        const signal: UnifiedLiveSignal = {
-          id: `dev-${symbol}-${closedCandle.time}`,
-          type: 'extreme_dev',
-          label: signalLabel,
-          symbol,
-          time: closedCandle.time + 60 * 1000,
-          dayChangePercent,
-          entryPrice: closedCandle.close,
-          exitParams,
-          details: { extremeDevSignal: devSig },
-        };
-        if (this.config.preventConflict) {
-          this.registerPosition(symbol, {
-            tradeId: signal.id,
-            type: 'extreme_dev',
-            entryTime: signal.time,
-            maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
-          });
-        }
-        return signal;
-      }
-    }
-
     return null;
   }
 
@@ -582,63 +484,6 @@ export class UnifiedShortStrategyTracker {
       reboundFrom10m,
       greenRatio20,
       ma15,
-      ma30,
-    };
-  }
-
-  /** Micro-structure evaluation of Extreme MA Extension Short (冲高极度乖离做空) */
-  private checkExtremeDevSignal(
-    symbol: string,
-    dayChangePercent: number,
-    candles: Candle[],
-    now = Date.now()
-  ): {
-    surgePercent: number;
-    requiredSurge: number;
-    maDeviation: number;
-    ma30: number;
-  } | null {
-    const cfg = this.config.extremeDevConfig;
-    if (dayChangePercent < cfg.minDayChange) return null;
-
-    // Cooldown check
-    const lastCooldown = this.extremeDevCooldown.get(symbol) ?? 0;
-    if (now < lastCooldown) return null;
-
-    const targetIndex = candles.length - 2;
-    const minRequiredBars = Math.max(35, cfg.deviationPeriod + 5);
-    if (targetIndex < minRequiredBars - 1) return null;
-
-    const candle = candles[targetIndex];
-    if (!candle || candle.close <= 0) return null;
-
-    // 1. X 分钟冲高检验 (trough-to-close)
-    const xMinutes = cfg.xMinutes;
-    const startX = Math.max(0, targetIndex - xMinutes + 1);
-    let minLow = Infinity;
-    for (let k = startX; k <= targetIndex; k++) {
-      if (candles[k].low < minLow) minLow = candles[k].low;
-    }
-    if (minLow <= 0) return null;
-
-    const surge = ((candle.close - minLow) / minLow) * 100;
-    const requiredSurge = dayChangePercent / cfg.ampDivisor;
-    if (surge < requiredSurge || surge < cfg.minAbsoluteSurge) return null;
-
-    // 2. 均线乖离检验 (Close / MA30 - 1 >= minDeviationPercent)
-    const closes = candles.map((c) => c.close);
-    const ma30 = calculateSma(closes, targetIndex, cfg.deviationPeriod);
-    if (ma30 == null || ma30 <= 0) return null;
-    const maDeviation = ((candle.close - ma30) / ma30) * 100;
-    if (maDeviation < cfg.minDeviationPercent) return null;
-
-    // Set cooldown
-    this.extremeDevCooldown.set(symbol, now + cfg.cooldownMinutes * 60 * 1000);
-
-    return {
-      surgePercent: surge,
-      requiredSurge,
-      maDeviation,
       ma30,
     };
   }

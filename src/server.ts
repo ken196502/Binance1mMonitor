@@ -795,7 +795,7 @@ const server = http.createServer(async (req, res) => {
     } else {
       symbol = (u.searchParams.get("symbol") ?? "").trim().toUpperCase();
     }
-    symbol = symbol.replace(/[^A-Z0-9_]/g, "");
+    symbol = symbol.replace(/[^\p{L}\p{N}_]/gu, "");
     if (symbol) {
       res.writeHead(302, { Location: `https://www.binance.com/zh-CN/futures/${symbol}` });
       res.end();

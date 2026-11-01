@@ -4,45 +4,28 @@ import {
   UnifiedShortStrategyTracker,
   STREAK_LIVE_DEFAULT_CONFIG,
   DEEP_REBOUND_LIVE_DEFAULT_CONFIG,
-  EXTREME_DEV_LIVE_DEFAULT_CONFIG,
 } from '../../src/unified-short-strategy.ts';
 import {
   PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
 } from '../../src/peak-rebound-strategy.ts';
 import type { Candle } from '../../src/macd.ts';
 
-function createMockCandles(count: number, basePrice = 100): Candle[] {
-  const candles: Candle[] = [];
-  const now = 1700000000000;
-  for (let i = 0; i < count; i++) {
-    candles.push({
-      time: now + i * 60000,
-      open: basePrice,
-      high: basePrice + 1,
-      low: basePrice - 1,
-      close: basePrice,
-      volume: 1000,
-    });
-  }
-  return candles;
-}
-
 test('Default strategy configurations match verified specifications', () => {
-  // 1. 空弱反弹 (首次跌10%) - 最高胜率参数 (73.9%胜率, 34胜12负, 仅5次止损)
+  // 1. 空弱反弹 (首次跌10%) - 核心做空 (策略 2)
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.shortMa, 5);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.mediumMa, 15);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.longMa, 30);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.longMaOffsetPercent, 0.5);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.pullbackX, 10.0);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.reboundY, 4.0);
-  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.65);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.35);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.requireMaSlopeDown, true);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.holdMinutes, 30);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitX, 35);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitN, 2.0);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitM, 1.5);
 
-  // 2. 新高顶背离做空 (彻底替换连阳空) - 64.3% 胜率 (9胜5负, PF 2.54)
+  // 2. 新高顶背离做空 (策略 4) - 闪击做空
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.topN, 10);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.xMinutes, 5);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.ampDivisor, 10);
@@ -58,31 +41,18 @@ test('Default strategy configurations match verified specifications', () => {
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.requireDoubleDivergence, true);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.requireBearish, true);
 
-  // 3. 跌到20%+ (超跌反弹做空) - 最高胜率参数 (87.5%胜率, 7胜1负, PF 7.15)
+  // 3. 跌到20%+ (超跌反弹做空, 策略 5)
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.pullbackX, 20.0);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.reboundY, 5.0);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.lowWindowMinutes, 10);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.shortMa, 15);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.longMa, 30);
-  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.65);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.35);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.requireMaSlopeDown, true);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.holdMinutes, 30);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitX, 35);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitN, 2.0);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitM, 4.0);
-
-  // 4. 冲高极度乖离做空 (基底 24h/N + MA30乖离) - 最高胜率参数 (90.9%胜率, 10胜1负, PF 12.09)
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.topN, 10);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.minDayChange, 20.0);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.xMinutes, 3);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.ampDivisor, 3.5);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.minAbsoluteSurge, 4.0);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.deviationPeriod, 30);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.minDeviationPercent, 1.5);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.holdMinutes, 20);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.exitX, 30);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.exitN, 2.0);
-  assert.equal(EXTREME_DEV_LIVE_DEFAULT_CONFIG.exitM, 2.0);
 });
 
 test('UnifiedShortStrategyTracker manages active positions and prevents double-entry conflicts', () => {
@@ -203,149 +173,17 @@ test('UnifiedShortStrategyTracker triggers 新高顶背离 signal when MACD bear
   assert.ok(sig.details.streakSignal!.divergence!.curDif < sig.details.streakSignal!.divergence!.prevDif);
 });
 
-test('UnifiedShortStrategyTracker triggers 冲高极度乖离 signal when 3m surge and MA30 deviation exceed thresholds', () => {
-  const tracker = new UnifiedShortStrategyTracker();
+test('UnifiedShortStrategyTracker saves and restores reboundWatchlist', () => {
+  const tracker1 = new UnifiedShortStrategyTracker();
+  tracker1.onRankUpdate('TESTUSDT', 35.0, 1000);
+  const list = tracker1.getReboundWatchlist();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].symbol, 'TESTUSDT');
 
-  const now = 1700000000000;
-  const candles: Candle[] = [];
-
-  // 46 baseline bars at 100
-  for (let i = 0; i < 46; i++) {
-    candles.push({
-      time: now + i * 60000,
-      open: 100,
-      high: 100.5,
-      low: 99.5,
-      close: 100,
-      volume: 1000,
-    });
-  }
-
-  // Bar 46: start surge
-  candles.push({
-    time: now + 46 * 60000,
-    open: 100,
-    high: 103,
-    low: 100,
-    close: 103,
-    volume: 5000,
-  });
-
-  // Bar 47: continue surge
-  candles.push({
-    time: now + 47 * 60000,
-    open: 103,
-    high: 106,
-    low: 103,
-    close: 106,
-    volume: 6000,
-  });
-
-  // Bar 48 (targetIndex): spike up to 110 (+10% in 3m)
-  candles.push({
-    time: now + 48 * 60000,
-    open: 106,
-    high: 110,
-    low: 106,
-    close: 110,
-    volume: 8000,
-  });
-
-  // Bar 49: forming bar
-  candles.push({
-    time: now + 49 * 60000,
-    open: 110,
-    high: 110.5,
-    low: 109.8,
-    close: 110,
-    volume: 100,
-  });
-
-  const checkTime = now + 49 * 60000;
-  const sig = tracker.checkCandles('SURGEUSDT', 25.0, 1, candles, checkTime);
-
-  assert.ok(sig !== null, '冲高极度乖离 signal should trigger');
-  assert.equal(sig.type, 'extreme_dev');
-  assert.equal(sig.label, '冲高极度乖离');
-  assert.equal(sig.symbol, 'SURGEUSDT');
-  assert.equal(sig.entryPrice, 110);
-  assert.equal(sig.exitParams.holdMinutes, 20);
-  assert.equal(sig.exitParams.exitX, 30);
-  assert.equal(sig.exitParams.exitN, 2.0);
-  assert.equal(sig.exitParams.exitM, 2.0);
-  assert.ok(sig.details.extremeDevSignal != null);
-  assert.ok(sig.details.extremeDevSignal!.surgePercent >= 9.9);
-  assert.ok(sig.details.extremeDevSignal!.maDeviation >= 8.0);
-
-  // Verify conflict protection: symbol should now be busy
-  assert.equal(tracker.isSymbolBusy('SURGEUSDT', checkTime), true);
-
-  // Duplicate call should be blocked by conflict prevention
-  const duplicateSig = tracker.checkCandles('SURGEUSDT', 25.0, 1, candles, checkTime);
-  assert.equal(duplicateSig, null, 'Duplicate signal should be prevented while position active');
-});
-
-test('Priority hierarchy: 新高顶背离 (10x 闪击) takes priority over 冲高极度乖离 (3x 波段) on ATH divergence', () => {
-  const tracker = new UnifiedShortStrategyTracker({
-    streakConfig: {
-      ampDivisor: 25,
-      requireMacdDivergence: true,
-      requireDoubleDivergence: true,
-      divergenceLookbackMin: 10,
-      divergenceLookbackMax: 50,
-      requireBearish: true,
-    },
-  });
-
-  const now = 1700000000000;
-  const candles: Candle[] = [];
-  let basePrice = 100;
-
-  // Wave 1: 0..30 (Fast rise to establish peak 1 with high MACD)
-  for (let i = 0; i < 30; i++) {
-    const time = now + i * 60000;
-    const open = basePrice;
-    const close = basePrice + 1.2;
-    const high = close + 0.1;
-    const low = open + 0.2;
-    basePrice = close;
-    candles.push({ time, open, high, low, close, volume: 1000 });
-  }
-
-  // Pullback: 30..42
-  for (let i = 30; i < 42; i++) {
-    const time = now + i * 60000;
-    const open = basePrice;
-    const close = basePrice - 0.3;
-    const high = open + 0.1;
-    const low = close - 0.1;
-    basePrice = close;
-    candles.push({ time, open, high, low, close, volume: 1000 });
-  }
-
-  // Wave 2: 42..55 (Rise to higher high with 3m surge & MA30 deviation > 1.5%, ending with red confirmation candle)
-  for (let i = 42; i < 55; i++) {
-    const time = now + i * 60000;
-    let open = basePrice;
-    let close = basePrice + 0.35;
-    let high = close + 0.05;
-    let low = open + 0.1;
-    if (i === 53) {
-      // Completed signal candle closes red to confirm false breakout
-      open = basePrice + 0.5;
-      close = basePrice - 0.2;
-      high = open + 0.5;
-      low = close - 0.1;
-    }
-    basePrice = close;
-    candles.push({ time, open, high, low, close, volume: 1000 });
-  }
-
-  // Day change is 30% (which easily qualifies for extremeDev minDayChange 20%), rank 1
-  const sig = tracker.checkCandles('PRIORITYUSDT', 30.0, 1, candles, now + 55 * 60000);
-  assert.ok(sig !== null, 'Signal should trigger');
-  // Must trigger 新高顶背离 instead of being intercepted by 冲高极度乖离!
-  assert.equal(sig.type, 'streak', '新高顶背离 should take precedence over 冲高极度乖离');
-  assert.equal(sig.label, '新高顶背离');
-  assert.equal(sig.exitParams.holdMinutes, 15);
+  const tracker2 = new UnifiedShortStrategyTracker();
+  tracker2.restoreReboundWatchlist(list);
+  const restored = tracker2.getReboundWatchlist();
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].symbol, 'TESTUSDT');
+  assert.equal(restored[0].dayChangeAtRank1, 35.0);
 });

@@ -625,8 +625,8 @@ test("PaperTradingEngine: LONG position opens with inverted price thresholds (TP
     dayChangePercent: 30.0,
     entryPrice: 10.0,
     entryTime: now,
-    signalType: "ma30_pullback",
-    signalLabel: "龙头MA30回踩",
+    signalType: "w_bottom_divergence",
+    signalLabel: "左侧3W底背离",
     exitParams: {
       holdMinutes: 90,
       tp1Percent: 3.0,
@@ -646,8 +646,8 @@ test("PaperTradingEngine: LONG position opens with inverted price thresholds (TP
   });
 
   assert.equal(pos.side, "LONG");
-  assert.equal(pos.signalType, "ma30_pullback");
-  assert.equal(pos.signalLabel, "龙头MA30回踩");
+  assert.equal(pos.signalType, "w_bottom_divergence");
+  assert.equal(pos.signalLabel, "左侧3W底背离");
   assert.equal(pos.leverage, 3);
   assert.equal(pos.marginUsdt, 20);
   assert.equal(pos.notionalUsdt, 60);
@@ -679,7 +679,7 @@ test("PaperTradingEngine: LONG position executes 2-stage TP and locks breakeven 
     dayChangePercent: 30.0,
     entryPrice: 100.0,
     entryTime: now,
-    signalType: "ma60_support",
+    signalType: "w_bottom_divergence",
     exitParams: {
       holdMinutes: 60,
       tp1Percent: 3.0,
@@ -753,7 +753,7 @@ test("PaperTradingEngine: LONG position stop-loss triggers with stopAtLow candle
     dayChangePercent: 25.0,
     entryPrice: 100.0,
     entryTime: now,
-    signalType: "ma30_pullback",
+    signalType: "w_bottom_divergence",
     exitParams: {
       holdMinutes: 90,
       exitX: 50,
@@ -832,18 +832,18 @@ test("PaperTradingEngine: supports 5 simultaneous positions (3 Shorts + 2 Longs)
     consecutiveGreenBars: 5,
   };
 
-  // 1. Short 1: 冲高极度乖离 (extreme_dev) - 90.9% 胜率
+  // 1. Short 1: 新高闪击 (streak)
   engine.openPosition({
-    symbol: "SHORT_DEV",
+    symbol: "SHORT_STREAK",
     side: "SHORT",
     dayChangePercent: 30,
     entryPrice: 100,
     entryTime: now,
-    signalType: "extreme_dev",
+    signalType: "streak",
     signal: dummySignal,
   });
 
-  // 2. Short 2: 跌到20%+ (deep_rebound) - 87.5% 胜率
+  // 2. Short 2: 跌到20%+ (deep_rebound)
   engine.openPosition({
     symbol: "SHORT_DEEP",
     side: "SHORT",
@@ -854,7 +854,7 @@ test("PaperTradingEngine: supports 5 simultaneous positions (3 Shorts + 2 Longs)
     signal: dummySignal,
   });
 
-  // 3. Short 3: 首次跌10% (rebound) - 80.0% 胜率
+  // 3. Short 3: 首次跌10% (rebound)
   engine.openPosition({
     symbol: "SHORT_REB",
     side: "SHORT",
@@ -865,53 +865,36 @@ test("PaperTradingEngine: supports 5 simultaneous positions (3 Shorts + 2 Longs)
     signal: dummySignal,
   });
 
-  // 4. Long 1: 龙头MA30黄金回踩 (ma30_pullback) - 75.7% 胜率
+  // 4. Long 1: 左侧3W底背离 (w_bottom_divergence)
   engine.openPosition({
-    symbol: "LONG_MA30",
-    side: "LONG",
-    dayChangePercent: 28,
-    entryPrice: 10,
-    entryTime: now,
-    signalType: "ma30_pullback",
-    signal: dummySignal,
-  });
-
-  // 5. Long 2: 龙头MA60深度深蹲 (ma60_support) - 77.8% 胜率
-  engine.openPosition({
-    symbol: "LONG_MA60",
+    symbol: "LONG_WBOTTOM",
     side: "LONG",
     dayChangePercent: 26,
     entryPrice: 5,
     entryTime: now,
-    signalType: "ma60_support",
+    signalType: "w_bottom_divergence",
     signal: dummySignal,
   });
 
-  // All 5 strategies are active simultaneously!
+  // All 4 active strategies are concurrently running!
   const state = engine.getState();
-  assert.equal(state.activePositions.length, 5, "5 strategies concurrently running");
-  assert.equal(engine.countPositionsByStrategy("extreme_dev"), 1);
+  assert.equal(state.activePositions.length, 4, "4 core strategies concurrently running");
+  assert.equal(engine.countPositionsByStrategy("streak"), 1);
   assert.equal(engine.countPositionsByStrategy("deep_rebound"), 1);
   assert.equal(engine.countPositionsByStrategy("rebound"), 1);
-  assert.equal(engine.countPositionsByStrategy("ma30_pullback"), 1);
-  assert.equal(engine.countPositionsByStrategy("ma60_support"), 1);
+  assert.equal(engine.countPositionsByStrategy("w_bottom_divergence"), 1);
 
-  // Each takes 20 USDT margin, total used = 100 USDT (100% capacity)
-  assert.equal(engine.calculateUsedMargin(), 100);
-
-  // 6th position attempt should exceed quota and be prevented
-  assert.equal(engine.calculateUsedMargin() >= engine.getAccount().balanceUsdt, true);
+  // Each takes 20 USDT margin, total used = 80 USDT
+  assert.equal(engine.calculateUsedMargin(), 80);
 });
 
-test("PaperTradingEngine: default enables 1245 configuration (w_bottom, rebound, streak, deep_rebound) and disables 3 (pullback_rebound)", () => {
+test("PaperTradingEngine: default enables 1245 configuration (w_bottom, rebound, streak, deep_rebound)", () => {
   const engine = new PaperTradingEngine({ storageFile: null });
   const cfg = engine.getConfig();
 
   assert.equal(cfg.enableWBottomDivergence, true, "enableWBottomDivergence must be true by default (策略 1)");
   assert.equal(cfg.enableRebound, true, "enableRebound must be true by default (策略 2)");
-  assert.equal(cfg.enablePullbackRebound, false, "enablePullbackRebound must be false by default (策略 3 剔除)");
   assert.equal(cfg.enableStreak, true, "enableStreak must be true by default (策略 4)");
   assert.equal(cfg.enableDeepRebound, true, "enableDeepRebound must be true by default (策略 5)");
-  assert.equal(cfg.enableExtremeDev, false, "enableExtremeDev must be false by default");
   assert.equal(cfg.enableLongs, true, "enableLongs must be true by default");
 });

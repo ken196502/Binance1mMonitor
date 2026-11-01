@@ -32,7 +32,7 @@ export const PEAK_REBOUND_LIVE_DEFAULT_CONFIG: PeakReboundLiveConfig = {
   mediumMa: 15,
   longMa: 30,
   longMaOffsetPercent: 0.5,
-  minGreenRatio20: 0.65,
+  minGreenRatio20: 0.35,
   requireMaSlopeDown: true,
   holdMinutes: 30,
   exitX: 35,
@@ -119,6 +119,16 @@ export class PeakReboundStrategyTracker {
     return Array.from(this.watchlist.values());
   }
 
+  public restoreWatchlist(states: WatchState[]): void {
+    if (!Array.isArray(states)) return;
+    this.watchlist.clear();
+    for (const item of states) {
+      if (item && item.symbol) {
+        this.watchlist.set(item.symbol, { ...item });
+      }
+    }
+  }
+
   public isWatching(symbol: string): boolean {
     return this.watchlist.has(symbol);
   }
@@ -164,12 +174,39 @@ export class PeakReboundStrategyTracker {
     const maLong = calcMa(this.config.longMa);
 
     if (item.peakPrice === 0) {
-      item.peakPrice = candle.high;
-      item.peakTime = candle.time;
-      item.troughPrice = candle.low;
-      item.troughTime = candle.time;
-      item.troughIndex = targetIdx;
-      item.state = 'watching_peak';
+      // 首次初始化：从近期已有 K 线（至多近 120 根）反推真实峰值与谷值，避免重启时将已深跌的价格误设为最高点
+      let maxH = 0;
+      let maxHTime = candle.time;
+      let minL = Infinity;
+      let minLTime = candle.time;
+      let minLIdx = targetIdx;
+      const historyStart = Math.max(0, targetIdx - 120);
+      for (let k = historyStart; k <= targetIdx; k++) {
+        if (candles[k].high > maxH) {
+          maxH = candles[k].high;
+          maxHTime = candles[k].time;
+        }
+      }
+      for (let k = historyStart; k <= targetIdx; k++) {
+        if (candles[k].time >= maxHTime && candles[k].low < minL) {
+          minL = candles[k].low;
+          minLTime = candles[k].time;
+          minLIdx = k;
+        }
+      }
+      item.peakPrice = maxH > 0 ? maxH : candle.high;
+      item.peakTime = maxHTime;
+      item.troughPrice = minL < Infinity ? minL : candle.low;
+      item.troughTime = minLTime;
+      item.troughIndex = minLIdx;
+
+      const pullback = ((item.peakPrice - item.troughPrice) / item.peakPrice) * 100;
+      if (pullback >= this.config.pullbackX) {
+        const rebound = ((candle.high - item.troughPrice) / item.troughPrice) * 100;
+        item.state = rebound >= this.config.reboundY ? 'rebounded' : 'pulled_back';
+      } else {
+        item.state = 'watching_peak';
+      }
       return null;
     }
 

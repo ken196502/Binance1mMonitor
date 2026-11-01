@@ -80,40 +80,15 @@ export interface HighBearState extends HighBullSummary {
 // ---- 模拟交易 (Paper Trading) ----
 export type PaperExitReason = "target" | "stop" | "timeout";
 export type PaperSignalType =
-  | "streak"
-  | "rebound"
-  | "deep_rebound"
-  | "extreme_dev"
-  | "pullback_rebound"
-  | "w_bottom_divergence"
-  | "consolidation_support"
-  | "consolidation_breakout"
-  | "consolidation_long"
-  | "ma30_pullback"
-  | "ma60_support"
-  | "rank1_first_pullback"
-  | "second_wave_expansion";
+  | "w_bottom_divergence" // 策略 1: 左侧3W底背离弹射做多
+  | "rebound"             // 策略 2: 首次跌10%弱反弹做空
+  | "streak"              // 策略 4: 新高顶背离闪击做空
+  | "deep_rebound";       // 策略 5: 跌到20%+次级反弹做空
 export type PaperSignalLabel =
-  | "连阳悬空"
-  | "首次跌10%"
-  | "跌到20%+"
-  | "空连阳"
-  | "空弱反弹"
-  | "超跌反弹"
-  | "新高顶背离"
-  | "冲高极度乖离"
-  | "极度乖离"
-  | "右侧回调反弹"
   | "左侧3W底背离"
-  | "震荡托底做多"
-  | "震荡突破做多"
-  | "震荡蓄势做多"
-  | "龙头MA30回踩"
-  | "龙头MA60深蹲"
-  | "龙头MA30黄金回踩"
-  | "龙头MA60深蹲托底"
-  | "榜一首次回踩"
-  | "龙头二浪突破";
+  | "首次跌10%"
+  | "新高顶背离"
+  | "跌到20%+";
 
 export interface PaperExitParams {
   holdMinutes: number;
@@ -250,6 +225,7 @@ export interface PaperTradingState {
   closedPositions: PaperPosition[];
   stats: PaperTradingStats;
   updatedAt: string;
+  reboundWatchlist?: any[];
   summary?: PaperTradingSummary;
 }
 

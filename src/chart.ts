@@ -78,7 +78,7 @@ export function parseChartQuery(rawSymbol: string | null, rawLimit: string | nul
   limit: number;
 } | null {
   const symbol = (rawSymbol ?? "").trim().toUpperCase();
-  if (!/^[A-Z0-9]{4,24}$/.test(symbol)) return null;
+  if (!/^[\p{L}\p{N}_]{3,30}$/u.test(symbol)) return null;
   const parsed = Number(rawLimit);
   const limit = Number.isFinite(parsed) && parsed > 0
     ? Math.min(Math.trunc(parsed), CHART_MAX_LIMIT)
