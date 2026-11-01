@@ -32,7 +32,7 @@ export const PEAK_REBOUND_LIVE_DEFAULT_CONFIG: PeakReboundLiveConfig = {
   mediumMa: 15,
   longMa: 30,
   longMaOffsetPercent: 0.5,
-  minGreenRatio20: 0.35,
+  minGreenRatio20: 0.55,
   requireMaSlopeDown: true,
   holdMinutes: 30,
   exitX: 35,
@@ -117,6 +117,10 @@ export class PeakReboundStrategyTracker {
 
   public getWatchlist(): WatchState[] {
     return Array.from(this.watchlist.values());
+  }
+
+  public updateConfig(updates: Partial<PeakReboundLiveConfig>): void {
+    this.config = { ...this.config, ...updates };
   }
 
   public restoreWatchlist(states: WatchState[]): void {

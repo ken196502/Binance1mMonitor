@@ -18,7 +18,7 @@ test('Default strategy configurations match verified specifications', () => {
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.longMaOffsetPercent, 0.5);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.pullbackX, 10.0);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.reboundY, 4.0);
-  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.35);
+  assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.55);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.requireMaSlopeDown, true);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.holdMinutes, 30);
   assert.equal(PEAK_REBOUND_LIVE_DEFAULT_CONFIG.exitX, 35);
@@ -47,7 +47,7 @@ test('Default strategy configurations match verified specifications', () => {
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.lowWindowMinutes, 10);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.shortMa, 15);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.longMa, 30);
-  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.35);
+  assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.minGreenRatio20, 0.55);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.requireMaSlopeDown, true);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.holdMinutes, 30);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitX, 35);

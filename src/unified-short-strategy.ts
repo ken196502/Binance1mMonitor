@@ -84,7 +84,7 @@ export const DEEP_REBOUND_LIVE_DEFAULT_CONFIG: DeepReboundLiveConfig = {
   lowWindowMinutes: 10,
   shortMa: 15,
   longMa: 30,
-  minGreenRatio20: 0.35,
+  minGreenRatio20: 0.55,
   requireMaSlopeDown: true,
   holdMinutes: 30,
   exitX: 35,
@@ -254,6 +254,16 @@ export class UnifiedShortStrategyTracker {
     if (typeof updates.enableRebound === "boolean") this.config.enableRebound = updates.enableRebound;
     if (typeof updates.enableDeepRebound === "boolean") this.config.enableDeepRebound = updates.enableDeepRebound;
     if (typeof updates.preventConflict === "boolean") this.config.preventConflict = updates.preventConflict;
+    if (updates.streakConfig && typeof updates.streakConfig === "object") {
+      this.config.streakConfig = { ...this.config.streakConfig, ...updates.streakConfig };
+    }
+    if (updates.reboundConfig && typeof updates.reboundConfig === "object") {
+      this.config.reboundConfig = { ...this.config.reboundConfig, ...updates.reboundConfig };
+      this.reboundTracker.updateConfig(this.config.reboundConfig);
+    }
+    if (updates.deepReboundConfig && typeof updates.deepReboundConfig === "object") {
+      this.config.deepReboundConfig = { ...this.config.deepReboundConfig, ...updates.deepReboundConfig };
+    }
   }
 
   /**

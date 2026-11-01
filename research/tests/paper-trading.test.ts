@@ -898,3 +898,19 @@ test("PaperTradingEngine: default enables 1245 configuration (w_bottom, rebound,
   assert.equal(cfg.enableDeepRebound, true, "enableDeepRebound must be true by default (策略 5)");
   assert.equal(cfg.enableLongs, true, "enableLongs must be true by default");
 });
+
+test("PaperTradingEngine: updateConfig dynamically updates nested sub-strategy parameters via API", () => {
+  const engine = new PaperTradingEngine({ storageFile: null });
+
+  assert.equal(engine.getConfig().reboundConfig?.minGreenRatio20, 0.55);
+  assert.equal(engine.getConfig().streakConfig?.divergenceLookbackMax, 20);
+
+  engine.updateConfig({
+    reboundConfig: { minGreenRatio20: 0.60 },
+    streakConfig: { divergenceLookbackMax: 25 },
+  });
+
+  const updated = engine.getConfig();
+  assert.equal(updated.reboundConfig?.minGreenRatio20, 0.60);
+  assert.equal(updated.streakConfig?.divergenceLookbackMax, 25);
+});

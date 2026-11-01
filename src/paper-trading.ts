@@ -134,7 +134,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   storageFile: STATE_FILE,
   streakConfig: {
     ...STREAK_LIVE_DEFAULT_CONFIG,
-    divergenceLookbackMax: 45, // 平滑背离回测窗口至 10~45 根 K 线，避免错失双顶
+    divergenceLookbackMax: 20, // 紧邻双顶 20 根，严格遵从回测验证
   },
   reboundConfig: {
     ...DUAL_SPEED_PEAK_REBOUND_CONFIG,
@@ -143,7 +143,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     tp2Percent: 8.0,
     stopLossPercent: 7.0,
     moveSlToEntryAfterTp1: true,
-    minGreenRatio20: 0.35, // 优化：由 0.65 调整为 0.35，避免在见顶深度回撤空头排列中因 MACD 绿柱比例过高而窒息拦截
+    minGreenRatio20: 0.55, // 回测验证最优：0.55 兼顾胜率与收益比
   },
   deepReboundConfig: {
     ...DUAL_SPEED_DEEP_REBOUND_CONFIG,
@@ -152,7 +152,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     tp2Percent: 8.0,
     stopLossPercent: 7.0,
     moveSlToEntryAfterTp1: true,
-    minGreenRatio20: 0.35, // 优化：跌20%+深跌空头行情中，放宽至近20根1m MACD绿柱 >= 35%
+    minGreenRatio20: 0.55, // 回测验证最优：0.55
   },
   wBottomDivergenceConfig: {
     ...W_BOTTOM_DIVERGENCE_DEFAULT_CONFIG,
@@ -463,6 +463,22 @@ export class PaperTradingEngine {
     }
     if (typeof updates.holdMinutes === "number" && Number.isFinite(updates.holdMinutes) && updates.holdMinutes > 0) {
       this.config.holdMinutes = updates.holdMinutes;
+    }
+    if (updates.streakConfig && typeof updates.streakConfig === "object") {
+      this.config.streakConfig = { ...this.config.streakConfig, ...updates.streakConfig };
+      this.unifiedTracker.updateConfig({ streakConfig: this.config.streakConfig });
+    }
+    if (updates.reboundConfig && typeof updates.reboundConfig === "object") {
+      this.config.reboundConfig = { ...this.config.reboundConfig, ...updates.reboundConfig };
+      this.unifiedTracker.updateConfig({ reboundConfig: this.config.reboundConfig });
+    }
+    if (updates.deepReboundConfig && typeof updates.deepReboundConfig === "object") {
+      this.config.deepReboundConfig = { ...this.config.deepReboundConfig, ...updates.deepReboundConfig };
+      this.unifiedTracker.updateConfig({ deepReboundConfig: this.config.deepReboundConfig });
+    }
+    if (updates.wBottomDivergenceConfig && typeof updates.wBottomDivergenceConfig === "object") {
+      this.config.wBottomDivergenceConfig = { ...this.config.wBottomDivergenceConfig, ...updates.wBottomDivergenceConfig };
+      this.longTracker.updateConfig({ wBottomDivergenceConfig: this.config.wBottomDivergenceConfig });
     }
 
     const currentMargin = this.calculateOrderMargin();
@@ -1582,6 +1598,10 @@ export class PaperTradingEngine {
           enableLongs: this.config.enableLongs,
           enableWBottomDivergence: this.config.enableWBottomDivergence,
           holdMinutes: this.config.holdMinutes,
+          streakConfig: this.config.streakConfig,
+          reboundConfig: this.config.reboundConfig,
+          deepReboundConfig: this.config.deepReboundConfig,
+          wBottomDivergenceConfig: this.config.wBottomDivergenceConfig,
         },
       };
       fs.writeFileSync(this.config.storageFile, JSON.stringify(data, null, 2), "utf8");
@@ -1698,6 +1718,22 @@ export class PaperTradingEngine {
             this.longTracker.updateConfig({ enableWBottomDivergence: cfg.enableWBottomDivergence });
           }
           if (typeof cfg.holdMinutes === "number") this.config.holdMinutes = cfg.holdMinutes;
+          if (cfg.streakConfig && typeof cfg.streakConfig === "object") {
+            this.config.streakConfig = { ...this.config.streakConfig, ...cfg.streakConfig };
+            this.unifiedTracker.updateConfig({ streakConfig: this.config.streakConfig });
+          }
+          if (cfg.reboundConfig && typeof cfg.reboundConfig === "object") {
+            this.config.reboundConfig = { ...this.config.reboundConfig, ...cfg.reboundConfig };
+            this.unifiedTracker.updateConfig({ reboundConfig: this.config.reboundConfig });
+          }
+          if (cfg.deepReboundConfig && typeof cfg.deepReboundConfig === "object") {
+            this.config.deepReboundConfig = { ...this.config.deepReboundConfig, ...cfg.deepReboundConfig };
+            this.unifiedTracker.updateConfig({ deepReboundConfig: this.config.deepReboundConfig });
+          }
+          if (cfg.wBottomDivergenceConfig && typeof cfg.wBottomDivergenceConfig === "object") {
+            this.config.wBottomDivergenceConfig = { ...this.config.wBottomDivergenceConfig, ...cfg.wBottomDivergenceConfig };
+            this.longTracker.updateConfig({ wBottomDivergenceConfig: this.config.wBottomDivergenceConfig });
+          }
         }
         console.log(
           `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,

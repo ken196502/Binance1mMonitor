@@ -146,6 +146,12 @@ export class UnifiedLongStrategyTracker {
     if (typeof updates.preventConflict === 'boolean') {
       this.config.preventConflict = updates.preventConflict;
     }
+    if (updates.wBottomDivergenceConfig && typeof updates.wBottomDivergenceConfig === 'object') {
+      this.config.wBottomDivergenceConfig = {
+        ...this.config.wBottomDivergenceConfig,
+        ...updates.wBottomDivergenceConfig,
+      };
+    }
   }
 
   /**
