@@ -290,7 +290,6 @@ export function PaperTradingPanel({
     accountRoiPercent: 0,
   };
 
-  const winRate = summary ? summary.winRate : 0;
   const pf = summary ? summary.profitFactor : 1;
   const activePositions = summary?.activePositions ?? [];
   const pendingOrders = summary?.pendingOrders ?? [];
@@ -314,7 +313,7 @@ export function PaperTradingPanel({
               双速杠杆 ({streakLev}x 闪击 / {trendLev}x 波段) · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions} (每策略 {maxPerStrategy})
             </span>
             <span className="badge-strategy">
-              4大核心策略 · 3大做空 (首次跌10% 83.3% · 新高顶背离10x 80.0% · 跌到20%+ 100%) + 1大做多 (左侧3W底背离 68.8% ~ 76.6%) · 两段动态止盈止损
+              4大核心策略 · 首次跌10% · 新高顶背离 · 跌到20%+ · 左侧3W底背离
             </span>
           </h2>
           <div className="paper-stats-chips">
@@ -325,9 +324,6 @@ export function PaperTradingPanel({
             <span className="chip">
               可用保证金: <b>{account.availableMarginUsdt.toFixed(2)} USDT</b>
               <small> (本金 {account.initialBalanceUsdt.toFixed(0)}U)</small>
-            </span>
-            <span className="chip chip-winrate">
-              胜率: <b>{winRate.toFixed(1)}%</b>
             </span>
             <span className="chip">
               盈亏比 (PF): <b>{Number.isFinite(pf) ? pf.toFixed(2) : "∞"}</b>
@@ -462,7 +458,7 @@ export function PaperTradingPanel({
             <div className="empty-paper-state">
               <span className="empty-icon">📡</span>
               <span className="empty-text">
-                当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔，保证各大策略各持仓至多 1 笔) · 3大做空 (首次跌10%、新高顶背离10x、跌20%+) + 1大做多 (左侧3W底背离)
+                当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔) · 首次跌10% · 新高顶背离 · 跌到20%+ · 左侧3W底背离
               </span>
             </div>
           ) : null
@@ -676,7 +672,7 @@ export function PaperTradingPanel({
               <div className="config-form-group">
                 <label>
                   <span>⚡ 新高顶背离闪击杠杆 (Streak Leverage)</span>
-                  <small>15m 紧止损 · 回测最优 10x (零爆仓)</small>
+                  <small>15m 紧止损 · 默认 10x</small>
                 </label>
                 <input
                   type="number"
@@ -692,7 +688,7 @@ export function PaperTradingPanel({
               <div className="config-form-group">
                 <label>
                   <span>🛡️ 顺势衰竭长波段杠杆 (Trend Leverage)</span>
-                  <small>90m 波段 / 10% 大止损 · 最优 3x 黄金低杠杆</small>
+                  <small>90m 波段 / 10% 止损 · 默认 3x 低杠杆</small>
                 </label>
                 <input
                   type="number"
@@ -740,7 +736,7 @@ export function PaperTradingPanel({
               <div className="config-form-group">
                 <label>
                   <span>⚖️ 单策略最大持仓数 (Max Per Strategy)</span>
-                  <small>默认 1 笔 (保证四大做空策略各持仓至少 1 笔，互不挤占)</small>
+                  <small>默认 1 笔 (保证各大策略各持仓至多 1 笔，互不挤占)</small>
                 </label>
                 <input
                   type="number"
@@ -774,9 +770,9 @@ export function PaperTradingPanel({
                   type="button"
                   className="btn-preset-reset"
                   onClick={handleResetOptimal}
-                  title="恢复量化研究皇冠最优推荐：新高背离10x、顺势衰竭3x、动态20%仓位、限5仓(每策略至多1仓)、市价直开"
+                  title="恢复默认推荐：新高背离10x、顺势衰竭3x、动态20%仓位、限5仓(每策略至多1仓)、市价直开"
                 >
-                  恢复皇冠最优推荐
+                  恢复默认推荐
                 </button>
                 <button
                   type="submit"
