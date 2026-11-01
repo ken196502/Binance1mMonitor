@@ -35,7 +35,9 @@ test('Default strategy configurations match verified specifications', () => {
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitX, 50);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitN, 1.5);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.exitM, 3.0);
-  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.requireMacdDivergence, true);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.requireDeaDivergence, true);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.deaLookbackMinutes, 30);
+  assert.equal(STREAK_LIVE_DEFAULT_CONFIG.requireMacdDivergence, false);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.divergenceLookbackMin, 10);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.divergenceLookbackMax, 20);
   assert.equal(STREAK_LIVE_DEFAULT_CONFIG.requireDoubleDivergence, true);
@@ -84,7 +86,7 @@ test('UnifiedShortStrategyTracker manages active positions and prevents double-e
 
 test('UnifiedShortStrategyTracker triggers streak signal with verified parameters', () => {
   const tracker = new UnifiedShortStrategyTracker({
-    streakConfig: { requireMacdDivergence: false, requireBearish: false },
+    streakConfig: { requireDeaDivergence: false, requireMacdDivergence: false, requireBearish: false },
   });
 
   // Create 50 rising candles suitable for streak signal
@@ -171,6 +173,62 @@ test('UnifiedShortStrategyTracker triggers 新高顶背离 signal when MACD bear
   assert.ok(sig.details.streakSignal?.divergence != null, 'Divergence details should be present');
   assert.ok(sig.details.streakSignal!.divergence!.curHist < sig.details.streakSignal!.divergence!.prevHist);
   assert.ok(sig.details.streakSignal!.divergence!.curDif < sig.details.streakSignal!.divergence!.prevDif);
+});
+
+test('UnifiedShortStrategyTracker triggers 新高顶背离 with Option B (DEA bearish divergence and rollover)', () => {
+  const tracker = new UnifiedShortStrategyTracker(); // Uses default STREAK_LIVE_DEFAULT_CONFIG (requireDeaDivergence: true)
+
+  const now = 1700000000000;
+  const candles: Candle[] = [];
+  let basePrice = 100;
+
+  // 1. Initial surge to establish peak DEA (0..35)
+  for (let i = 0; i < 35; i++) {
+    const time = now + i * 60000;
+    const open = basePrice;
+    const close = basePrice + 1.0;
+    const high = close + 0.1;
+    const low = open + 0.1;
+    basePrice = close;
+    candles.push({ time, open, high, low, close, volume: 1000 });
+  }
+
+  // 2. Slower consolidation/pullback where DEA peaks and begins to plateau (35..45)
+  for (let i = 35; i < 45; i++) {
+    const time = now + i * 60000;
+    const open = basePrice;
+    const close = basePrice - 0.2;
+    const high = open + 0.1;
+    const low = close - 0.1;
+    basePrice = close;
+    candles.push({ time, open, high, low, close, volume: 1000 });
+  }
+
+  // 3. New high push (45..54): Price makes new 24h high, but slower than the initial surge so DEA is lower than 10 mins ago
+  for (let i = 45; i < 54; i++) {
+    const time = now + i * 60000;
+    let open = basePrice;
+    let close = basePrice + 0.4;
+    let high = close + 0.05;
+    let low = open + 0.1;
+    if (i === 52) {
+      // Completed bar: price touches new high but candle closes red (bearish confirmation bar)
+      open = basePrice;
+      close = basePrice - 0.3;
+      high = open + 0.5;
+      low = close - 0.1;
+    }
+    basePrice = close;
+    candles.push({ time, open, high, low, close, volume: 1000 });
+  }
+
+  const sig = tracker.checkCandles('DEATEST', 12.0, 2, candles, now + 54 * 60000);
+  assert.ok(sig !== null, 'Option B DEA divergence signal should trigger');
+  assert.equal(sig.type, 'streak');
+  assert.equal(sig.label, '新高顶背离');
+  assert.ok(sig.details.streakSignal?.divergence != null);
+  assert.ok(sig.details.streakSignal!.divergence!.deaPeakOffsetBars! >= 1);
+  assert.ok(sig.details.streakSignal!.divergence!.curDea! < sig.details.streakSignal!.divergence!.maxDea!);
 });
 
 test('UnifiedShortStrategyTracker saves and restores reboundWatchlist', () => {

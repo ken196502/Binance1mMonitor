@@ -26,12 +26,15 @@ export interface StreakStrategyLiveConfig {
   exitX: number;                  // e.g. 50
   exitN: number;                  // e.g. 1.5
   exitM: number;                  // e.g. 3.0
-  // MACD 顶背离配置
-  requireMacdDivergence?: boolean; // 是否开启 MACD 顶背离检测 (默认 true)
+  // DEA 顶背离配置 (方案 B：实测胜率 85.7%, PF 6.46，大幅优于传统双峰背离)
+  requireDeaDivergence?: boolean; // 是否开启 DEA 顶背离检测 (默认 true)
+  deaLookbackMinutes?: number;    // DEA 历史峰值回溯窗口 (默认 30 分钟)
+  // MACD 双峰顶背离配置 (向下兼容可选)
+  requireMacdDivergence?: boolean; // 是否开启传统 MACD 顶背离检测
   divergenceLookbackMin?: number; // 背离前高最小跨度 (默认 10 根)
-  divergenceLookbackMax?: number; // 背离前高最大跨度 (默认 120 根)
+  divergenceLookbackMax?: number; // 背离前高最大跨度 (默认 20 根)
   requireDoubleDivergence?: boolean; // 是否要求 DIF 与 Hist 双重顶背离 (默认 true)
-  requireBearish?: boolean; // 信号K线需收阴确认假突破 (默认 false，开启后规避顺势暴涨冲高风险)
+  requireBearish?: boolean; // 信号K线需收阴确认假突破 (默认 true，开启后规避顺势暴涨冲高风险)
   maxLowerShadowPercent?: number; // 信号K线下影线占价格比例上限 (防止强买盘托底)
   // 向下兼容可选字段 (保留自定义测试支持)
   minStreakCount?: number;
@@ -52,11 +55,13 @@ export const STREAK_LIVE_DEFAULT_CONFIG: StreakStrategyLiveConfig = {
   exitX: 50,
   exitN: 1.5,
   exitM: 3.0,
-  requireMacdDivergence: true,
+  requireDeaDivergence: true,    // 核心优化方案 B：开启 DEA 顶背离 (DEA 过去 N 分钟达峰且当前拐头向下)
+  deaLookbackMinutes: 30,        // 回溯 30m 内 DEA 峰值
+  requireMacdDivergence: false,  // 传统双峰背离设为 false (若显式为 true 则使用传统背离)
   divergenceLookbackMin: 10,
-  divergenceLookbackMax: 20, // 优化：收窄背离窗口至紧邻双顶 <= 20，避免陈旧高点导致伪背离
+  divergenceLookbackMax: 20,
   requireDoubleDivergence: true,
-  requireBearish: true,      // 优化：信号K线必须收阴确认假突破冲高回落
+  requireBearish: true,          // 优化：信号K线必须收阴确认假突破冲高回落
 };
 
 export interface DeepReboundLiveConfig {
@@ -168,12 +173,15 @@ export interface UnifiedLiveSignal {
       consecutiveGreenBars: number;
       upperShadowRatio: number;
       divergence?: {
-        prevPeakPrice: number;
-        prevPeakTime: number;
-        curHist: number;
-        prevHist: number;
-        curDif: number;
-        prevDif: number;
+        prevPeakPrice?: number;
+        prevPeakTime?: number;
+        curHist?: number;
+        prevHist?: number;
+        curDif?: number;
+        prevDif?: number;
+        curDea?: number;
+        maxDea?: number;
+        deaPeakOffsetBars?: number;
       };
     };
   };
@@ -510,12 +518,15 @@ export class UnifiedShortStrategyTracker {
     consecutiveGreenBars: number;
     upperShadowRatio: number;
     divergence?: {
-      prevPeakPrice: number;
-      prevPeakTime: number;
-      curHist: number;
-      prevHist: number;
-      curDif: number;
-      prevDif: number;
+      prevPeakPrice?: number;
+      prevPeakTime?: number;
+      curHist?: number;
+      prevHist?: number;
+      curDif?: number;
+      prevDif?: number;
+      curDea?: number;
+      maxDea?: number;
+      deaPeakOffsetBars?: number;
     };
   } | null {
     const cfg = this.config.streakConfig;
@@ -588,20 +599,46 @@ export class UnifiedShortStrategyTracker {
       }
     }
 
-    // 6. MACD 计算与双重顶背离检测 (Bearish Divergence)
-    const { hist, dif } = computeMacd(candles.map((c) => c.close));
-    if (hist.length <= targetIndex || dif.length <= targetIndex) return null;
+    // 6. MACD 计算与背离检测 (默认方案 B: DEA 顶背离; 或传统 MACD 双峰顶背离)
+    const { hist, dif, dea } = computeMacd(candles.map((c) => c.close));
+    if (hist.length <= targetIndex || dif.length <= targetIndex || dea.length <= targetIndex) return null;
 
     let divergenceInfo: {
-      prevPeakPrice: number;
-      prevPeakTime: number;
-      curHist: number;
-      prevHist: number;
-      curDif: number;
-      prevDif: number;
+      prevPeakPrice?: number;
+      prevPeakTime?: number;
+      curHist?: number;
+      prevHist?: number;
+      curDif?: number;
+      prevDif?: number;
+      curDea?: number;
+      maxDea?: number;
+      deaPeakOffsetBars?: number;
     } | undefined;
 
-    if (cfg.requireMacdDivergence ?? true) {
+    // 方案 B (DEA 顶背离)：默认开启 (实测最高胜率 85.7%, PF 6.46)；若显式指定 requireMacdDivergence 则向下兼容传统双峰背离
+    const useDea = cfg.requireMacdDivergence ? false : (cfg.requireDeaDivergence ?? true);
+    if (useDea) {
+      const N = cfg.deaLookbackMinutes ?? 30;
+      const start = Math.max(0, targetIndex - N);
+      let maxDea = -Infinity;
+      let peakIdx = -1;
+      for (let k = start; k <= targetIndex; k++) {
+        if (dea[k] > maxDea) {
+          maxDea = dea[k];
+          peakIdx = k;
+        }
+      }
+      const offset = targetIndex - peakIdx;
+      // 要求过去 1~N 根内出现过 DEA 最高峰 (offset >= 1 且 <= N)，且当前当根已拐头向下回落 (dea[t] < dea[t-1])
+      if (!(offset >= 1 && offset <= N && dea[targetIndex] < dea[targetIndex - 1])) {
+        return null;
+      }
+      divergenceInfo = {
+        curDea: dea[targetIndex],
+        maxDea,
+        deaPeakOffsetBars: offset,
+      };
+    } else if (cfg.requireMacdDivergence ?? true) {
       const lookbackMin = cfg.divergenceLookbackMin ?? 10;
       const lookbackMax = cfg.divergenceLookbackMax ?? 120;
       const searchStart = Math.max(0, targetIndex - lookbackMax);

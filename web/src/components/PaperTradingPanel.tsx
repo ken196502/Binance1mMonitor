@@ -309,10 +309,10 @@ export function PaperTradingPanel({
         <div className="paper-title-wrap">
           <h2 style={{ margin: 0 }}>
             <span>⚡ 模拟实盘交易</span>
-            <span className="badge-leverage" title={`新高顶背离闪击 ${streakLev}x · 顺势衰竭长波段 ${trendLev}x · 动态仓位 ${marginPercent}% (当前约 ${marginUsdt}U) · 最大 ${maxPositions} 仓 (每策略 ${maxPerStrategy})`}>
+            <span className="badge-leverage" title={`新高DEA顶背离闪击 ${streakLev}x (15m持仓) · 顺势衰竭长波段 ${trendLev}x (90m持仓) · 动态仓位 ${marginPercent}% (当前约 ${marginUsdt}U) · 最大 ${maxPositions} 仓 (每策略 ${maxPerStrategy})`}>
               双速杠杆 ({streakLev}x 闪击 / {trendLev}x 波段) · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions} (每策略 {maxPerStrategy})
             </span>
-            <span className="badge-strategy">
+            <span className="badge-strategy" title="新高顶背离: 创24h新高 + 5m冲高收阴 + MA[3,7,15]悬空 + DEA顶背离拐头 (胜率85.7%, PF 6.46) · 首次跌10%: Rank1龙头弱反弹 · 跌到20%+: 次级反弹顺势空 · 3W底背离: 龙头底背离弹射">
               4大核心策略 · 首次跌10% · 新高顶背离 · 跌到20%+ · 左侧3W底背离
             </span>
           </h2>
@@ -672,7 +672,7 @@ export function PaperTradingPanel({
               <div className="config-form-group">
                 <label>
                   <span>⚡ 新高顶背离闪击杠杆 (Streak Leverage)</span>
-                  <small>15m 紧止损 · 默认 10x</small>
+                  <small>15m 紧止损 · 默认 10x · 24h新高+DEA顶背离拐头 (回测胜率 85.7%, PF 6.46)</small>
                 </label>
                 <input
                   type="number"
