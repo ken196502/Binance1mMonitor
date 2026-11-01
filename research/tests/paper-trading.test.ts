@@ -903,13 +903,15 @@ test("PaperTradingEngine: supports 5 simultaneous positions (3 Shorts + 2 Longs)
   assert.equal(engine.calculateUsedMargin() >= engine.getAccount().balanceUsdt, true);
 });
 
-test("PaperTradingEngine: default enables streak (新高顶背离) and disables extreme_dev (冲高极度乖离)", () => {
+test("PaperTradingEngine: default enables 1245 configuration (w_bottom, rebound, streak, deep_rebound) and disables 3 (pullback_rebound)", () => {
   const engine = new PaperTradingEngine({ storageFile: null });
   const cfg = engine.getConfig();
 
-  assert.equal(cfg.enableStreak, true, "enableStreak must be true by default");
+  assert.equal(cfg.enableWBottomDivergence, true, "enableWBottomDivergence must be true by default (策略 1)");
+  assert.equal(cfg.enableRebound, true, "enableRebound must be true by default (策略 2)");
+  assert.equal(cfg.enablePullbackRebound, false, "enablePullbackRebound must be false by default (策略 3 剔除)");
+  assert.equal(cfg.enableStreak, true, "enableStreak must be true by default (策略 4)");
+  assert.equal(cfg.enableDeepRebound, true, "enableDeepRebound must be true by default (策略 5)");
   assert.equal(cfg.enableExtremeDev, false, "enableExtremeDev must be false by default");
-  assert.equal(cfg.enableRebound, true, "enableRebound must be true by default");
-  assert.equal(cfg.enableDeepRebound, true, "enableDeepRebound must be true by default");
   assert.equal(cfg.enableLongs, true, "enableLongs must be true by default");
 });

@@ -39,6 +39,11 @@ function formatSignalLabel(type?: string, label?: string): string {
   if (type === "extreme_dev") return "冲高极度乖离";
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
+  if (type === "pullback_rebound") return "右侧回调反弹";
+  if (type === "w_bottom_divergence") return "左侧3W底背离";
+  if (type === "consolidation_support") return "震荡托底做多";
+  if (type === "consolidation_breakout") return "震荡突破做多";
+  if (type === "consolidation_long") return "震荡蓄势做多";
   if (type === "ma30_pullback") return "龙头MA30回踩";
   if (type === "ma60_support") return "龙头MA60深蹲";
   if (type === "rank1_first_pullback") return "榜一首次回踩";
@@ -318,7 +323,7 @@ export function PaperTradingPanel({
               双速杠杆 ({streakLev}x 闪击 / {trendLev}x 波段) · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions} (每策略 {maxPerStrategy})
             </span>
             <span className="badge-strategy">
-              5大精选策略 · 3大做空 (新高顶背离10x · 跌到20%+ 87.5% · 首次跌10% 80.0%) + 2大涨幅榜做多 (MA30黄金回踩75.7% · MA60深蹲77.8%) · 两段动态止盈止损
+              4大核心策略 · 3大做空 (首次跌10% 83.3% · 新高顶背离10x 80.0% · 跌到20%+ 100%) + 1大做多 (左侧3W底背离 68.8% ~ 76.6%) · 两段动态止盈止损
             </span>
           </h2>
           <div className="paper-stats-chips">
@@ -466,7 +471,7 @@ export function PaperTradingPanel({
             <div className="empty-paper-state">
               <span className="empty-icon">📡</span>
               <span className="empty-text">
-                当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔，保证5大策略各持仓至多 1 笔) · 3大做空 (新高顶背离10x、跌20%+ 87.5%、跌10% 80.0%) + 2大涨幅榜做多 (MA30黄金回踩75.7%、MA60深蹲77.8%)
+                当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔，保证各大策略各持仓至多 1 笔) · 3大做空 (首次跌10%、新高顶背离10x、跌20%+) + 1大做多 (左侧3W底背离)
               </span>
             </div>
           ) : null
