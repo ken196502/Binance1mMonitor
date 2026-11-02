@@ -83,12 +83,14 @@ export type PaperSignalType =
   | "w_bottom_divergence" // 策略 1: 左侧3W底背离弹射做多
   | "rebound"             // 策略 2: 首次跌10%弱反弹做空
   | "streak"              // 策略 4: 新高顶背离闪击做空
-  | "deep_rebound";       // 策略 5: 跌到20%+次级反弹做空
+  | "deep_rebound"        // 策略 5: 跌到20%+次级反弹做空
+  | "hourly_suppression"; // 策略 6: 小时线压制做空
 export type PaperSignalLabel =
   | "左侧3W底背离"
   | "首次跌10%"
   | "新高顶背离"
-  | "跌到20%+";
+  | "跌到20%+"
+  | "小时线压制";
 
 export interface PaperExitParams {
   holdMinutes: number;

@@ -1,8 +1,9 @@
 // Unified Multi-Signal Short Strategy Engine
-// Coordinates 3 Highest Win-Rate Shorts:
+// Coordinates 4 Highest Win-Rate Shorts:
 // 1. 'New High Bearish Divergence Short' (新高顶背离 - 24h new high + no MA support + 5m surge + MACD divergence)
 // 2. 'Weak Rebound Short' (首次跌到10% / 空弱反弹 - Right-side post-drop rebound MA ceiling)
 // 3. 'Deep Rebound Short' (跌到20%+ / 超跌反弹 - Post-dump secondary bounce MA15/30 suppression)
+// 4. 'Hourly Suppression Short' (小时线压制·深跌狂暴狙击 - Touch/test 1m MA60 ceiling + drop >= 20% + MA60>MA10>MA20 + 5m surge + 3 MACD green bars)
 
 import { Candle, computeMacd, consecutiveStreakAt, calculateSupportMaAt, calculateSma } from './macd.ts';
 import {
@@ -14,7 +15,7 @@ import {
 } from './peak-rebound-strategy.ts';
 import type { PaperSignalLabel } from './types.ts';
 
-export type UnifiedSignalType = 'streak' | 'rebound' | 'deep_rebound';
+export type UnifiedSignalType = 'streak' | 'rebound' | 'deep_rebound' | 'hourly_suppression';
 
 export interface StreakStrategyLiveConfig {
   topN: number;
@@ -108,24 +109,76 @@ export const DUAL_SPEED_DEEP_REBOUND_CONFIG: DeepReboundLiveConfig = {
   moveSlToEntryAfterTp1: true,
 };
 
+export interface HourlySuppressionLiveConfig {
+  topN: number;               // 适用榜单排名前 N (默认 10)
+  requireSurge?: boolean;     // 是否要求结合 base 冲高动能过滤 (默认 true)
+  xMinutes?: number;          // 冲高回溯窗口，默认 5 分钟
+  ampDivisor?: number;        // x 分钟内冲高涨幅 >= 24h 涨幅 / ampDivisor (默认 10)
+  nGreenBars: number;         // 近 N 根已收盘 1m MACD 绿柱 (默认 3 根)
+  minDayChange?: number;      // 24h 涨幅门槛 (深跌狂暴狙击默认 10)
+  minDropFrom24h?: number;    // 距离 24h 最高价至少跌了 x% (深跌狂暴狙击默认 20%)
+  requireMa60GtMa10GtMa20?: boolean; // 是否要求 MA60 > MA10 > MA20 (深跌狂暴狙击默认 true)
+  requireCloseBelowMa?: boolean; // 是否要求收盘价受制于 MA60 之下 (默认 false)
+  requireMaSlopeDown?: boolean;  // 是否要求 MA60 均线下倾确认 (默认 false)
+  requireBearish?: boolean;      // 是否要求信号K线收阴 (默认 false)
+  holdMinutes: number;        // 持仓时长 (默认 30 分钟)
+  exitX: number;              // 动态退出参数 X (默认 35)
+  exitN: number;              // 动态退出止损倍数 N (默认 2.0)
+  exitM: number;              // 动态退出止盈倍数 M (默认 3.0)
+  stopLossPercent?: number;   // 显式止损比例 (深跌狂暴狙击默认 4.0%)
+  tp1Percent?: number;        // 阶段一止盈比例 (深跌狂暴狙击默认 3.0%)
+  tp2Percent?: number;        // 阶段二止盈比例 (深跌狂暴狙击默认 6.0%)
+  moveSlToEntryAfterTp1?: boolean; // 阶段一止盈后移动保本止损 (默认 true)
+  cooldownMinutes: number;    // 同币种冷却时间 (默认 20 分钟)
+  leverage?: number;          // 策略专属杠杆 (默认 3x)
+}
+
+export const HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG: HourlySuppressionLiveConfig = {
+  topN: 10,
+  requireSurge: true,
+  xMinutes: 5,
+  ampDivisor: 10,
+  nGreenBars: 3,
+  minDayChange: 10,
+  minDropFrom24h: 20,
+  requireMa60GtMa10GtMa20: true,
+  requireCloseBelowMa: false,
+  requireMaSlopeDown: false,
+  requireBearish: false,
+  holdMinutes: 30,
+  exitX: 35,
+  exitN: 2.0,
+  exitM: 3.0,
+  stopLossPercent: 4.0,
+  tp1Percent: 3.0,
+  tp2Percent: 6.0,
+  moveSlToEntryAfterTp1: true,
+  cooldownMinutes: 20,
+  leverage: 3,
+};
+
 export interface UnifiedLiveConfig {
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
   streakConfig?: Partial<StreakStrategyLiveConfig>;
+  hourlySuppressionConfig?: Partial<HourlySuppressionLiveConfig>;
   preventConflict?: boolean; // Prevent double-entry if the same symbol has an active trade (default true)
   enableStreak?: boolean;     // 是否启用新高顶背离做空 (默认 true)
   enableRebound?: boolean;    // 是否启用首次跌10%弱反弹做空 (默认 true)
   enableDeepRebound?: boolean;// 是否启用跌20%+超跌反弹做空 (默认 true)
+  enableHourlySuppression?: boolean; // 是否启用小时线压制做空 (默认 true)
 }
 
 export const UNIFIED_LIVE_DEFAULT_CONFIG: Required<UnifiedLiveConfig> = {
   reboundConfig: PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
   deepReboundConfig: DEEP_REBOUND_LIVE_DEFAULT_CONFIG,
   streakConfig: STREAK_LIVE_DEFAULT_CONFIG,
+  hourlySuppressionConfig: HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG,
   preventConflict: true,
   enableStreak: true,
   enableRebound: true,
   enableDeepRebound: true,
+  enableHourlySuppression: true,
 };
 
 // 黄金双速最优组合 (Dual-Speed Ensemble): 首次跌10%、跌到20%+ 走 3x / 10%大止损 / 90m 长波段，新高顶背离保留 15m 闪击战
@@ -133,10 +186,12 @@ export const DUAL_SPEED_UNIFIED_CONFIG: Required<UnifiedLiveConfig> = {
   reboundConfig: DUAL_SPEED_PEAK_REBOUND_CONFIG,
   deepReboundConfig: DUAL_SPEED_DEEP_REBOUND_CONFIG,
   streakConfig: STREAK_LIVE_DEFAULT_CONFIG,
+  hourlySuppressionConfig: HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG,
   preventConflict: true,
   enableStreak: true,
   enableRebound: true,
   enableDeepRebound: true,
+  enableHourlySuppression: true,
 };
 
 export interface UnifiedLiveSignal {
@@ -156,6 +211,7 @@ export interface UnifiedLiveSignal {
     tp1Percent?: number;
     tp2Percent?: number;
     moveSlToEntryAfterTp1?: boolean;
+    leverage?: number;
   };
   details: {
     reboundSignal?: PeakReboundLiveSignal;
@@ -184,6 +240,15 @@ export interface UnifiedLiveSignal {
         deaPeakOffsetBars?: number;
       };
     };
+    hourlySuppressionSignal?: {
+      ma60: number;
+      high: number;
+      low: number;
+      close: number;
+      nGreenBars: number;
+      xRisePercent?: number;
+      dropFrom24h?: number;
+    };
   };
 }
 
@@ -199,24 +264,29 @@ export class UnifiedShortStrategyTracker {
     reboundConfig: PeakReboundLiveConfig;
     deepReboundConfig: DeepReboundLiveConfig;
     streakConfig: StreakStrategyLiveConfig;
+    hourlySuppressionConfig: HourlySuppressionLiveConfig;
     preventConflict: boolean;
     enableStreak: boolean;
     enableRebound: boolean;
     enableDeepRebound: boolean;
+    enableHourlySuppression: boolean;
   };
   private reboundTracker: PeakReboundStrategyTracker;
   private activePositions = new Map<string, ActivePositionInfo>();
   private deepCooldown = new Map<string, number>();
+  private hourlyCooldown = new Map<string, number>();
 
   constructor(config: UnifiedLiveConfig = {}) {
     this.config = {
       reboundConfig: { ...PEAK_REBOUND_LIVE_DEFAULT_CONFIG, ...config.reboundConfig },
       deepReboundConfig: { ...DEEP_REBOUND_LIVE_DEFAULT_CONFIG, ...config.deepReboundConfig },
       streakConfig: { ...STREAK_LIVE_DEFAULT_CONFIG, ...config.streakConfig },
+      hourlySuppressionConfig: { ...HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG, ...config.hourlySuppressionConfig },
       preventConflict: config.preventConflict ?? true,
       enableStreak: config.enableStreak ?? true,
       enableRebound: config.enableRebound ?? true,
       enableDeepRebound: config.enableDeepRebound ?? true,
+      enableHourlySuppression: config.enableHourlySuppression ?? true,
     };
     this.reboundTracker = new PeakReboundStrategyTracker(this.config.reboundConfig);
   }
@@ -249,6 +319,10 @@ export class UnifiedShortStrategyTracker {
     return this.reboundTracker;
   }
 
+  public getConfig(): UnifiedLiveConfig {
+    return { ...this.config };
+  }
+
   public getReboundWatchlist() {
     return this.reboundTracker.getWatchlist();
   }
@@ -261,6 +335,7 @@ export class UnifiedShortStrategyTracker {
     if (typeof updates.enableStreak === "boolean") this.config.enableStreak = updates.enableStreak;
     if (typeof updates.enableRebound === "boolean") this.config.enableRebound = updates.enableRebound;
     if (typeof updates.enableDeepRebound === "boolean") this.config.enableDeepRebound = updates.enableDeepRebound;
+    if (typeof updates.enableHourlySuppression === "boolean") this.config.enableHourlySuppression = updates.enableHourlySuppression;
     if (typeof updates.preventConflict === "boolean") this.config.preventConflict = updates.preventConflict;
     if (updates.streakConfig && typeof updates.streakConfig === "object") {
       this.config.streakConfig = { ...this.config.streakConfig, ...updates.streakConfig };
@@ -271,6 +346,9 @@ export class UnifiedShortStrategyTracker {
     }
     if (updates.deepReboundConfig && typeof updates.deepReboundConfig === "object") {
       this.config.deepReboundConfig = { ...this.config.deepReboundConfig, ...updates.deepReboundConfig };
+    }
+    if (updates.hourlySuppressionConfig && typeof updates.hourlySuppressionConfig === "object") {
+      this.config.hourlySuppressionConfig = { ...this.config.hourlySuppressionConfig, ...updates.hourlySuppressionConfig };
     }
   }
 
@@ -403,6 +481,46 @@ export class UnifiedShortStrategyTracker {
           this.registerPosition(symbol, {
             tradeId: signal.id,
             type: 'streak',
+            entryTime: signal.time,
+            maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
+          });
+        }
+        return signal;
+      }
+    }
+
+    // 4. 信号四: 小时线压制 (Top N focus, 1m MA60 压制: high > ma60 && low < ma60, 近 N 根 MACD 绿柱)
+    if (this.config.enableHourlySuppression && rank <= (this.config.hourlySuppressionConfig.topN ?? 10)) {
+      const hourlySig = this.checkHourlySuppressionSignal(symbol, dayChangePercent, rank, candles, now);
+      if (hourlySig) {
+        const exitParams = {
+          holdMinutes: this.config.hourlySuppressionConfig.holdMinutes,
+          exitX: this.config.hourlySuppressionConfig.exitX,
+          exitN: this.config.hourlySuppressionConfig.exitN,
+          exitM: this.config.hourlySuppressionConfig.exitM,
+          stopLossPercent: this.config.hourlySuppressionConfig.stopLossPercent,
+          tp1Percent: this.config.hourlySuppressionConfig.tp1Percent,
+          tp2Percent: this.config.hourlySuppressionConfig.tp2Percent,
+          moveSlToEntryAfterTp1: this.config.hourlySuppressionConfig.moveSlToEntryAfterTp1,
+          leverage: this.config.hourlySuppressionConfig.leverage,
+        };
+        const closedCandle = candles[candles.length - 2];
+        const signalLabel: PaperSignalLabel = '小时线压制';
+        const signal: UnifiedLiveSignal = {
+          id: `hly-${symbol}-${closedCandle.time}`,
+          type: 'hourly_suppression',
+          label: signalLabel,
+          symbol,
+          time: closedCandle.time + 60 * 1000,
+          dayChangePercent,
+          entryPrice: closedCandle.close,
+          exitParams,
+          details: { hourlySuppressionSignal: hourlySig },
+        };
+        if (this.config.preventConflict) {
+          this.registerPosition(symbol, {
+            tradeId: signal.id,
+            type: 'hourly_suppression',
             entryTime: signal.time,
             maxExitTime: signal.time + exitParams.holdMinutes * 60 * 1000,
           });
@@ -688,6 +806,120 @@ export class UnifiedShortStrategyTracker {
       consecutiveGreenBars: 0,
       upperShadowRatio,
       divergence: divergenceInfo,
+    };
+  }
+
+  /**
+   * Micro-structure evaluation of Hourly Suppression Short (小时线压制做空)
+   * 逻辑：
+   * 1. 结合 Base 冲高动能过滤：X 分钟内冲高涨幅达到 24h 涨幅 / ampDivisor (默认 5m 涨幅 >= 24h 涨幅 / 10)
+   * 2. 小时线压制核心条件：最高价大于 1m MA60 && 最低价小于 1m MA60
+   * 3. 动能确认：近 N 根 1m MACD 均为绿柱 (hist > 0)
+   */
+  private checkHourlySuppressionSignal(
+    symbol: string,
+    dayChangePercent: number,
+    rank: number,
+    candles: Candle[],
+    now = Date.now()
+  ): {
+    ma60: number;
+    high: number;
+    low: number;
+    close: number;
+    nGreenBars: number;
+    xRisePercent?: number;
+    dropFrom24h?: number;
+  } | null {
+    const cfg = this.config.hourlySuppressionConfig;
+    if (rank > (cfg.topN ?? 10)) return null;
+    if (cfg.minDayChange !== undefined && dayChangePercent < cfg.minDayChange) return null;
+
+    const cooldown = this.hourlyCooldown.get(symbol) ?? 0;
+    if (now < cooldown) return null;
+
+    const targetIdx = candles.length - 2;
+    if (targetIdx < 65) return null;
+
+    const candle = candles[targetIdx];
+    if (!candle || candle.close <= 0 || candle.open <= 0) return null;
+
+    // 1. Base 冲高动能过滤：X 分钟内冲高涨幅达到 24h 涨幅 / ampDivisor (默认开启，5m 冲高 >= 24h / 10)
+    let xRisePercent: number | undefined;
+    if (cfg.requireSurge ?? true) {
+      const xMinutes = cfg.xMinutes ?? 5;
+      const xStart = Math.max(0, targetIdx - xMinutes + 1);
+      let xMinLow = Infinity;
+      for (let k = xStart; k <= targetIdx; k++) {
+        if (candles[k].low < xMinLow) xMinLow = candles[k].low;
+      }
+      if (xMinLow <= 0) return null;
+      xRisePercent = ((candle.high - xMinLow) / xMinLow) * 100;
+      const requiredRise = dayChangePercent / (cfg.ampDivisor ?? 10);
+      if (xRisePercent < requiredRise) return null;
+    }
+
+    // 1b. 离 24h 最高价跌幅过滤 (距离 24h 最高价至少跌了 x%)
+    let dropFrom24h: number | undefined;
+    if (cfg.minDropFrom24h !== undefined && cfg.minDropFrom24h > 0) {
+      const start24h = Math.max(0, targetIdx - 1439);
+      let high24h = 0;
+      for (let k = start24h; k <= targetIdx; k++) {
+        if (candles[k].high > high24h) high24h = candles[k].high;
+      }
+      if (high24h <= 0) return null;
+      dropFrom24h = ((high24h - candle.close) / high24h) * 100;
+      if (dropFrom24h < cfg.minDropFrom24h) return null;
+    }
+
+    // 2. 计算 1m MA60 (60根1分钟K线对应1小时均线)
+    const closes = candles.map((c) => c.close);
+    const ma60 = calculateSma(closes, targetIdx, 60);
+    if (ma60 == null || ma60 <= 0) return null;
+
+    // 3. 核心条件：最高价大于 1m MA60 && 最低价小于 1m MA60 (试探/冲撞小时线阻力)
+    if (!(candle.high > ma60 && candle.low < ma60)) return null;
+
+    // 3b. 可选：均线多周期排列 MA60 > MA10 > MA20 (大周期空头压制 + 次级反弹金叉冲刺)
+    if (cfg.requireMa60GtMa10GtMa20) {
+      const ma10 = calculateSma(closes, targetIdx, 10);
+      const ma20 = calculateSma(closes, targetIdx, 20);
+      if (ma10 == null || ma20 == null) return null;
+      if (!(ma60 > ma10 && ma10 > ma20)) return null;
+    }
+
+    // 4. 可选：收盘价受阻于 MA60 之下
+    if (cfg.requireCloseBelowMa && candle.close >= ma60) return null;
+
+    // 5. 可选：K线收阴确认假突破回落
+    if (cfg.requireBearish && candle.close >= candle.open) return null;
+
+    // 6. 可选：MA60 均线下倾确认压制方向
+    if (cfg.requireMaSlopeDown) {
+      const ma60Prev = calculateSma(closes, targetIdx - 3, 60);
+      if (ma60Prev == null || ma60 > ma60Prev) return null;
+    }
+
+    // 7. 动能确认：近 N 根 MACD 是绿柱 (hist > 0)
+    const n = Math.max(1, cfg.nGreenBars ?? 3);
+    const { hist } = computeMacd(closes);
+    if (hist.length <= targetIdx) return null;
+    for (let k = 0; k < n; k++) {
+      const idx = targetIdx - k;
+      if (idx < 0 || hist[idx] <= 0) return null;
+    }
+
+    // 设置冷却时间
+    this.hourlyCooldown.set(symbol, now + (cfg.cooldownMinutes ?? 20) * 60 * 1000);
+
+    return {
+      ma60,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      nGreenBars: n,
+      xRisePercent,
+      dropFrom24h,
     };
   }
 }

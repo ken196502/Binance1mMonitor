@@ -18,8 +18,10 @@ import {
   UnifiedShortStrategyTracker,
   STREAK_LIVE_DEFAULT_CONFIG,
   DUAL_SPEED_DEEP_REBOUND_CONFIG,
+  HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG,
   type StreakStrategyLiveConfig,
   type DeepReboundLiveConfig,
+  type HourlySuppressionLiveConfig,
   type UnifiedLiveConfig,
 } from "./unified-short-strategy.ts";
 import {
@@ -84,11 +86,13 @@ export interface PaperStrategyConfig {
   enableStreak?: boolean;     // 是否启用新高顶背离闪击做空 (默认 true)
   enableRebound?: boolean;    // 是否启用首次跌10%弱反弹做空 (默认 true)
   enableDeepRebound?: boolean;// 是否启用跌到20%+次级反弹做空 (默认 true)
+  enableHourlySuppression?: boolean; // 是否启用小时线压制做空 (默认 true)
   enableLongs?: boolean;      // 是否启用涨幅榜做多 (默认 true)
   enableWBottomDivergence?: boolean; // 是否启用左侧3W底背离弹射做多 (默认 true)
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
+  hourlySuppressionConfig?: Partial<HourlySuppressionLiveConfig>;
   wBottomDivergenceConfig?: Partial<WBottomDivergenceLiveConfig>;
 }
 
@@ -119,7 +123,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   marginRate: 0.20,        // 单笔保证金占当前总资产 20%
   marginPercent: 20,       // 20%
   maxPositions: 5,         // 全局最大同时持仓数 5 笔 (每策略至多 1 笔)
-  maxPositionsPerStrategy: 1, // 单策略最大同时持仓数 1 笔 (确保 1, 2, 4, 5 各持仓至多 1 笔)
+  maxPositionsPerStrategy: 1, // 单策略最大同时持仓数 1 笔 (确保各策略持仓至多 1 笔)
   takerFeeBps: 5,          // 0.05%
   slippageBps: 2,          // 0.02%
   limitDivisor: 0,         // 默认 0 (直开市价模式)
@@ -129,6 +133,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   enableStreak: true,      // 策略 4: 开启新高顶背离 10x 闪击做空 (15m 持仓)
   enableRebound: true,     // 策略 2: 开启首次跌10%弱反弹做空 (最大 30m 持仓)
   enableDeepRebound: true, // 策略 5: 开启跌到20%+次级反弹做空 (最大 30m 持仓)
+  enableHourlySuppression: true, // 策略 6: 开启小时线压制做空 (最大 30m 持仓)
   enableLongs: true,       // 默认 true (开启涨幅榜做多)
   enableWBottomDivergence: true, // 策略 1: 开启左侧3W底背离弹射做多 (最大 30m 持仓)
   storageFile: STATE_FILE,
@@ -154,6 +159,14 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     moveSlToEntryAfterTp1: true,
     minGreenRatio20: 0.55, // 回测验证最优：0.55
   },
+  hourlySuppressionConfig: {
+    ...HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG,
+    holdMinutes: 30,
+    tp1Percent: 3.5,
+    tp2Percent: 8.0,
+    stopLossPercent: 7.0,
+    moveSlToEntryAfterTp1: true,
+  },
   wBottomDivergenceConfig: {
     ...W_BOTTOM_DIVERGENCE_DEFAULT_CONFIG,
     holdMinutes: 30,
@@ -168,6 +181,7 @@ export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLab
   if (label) return label;
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
+  if (type === "hourly_suppression") return "小时线压制";
   if (type === "w_bottom_divergence") return "左侧3W底背离";
   return "新高顶背离";
 }
@@ -308,10 +322,12 @@ export class PaperTradingEngine {
       },
       reboundConfig: this.config.reboundConfig,
       deepReboundConfig: this.config.deepReboundConfig,
+      hourlySuppressionConfig: this.config.hourlySuppressionConfig,
       preventConflict: true,
       enableStreak: this.config.enableStreak ?? true, // 开启新高顶背离 10x 闪击
       enableRebound: this.config.enableRebound ?? true,
       enableDeepRebound: this.config.enableDeepRebound ?? true,
+      enableHourlySuppression: this.config.enableHourlySuppression ?? true,
     });
     this.longTracker = new UnifiedLongStrategyTracker({
       wBottomDivergenceConfig: this.config.wBottomDivergenceConfig,
@@ -454,6 +470,10 @@ export class PaperTradingEngine {
       this.config.enableDeepRebound = updates.enableDeepRebound;
       this.unifiedTracker.updateConfig({ enableDeepRebound: updates.enableDeepRebound });
     }
+    if (typeof updates.enableHourlySuppression === "boolean") {
+      this.config.enableHourlySuppression = updates.enableHourlySuppression;
+      this.unifiedTracker.updateConfig({ enableHourlySuppression: updates.enableHourlySuppression });
+    }
     if (typeof updates.enableLongs === "boolean") {
       this.config.enableLongs = updates.enableLongs;
     }
@@ -475,6 +495,10 @@ export class PaperTradingEngine {
     if (updates.deepReboundConfig && typeof updates.deepReboundConfig === "object") {
       this.config.deepReboundConfig = { ...this.config.deepReboundConfig, ...updates.deepReboundConfig };
       this.unifiedTracker.updateConfig({ deepReboundConfig: this.config.deepReboundConfig });
+    }
+    if (updates.hourlySuppressionConfig && typeof updates.hourlySuppressionConfig === "object") {
+      this.config.hourlySuppressionConfig = { ...this.config.hourlySuppressionConfig, ...updates.hourlySuppressionConfig };
+      this.unifiedTracker.updateConfig({ hourlySuppressionConfig: this.config.hourlySuppressionConfig });
     }
     if (updates.wBottomDivergenceConfig && typeof updates.wBottomDivergenceConfig === "object") {
       this.config.wBottomDivergenceConfig = { ...this.config.wBottomDivergenceConfig, ...updates.wBottomDivergenceConfig };
@@ -711,6 +735,7 @@ export class PaperTradingEngine {
           const streakCount =
             shortSignal.details.streakSignal?.streakCount ??
             shortSignal.details.reboundSignal?.reboundUpCandles ??
+            shortSignal.details.hourlySuppressionSignal?.nGreenBars ??
             2;
           const upperShadowRatio =
             shortSignal.details.streakSignal?.upperShadowRatio ??
@@ -720,13 +745,16 @@ export class PaperTradingEngine {
             shortSignal.details.streakSignal?.greenRatio ??
             shortSignal.details.reboundSignal?.greenRatio20 ??
             shortSignal.details.deepReboundSignal?.greenRatio20 ??
-            0;
+            (shortSignal.details.hourlySuppressionSignal ? 1.0 : 0);
           const consecutiveGreenBars =
-            shortSignal.details.streakSignal?.consecutiveGreenBars ?? 0;
+            shortSignal.details.streakSignal?.consecutiveGreenBars ??
+            shortSignal.details.hourlySuppressionSignal?.nGreenBars ??
+            0;
           const amp30Percent =
             shortSignal.details.streakSignal?.amp30Percent ??
             shortSignal.details.reboundSignal?.reboundPercent ??
             shortSignal.details.deepReboundSignal?.reboundFrom10m ??
+            shortSignal.details.hourlySuppressionSignal?.xRisePercent ??
             0;
 
           chosenSignal = {
@@ -1714,6 +1742,10 @@ export class PaperTradingEngine {
             this.config.enableDeepRebound = cfg.enableDeepRebound;
             this.unifiedTracker.updateConfig({ enableDeepRebound: cfg.enableDeepRebound });
           }
+          if (typeof cfg.enableHourlySuppression === "boolean") {
+            this.config.enableHourlySuppression = cfg.enableHourlySuppression;
+            this.unifiedTracker.updateConfig({ enableHourlySuppression: cfg.enableHourlySuppression });
+          }
           if (typeof cfg.enableLongs === "boolean") this.config.enableLongs = cfg.enableLongs;
           if (typeof cfg.enableWBottomDivergence === "boolean") {
             this.config.enableWBottomDivergence = cfg.enableWBottomDivergence;
@@ -1731,6 +1763,10 @@ export class PaperTradingEngine {
           if (cfg.deepReboundConfig && typeof cfg.deepReboundConfig === "object") {
             this.config.deepReboundConfig = { ...this.config.deepReboundConfig, ...cfg.deepReboundConfig };
             this.unifiedTracker.updateConfig({ deepReboundConfig: this.config.deepReboundConfig });
+          }
+          if (cfg.hourlySuppressionConfig && typeof cfg.hourlySuppressionConfig === "object") {
+            this.config.hourlySuppressionConfig = { ...this.config.hourlySuppressionConfig, ...cfg.hourlySuppressionConfig };
+            this.unifiedTracker.updateConfig({ hourlySuppressionConfig: this.config.hourlySuppressionConfig });
           }
           if (cfg.wBottomDivergenceConfig && typeof cfg.wBottomDivergenceConfig === "object") {
             this.config.wBottomDivergenceConfig = { ...this.config.wBottomDivergenceConfig, ...cfg.wBottomDivergenceConfig };
@@ -1764,10 +1800,12 @@ export class PaperTradingEngine {
       },
       reboundConfig: this.config.reboundConfig,
       deepReboundConfig: this.config.deepReboundConfig,
+      hourlySuppressionConfig: this.config.hourlySuppressionConfig,
       preventConflict: true,
       enableStreak: this.config.enableStreak ?? true,
       enableRebound: this.config.enableRebound ?? true,
       enableDeepRebound: this.config.enableDeepRebound ?? true,
+      enableHourlySuppression: this.config.enableHourlySuppression ?? true,
     });
     this.longTracker = new UnifiedLongStrategyTracker({
       wBottomDivergenceConfig: this.config.wBottomDivergenceConfig,

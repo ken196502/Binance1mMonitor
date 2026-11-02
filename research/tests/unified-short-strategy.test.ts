@@ -4,6 +4,7 @@ import {
   UnifiedShortStrategyTracker,
   STREAK_LIVE_DEFAULT_CONFIG,
   DEEP_REBOUND_LIVE_DEFAULT_CONFIG,
+  HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG,
 } from '../../src/unified-short-strategy.ts';
 import {
   PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
@@ -55,6 +56,26 @@ test('Default strategy configurations match verified specifications', () => {
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitX, 35);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitN, 2.0);
   assert.equal(DEEP_REBOUND_LIVE_DEFAULT_CONFIG.exitM, 4.0);
+
+  // 4. 小时线压制·深跌狂暴狙击 (策略 6)
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.topN, 10);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.requireSurge, true);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.xMinutes, 5);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.ampDivisor, 10);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.nGreenBars, 3);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.minDayChange, 10);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.minDropFrom24h, 20);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.requireMa60GtMa10GtMa20, true);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.holdMinutes, 30);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.exitX, 35);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.exitN, 2.0);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.exitM, 3.0);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.stopLossPercent, 4.0);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.tp1Percent, 3.0);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.tp2Percent, 6.0);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.moveSlToEntryAfterTp1, true);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.cooldownMinutes, 20);
+  assert.equal(HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG.leverage, 3);
 });
 
 test('UnifiedShortStrategyTracker manages active positions and prevents double-entry conflicts', () => {
@@ -230,6 +251,129 @@ test('UnifiedShortStrategyTracker triggers 新高顶背离 with Option B (DEA be
   assert.ok(sig.details.streakSignal?.divergence != null);
   assert.ok(sig.details.streakSignal!.divergence!.deaPeakOffsetBars! >= 1);
   assert.ok(sig.details.streakSignal!.divergence!.curDea! < sig.details.streakSignal!.divergence!.maxDea!);
+});
+
+test('UnifiedShortStrategyTracker triggers 小时线压制 when high > MA60 && low < MA60 with last N green MACD bars', () => {
+  const tracker = new UnifiedShortStrategyTracker({
+    enableStreak: false,
+    enableRebound: false,
+    enableDeepRebound: false,
+    enableHourlySuppression: true,
+    hourlySuppressionConfig: {
+      topN: 10,
+      nGreenBars: 3,
+      holdMinutes: 30,
+      tp1Percent: 3.0,
+      tp2Percent: 6.0,
+      stopLossPercent: 4.0,
+      moveSlToEntryAfterTp1: true,
+      leverage: 3,
+    },
+  });
+
+  const now = 1700000000000;
+  // Build candles with MA60 > MA10 > MA20 and 24h drop >= 20%
+  // Candle 0..45: high baseline around 105, with 24h peak at 135 (drop from 135 to 101 is 25.1%)
+  // MA60 is around ~103.5
+  const candles: Candle[] = [];
+  for (let i = 0; i < 46; i++) {
+    candles.push({
+      time: now + i * 60000,
+      open: 105,
+      high: i === 0 ? 135.0 : 105.2, // 24h peak 135.0
+      low: 104.8,
+      close: 105,
+      volume: 1000,
+    });
+  }
+  // Middle candles 46..58: dip to 98 -> pull MA20 lower to ~99.2
+  for (let i = 46; i < 59; i++) {
+    candles.push({
+      time: now + i * 60000,
+      open: 98,
+      high: 98.2,
+      low: 97.8,
+      close: 98,
+      volume: 1000,
+    });
+  }
+  // Recent candles 59..67: rising 98..101.5 -> MA10 ~ 100.2, MACD green
+  for (let i = 59; i < 68; i++) {
+    const p = 98 + (i - 59) * 0.4;
+    candles.push({
+      time: now + i * 60000,
+      open: p,
+      high: p + 0.3,
+      low: p - 0.1,
+      close: p + 0.2,
+      volume: 1200,
+    });
+  }
+
+  // Candle 68 (target candle, index = 68 when length is 70):
+  // Touches MA60 (~103): High=104.0 > MA60, Low=99.0 < MA60
+  candles.push({
+    time: now + 68 * 60000,
+    open: 101.5,
+    high: 104.0, // High > MA60 (~103)
+    low: 99.0,   // Low < MA60 (~103)
+    close: 101.0,
+    volume: 1500,
+  });
+
+  // Candle 69 (still forming bar)
+  candles.push({
+    time: now + 69 * 60000,
+    open: 101.0,
+    high: 101.2,
+    low: 100.8,
+    close: 101.0,
+    volume: 100,
+  });
+
+  const sig = tracker.checkCandles('HOURTEST', 15.0, 3, candles, now + 69 * 60000);
+  assert.ok(sig !== null, 'Hourly suppression signal should trigger');
+  assert.equal(sig.type, 'hourly_suppression');
+  assert.equal(sig.label, '小时线压制');
+  assert.equal(sig.exitParams.holdMinutes, 30);
+  assert.equal(sig.exitParams.tp1Percent, 3.0);
+  assert.equal(sig.exitParams.tp2Percent, 6.0);
+  assert.equal(sig.exitParams.stopLossPercent, 4.0);
+  assert.equal(sig.exitParams.moveSlToEntryAfterTp1, true);
+  assert.equal(sig.exitParams.leverage, 3);
+  assert.ok(sig.details.hourlySuppressionSignal != null);
+  assert.equal(sig.details.hourlySuppressionSignal.nGreenBars, 3);
+  assert.ok(sig.details.hourlySuppressionSignal.high > sig.details.hourlySuppressionSignal.ma60);
+  assert.ok(sig.details.hourlySuppressionSignal.low < sig.details.hourlySuppressionSignal.ma60);
+  assert.ok(sig.details.hourlySuppressionSignal.xRisePercent != null);
+  assert.ok(sig.details.hourlySuppressionSignal.xRisePercent >= 1.5);
+
+  // Test minDropFrom24h filtering: drop 25.1% passes minDropFrom24h=20%, but fails minDropFrom24h=30%
+  const trackerWithHighDrop = new UnifiedShortStrategyTracker({
+    enableHourlySuppression: true,
+    hourlySuppressionConfig: {
+      ...tracker.getConfig().hourlySuppressionConfig,
+      minDropFrom24h: 30.0,
+    },
+  });
+  const sigDropFiltered = trackerWithHighDrop.checkCandles('HOURTEST', 15.0, 3, candles, now + 71 * 60000);
+  assert.equal(sigDropFiltered, null, 'Should filter out when dropFrom24h (25.1%) < 30.0%');
+
+  // Test requireMa60GtMa10GtMa20 filtering
+  // In `flatCandles`, all flat around 100, so MA60 ~ MA10 ~ MA20 (no strict hierarchy)
+  const flatCandles: Candle[] = [];
+  for (let i = 0; i < 70; i++) {
+    flatCandles.push({
+      time: now + i * 60000,
+      open: 100,
+      high: i === 68 ? 102 : 100.2,
+      low: i === 68 ? 98 : 99.8,
+      close: 100,
+      volume: 1000,
+    });
+  }
+  const sigFlatFiltered = tracker.checkCandles('HOURTEST', 15.0, 3, flatCandles, now + 72 * 60000);
+  assert.equal(sigFlatFiltered, null, 'Should filter out when MA60 > MA10 > MA20 is not satisfied');
 });
 
 test('UnifiedShortStrategyTracker saves and restores reboundWatchlist', () => {

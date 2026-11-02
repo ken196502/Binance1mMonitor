@@ -560,6 +560,32 @@ test("PaperTradingEngine: records signalType and signalLabel for 新高顶背离
   assert.equal(deepPos.signalLabel, "跌到20%+"); // Auto-mapped by formatSignalLabel
   assert.equal(deepPos.exitParams?.holdMinutes, 30);
   assert.equal(deepPos.exitParams?.exitM, 4.0);
+
+  // 5. Create hourly_suppression position (Signal 6: 小时线压制)
+  const hourlyPos = engine.openPosition({
+    symbol: "HLYUSDT",
+    dayChangePercent: 12.0,
+    rank: 4,
+    entryPrice: 60.0,
+    entryTime: now + 120000,
+    signalType: "hourly_suppression",
+    exitParams: { holdMinutes: 30, tp1Percent: 3.5, tp2Percent: 8.0, stopLossPercent: 7.0 },
+    signal: {
+      candle: { time: now + 60000, open: 59.5, high: 60.8, low: 59.2, close: 60.0, volume: 100 },
+      streakCount: 3,
+      amp30Percent: 4.0,
+      upperShadowRatio: 0.1,
+      greenRatio: 1.0,
+      consecutiveGreenBars: 3,
+    },
+  });
+
+  assert.equal(hourlyPos.signalType, "hourly_suppression");
+  assert.equal(hourlyPos.signalLabel, "小时线压制");
+  assert.equal(hourlyPos.exitParams?.holdMinutes, 30);
+  assert.equal(hourlyPos.exitParams?.tp1Percent, 3.5);
+  assert.equal(hourlyPos.exitParams?.tp2Percent, 8.0);
+  assert.equal(hourlyPos.exitParams?.stopLossPercent, 7.0);
 });
 
 test("PaperTradingEngine: executes extreme stop loss at candle high or spiking tick price when stopAtHigh=true", () => {

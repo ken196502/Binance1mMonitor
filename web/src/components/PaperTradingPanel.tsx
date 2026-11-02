@@ -38,6 +38,7 @@ function formatSignalLabel(type?: string, label?: string): string {
   if (label) return label;
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
+  if (type === "hourly_suppression") return "小时线压制";
   if (type === "w_bottom_divergence") return "左侧3W底背离";
   return "新高顶背离";
 }
@@ -312,8 +313,8 @@ export function PaperTradingPanel({
             <span className="badge-leverage" title={`新高DEA顶背离闪击 ${streakLev}x (15m持仓) · 顺势衰竭长波段 ${trendLev}x (90m持仓) · 动态仓位 ${marginPercent}% (当前约 ${marginUsdt}U) · 最大 ${maxPositions} 仓 (每策略 ${maxPerStrategy})`}>
               双速杠杆 ({streakLev}x 闪击 / {trendLev}x 波段) · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions} (每策略 {maxPerStrategy})
             </span>
-            <span className="badge-strategy" title="新高顶背离: 创24h新高 + 5m冲高收阴 + MA[3,7,15]悬空 + DEA顶背离拐头 (胜率85.7%, PF 6.46) · 首次跌10%: Rank1龙头弱反弹 · 跌到20%+: 次级反弹顺势空 · 3W底背离: 龙头底背离弹射">
-              4大核心策略 · 首次跌10% · 新高顶背离 · 跌到20%+ · 左侧3W底背离
+            <span className="badge-strategy" title="新高顶背离: 创24h新高 + 5m冲高收阴 + MA[3,7,15]悬空 + DEA顶背离拐头 · 首次跌10%: Rank1龙头弱反弹 · 跌到20%+: 次级反弹顺势空 · 小时线压制: 触碰1mMA60小时线天花板+近N根MACD绿柱 · 3W底背离: 龙头底背离弹射">
+              5大核心策略 · 首次跌10% · 新高顶背离 · 跌到20%+ · 小时线压制 · 左侧3W底背离
             </span>
           </h2>
           <div className="paper-stats-chips">
@@ -458,7 +459,7 @@ export function PaperTradingPanel({
             <div className="empty-paper-state">
               <span className="empty-icon">📡</span>
               <span className="empty-text">
-                当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔) · 首次跌10% · 新高顶背离 · 跌到20%+ · 左侧3W底背离
+                当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔) · 首次跌10% · 新高顶背离 · 跌到20%+ · 小时线压制 · 左侧3W底背离
               </span>
             </div>
           ) : null
