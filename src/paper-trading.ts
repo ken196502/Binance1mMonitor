@@ -1049,7 +1049,8 @@ export class PaperTradingEngine {
     if (!position || position.status === "CLOSED") return;
 
     const price = tick.price;
-    const time = tick.time;
+    // 确保撮合时间戳不小于开仓时间戳，规避本地服务器与币安撮合时钟的微小毫秒偏差
+    const time = Math.max(tick.time, position.entryTime);
     position.currentPrice = price;
 
     // 1. Check timeout
@@ -1197,6 +1198,7 @@ export class PaperTradingEngine {
     reason: PaperExitReason,
     skipNotify = false,
   ): PaperExit {
+    const safeExitTime = Math.max(exitTime, pos.entryTime);
     const fraction = this.config.firstCloseFraction;
     const stageNotional = pos.notionalUsdt * fraction;
 
@@ -1221,7 +1223,7 @@ export class PaperTradingEngine {
     const exit: PaperExit = {
       stage,
       fraction,
-      exitTime,
+      exitTime: safeExitTime,
       exitPrice,
       reason,
       grossPnlUsdt,
@@ -1268,7 +1270,7 @@ export class PaperTradingEngine {
     } else {
       pos.remainingFraction = 0;
       pos.status = "CLOSED";
-      pos.closedAt = exitTime;
+      pos.closedAt = safeExitTime;
       pos.finalReason = reason;
       pos.unrealizedNetPnlUsdt = 0;
       pos.totalNetPnlUsdt = pos.realizedNetPnlUsdt;

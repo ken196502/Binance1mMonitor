@@ -41,14 +41,22 @@ export function useStatus(): StatusState {
       }
     };
 
-    // ms from now until the next minute boundary (when the current 1m candle
-    // closes and the next one opens). Schedules a poll there, then re-arms.
-    const msToNextMinute = () => 60000 - (Date.now() % 60000);
+    // 距下一个整分钟对齐刷新点 (整分钟 + 1200ms) 的毫秒延迟
+    // 后端会在整分钟 + 1000ms 执行扫描并更新缓存，前端在 +1200ms 抓取最新数据
+    const msToNextPoll = () => {
+      const now = Date.now();
+      const currentMinuteStart = Math.floor(now / 60000) * 60000;
+      let target = currentMinuteStart + 1200;
+      if (now >= target) {
+        target += 60000;
+      }
+      return Math.max(100, target - now);
+    };
     const scheduleNext = () => {
       timer = setTimeout(async () => {
         await poll();
         if (active) scheduleNext();
-      }, msToNextMinute());
+      }, msToNextPoll());
     };
 
     poll(); // immediate on mount so the page isn't blank until the boundary

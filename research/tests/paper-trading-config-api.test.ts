@@ -17,7 +17,7 @@ test("PaperTradingEngine: differential dual-speed leverage (10x streak vs 3x tre
   assert.equal(engine.getLeverageForSignal("streak"), 10);
   assert.equal(engine.getLeverageForSignal("rebound"), 3);
   assert.equal(engine.getLeverageForSignal("deep_rebound"), 3);
-  assert.equal(engine.getLeverageForSignal("extreme_dev"), 3);
+  assert.equal(engine.getLeverageForSignal("w_bottom_divergence"), 3);
 
   const now = Date.now();
   const dummyCandle = { time: now - 60000, open: 100, high: 101, low: 99, close: 100, volume: 100 };

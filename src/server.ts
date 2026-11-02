@@ -41,6 +41,27 @@ const WEB_DIST = path.join(process.cwd(), "web", "dist");
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4111;
 const TOP_N = Number(process.env.TOP_N ?? 10);
 const REFRESH_TTL_MS = Number(process.env.REFRESH_TTL_MS ?? 60_000); // 默认 60s 刷新一次，对齐 1m K 线收盘周期并防止 API 超频
+export const ALIGN_OFFSET_MS = Number(process.env.ALIGN_OFFSET_MS ?? 1000); // 默认收盘后延迟 1s 对齐整分钟，确保上一根 1m K 线完全闭合且新 K 线建立
+
+/**
+ * 计算给定时间戳所属的 1m 周期基准时间戳。
+ * 以 (整分钟 + offsetMs) 作为每个周期的起始点。
+ */
+export function getMinuteCycle(time = Date.now(), offsetMs = ALIGN_OFFSET_MS): number {
+  return Math.floor((time - offsetMs) / 60_000) * 60_000;
+}
+
+/**
+ * 计算距离下一个整分钟对齐点 (整点分钟 + offsetMs) 的毫秒延迟。
+ */
+export function getNextMinuteDelay(now = Date.now(), offsetMs = ALIGN_OFFSET_MS): number {
+  const currentMinuteStart = Math.floor(now / 60_000) * 60_000;
+  let target = currentMinuteStart + offsetMs;
+  if (now >= target) {
+    target += 60_000;
+  }
+  return Math.max(50, target - now);
+}
 const KLINE_LIMIT = Number(process.env.KLINE_LIMIT ?? 100);
 const KLINE_INIT_LIMIT = Number(process.env.KLINE_INIT_LIMIT ?? 200); // 冷启动拉取 200 根 (用于 MA120 及 30 根绿柱与 MACD 计算)
 const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? 200); // 滚动存储 200 根 1m K 线
@@ -495,7 +516,11 @@ let lastKnownStatus: Status | null = null;
 async function getStatus(): Promise<Status> {
   const now = Date.now();
   const backoff = getBackoffStatus();
-  if (cache && now - cache.at < REFRESH_TTL_MS) {
+  const isSameCycle =
+    cache !== null &&
+    getMinuteCycle(now, ALIGN_OFFSET_MS) === getMinuteCycle(cache.at, ALIGN_OFFSET_MS);
+
+  if (cache && isSameCycle && now - cache.at < REFRESH_TTL_MS) {
     if (!backoff.active) {
       // 避让冷静期已解除：若当前缓存为过去的错误，则跳过缓存立即重新请求，确保第一时间解封恢复
       const cached = await cache.promise;
@@ -597,6 +622,8 @@ async function serveKlines(u: URL, res: http.ServerResponse): Promise<void> {
 
 // Background polling loop: keeps checking and alerting even if no browser client is connected.
 let isPolling = false;
+let pollTimer: NodeJS.Timeout | null = null;
+
 async function pollLoop() {
   if (isPolling) return;
   isPolling = true;
@@ -613,6 +640,26 @@ async function pollLoop() {
     console.error("[monitor] 轮询异常:", e instanceof Error ? e.message : String(e));
   } finally {
     isPolling = false;
+  }
+}
+
+export function scheduleNextMinutePoll(offsetMs = ALIGN_OFFSET_MS): NodeJS.Timeout {
+  if (pollTimer) clearTimeout(pollTimer);
+  const delay = getNextMinuteDelay(Date.now(), offsetMs);
+  pollTimer = setTimeout(async () => {
+    try {
+      await pollLoop();
+    } finally {
+      scheduleNextMinutePoll(offsetMs);
+    }
+  }, delay);
+  return pollTimer;
+}
+
+export function stopPollTimerForTest(): void {
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
   }
 }
 
@@ -827,17 +874,24 @@ if (isMainModule) {
     const proxy = process.env.PROXY ?? process.env.BINANCE_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? "(direct)";
     console.log(`Binance 1m MACD monitor (u本位合约) → http://localhost:${PORT}`);
     console.log(
-      `base=${process.env.BINANCE_BASE ?? "https://fapi.binance.com"}  proxy=${proxy}  topN=${TOP_N}  ttl=${REFRESH_TTL_MS}ms  highRatio=${HIGH_RATIO}  highWindow=${HIGH_WINDOW}m`,
+      `base=${process.env.BINANCE_BASE ?? "https://fapi.binance.com"}  proxy=${proxy}  topN=${TOP_N}  ttl=${REFRESH_TTL_MS}ms  alignOffset=${ALIGN_OFFSET_MS}ms  highRatio=${HIGH_RATIO}  highWindow=${HIGH_WINDOW}m`,
     );
     console.log(`前端: 开发用 \`npm run dev\`（Vite 开 :5173）；生产先 \`npm run build\` 再 \`npm start\`，由后端托管 web/dist`);
     console.log(
       `Telegram: ${telegramConfigured() ? "已配置" : "未配置（TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 缺失，命中不会推送）"}  阈值 TG_ALERT_MIN=${process.env.TG_ALERT_MIN ?? 3}  恢复通知 TG_SEND_RECOVERY=${process.env.TG_SEND_RECOVERY ?? "true"}`,
     );
 
-    // 启动后台定时轮询检测
-    pollLoop();
-    setInterval(pollLoop, REFRESH_TTL_MS);
+    // 启动后台自然分钟对齐轮询检测（启动时先立即执行一次初始化，随后对齐自然分钟调度）
+    console.log(`[monitor] 启动自然分钟对齐定时调度 (对齐偏移: +${ALIGN_OFFSET_MS}ms)`);
+    pollLoop().finally(() => {
+      scheduleNextMinutePoll();
+    });
   });
 }
 
-export { server, wsManager };
+export {
+  server,
+  wsManager,
+  getStatus,
+  pollLoop,
+};

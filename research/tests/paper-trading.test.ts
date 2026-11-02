@@ -461,7 +461,7 @@ test("PaperTradingEngine: reset restores account balance and clears all orders/p
   assert.equal(engine.getSummary().totalTrades, 0);
 });
 
-test("PaperTradingEngine: records signalType and signalLabel for 连阳悬空, 首次跌10%, and 跌到20%+", () => {
+test("PaperTradingEngine: records signalType and signalLabel for 新高顶背离, 首次跌10%, and 跌到20%+", () => {
   const engine = new PaperTradingEngine({
     initialBalanceUsdt: 100,
     leverage: 10,
@@ -479,7 +479,7 @@ test("PaperTradingEngine: records signalType and signalLabel for 连阳悬空, �
     entryPrice: 50.0,
     entryTime: now,
     signalType: "streak",
-    signalLabel: "连阳悬空",
+    signalLabel: "新高顶背离",
     exitParams: { holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
     signal: {
       candle: { time: now - 60000, open: 49, high: 50.02, low: 48.9, close: 50, volume: 100 },
@@ -492,7 +492,7 @@ test("PaperTradingEngine: records signalType and signalLabel for 连阳悬空, �
   });
 
   assert.equal(streakPos.signalType, "streak");
-  assert.equal(streakPos.signalLabel, "连阳悬空");
+  assert.equal(streakPos.signalLabel, "新高顶背离");
   assert.equal(streakPos.exitParams?.holdMinutes, 15);
   assert.equal(streakPos.exitParams?.exitX, 50);
 

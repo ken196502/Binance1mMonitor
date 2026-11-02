@@ -170,9 +170,10 @@ test('UnifiedShortStrategyTracker triggers 新高顶背离 signal when MACD bear
   assert.ok(sig !== null, '新高顶背离 signal should trigger');
   assert.equal(sig.type, 'streak');
   assert.equal(sig.label, '新高顶背离');
-  assert.ok(sig.details.streakSignal?.divergence != null, 'Divergence details should be present');
-  assert.ok(sig.details.streakSignal!.divergence!.curHist < sig.details.streakSignal!.divergence!.prevHist);
-  assert.ok(sig.details.streakSignal!.divergence!.curDif < sig.details.streakSignal!.divergence!.prevDif);
+  const div = sig.details.streakSignal?.divergence;
+  assert.ok(div != null, 'Divergence details should be present');
+  assert.ok(div.curHist != null && div.prevHist != null && div.curHist < div.prevHist);
+  assert.ok(div.curDif != null && div.prevDif != null && div.curDif < div.prevDif);
 });
 
 test('UnifiedShortStrategyTracker triggers 新高顶背离 with Option B (DEA bearish divergence and rollover)', () => {

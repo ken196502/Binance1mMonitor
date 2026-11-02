@@ -117,9 +117,9 @@ test('PaperTradingEngine: enforces maxPositions and maxPositionsPerStrategy (at 
     entryPrice: 80,
     entryTime: 1000,
     signal: mockSignal,
-    signalType: 'extreme_dev',
+    signalType: 'w_bottom_divergence',
   });
-  assert.equal(engine.countPositionsByStrategy('extreme_dev'), 1);
+  assert.equal(engine.countPositionsByStrategy('w_bottom_divergence'), 1);
 
   // All 4 strategies hold 1 position simultaneously!
   const state = engine.getState();
@@ -129,7 +129,7 @@ test('PaperTradingEngine: enforces maxPositions and maxPositionsPerStrategy (at 
   assert.equal(engine.countPositionsByStrategy('streak'), 1);
   assert.equal(engine.countPositionsByStrategy('rebound'), 1);
   assert.equal(engine.countPositionsByStrategy('deep_rebound'), 1);
-  assert.equal(engine.countPositionsByStrategy('extreme_dev'), 1);
+  assert.equal(engine.countPositionsByStrategy('w_bottom_divergence'), 1);
 
   // Attempting to open another streak while streak has reached quota 1 should be prevented in onScan
   const streakTicker: Ticker24h = {
