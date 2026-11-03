@@ -22,8 +22,8 @@ services:
       # 默认模式(provider)下每个订阅作为 mihomo proxy-provider 加载，由 PROXY 组按
       # Binance 健康检查自动选节点；raw 模式下则按顺序下载第一个可用者直接当配置用。
       # 留空则读取挂载的 config.yaml 或使用内置直连默认配置。
-      # 默认内置两个公共订阅源（wzmwayne 精选 / ovmvo FreeSub），可在 .env 中覆盖为更稳定的自建订阅。
-      - MIHOMO_SUBSCRIPTION_URL=${MIHOMO_SUBSCRIPTION_URL:-https://raw.githubusercontent.com/wzmwayne/proxy-node/main/output/aio/clash.yaml,https://raw.githubusercontent.com/ovmvo/FreeSub/refs/heads/main/sub/permanent/mihomo.yaml}
+      # 默认内置公共订阅源，可在 .env 中覆盖为更稳定的自建订阅。
+      - MIHOMO_SUBSCRIPTION_URL=${MIHOMO_SUBSCRIPTION_URL:-https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/refs/heads/main/all/clash.yaml}
       # 订阅加载模式：provider（默认，见上）/ raw（订阅直接作为完整配置）
       - MIHOMO_CONFIG_MODE=${MIHOMO_CONFIG_MODE:-provider}
       # Binance 健康检查：只有能对下面地址返回 200 的节点才会被 PROXY 组选中（规避 451 地区屏蔽）
