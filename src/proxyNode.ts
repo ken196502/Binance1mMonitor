@@ -31,6 +31,12 @@ const GROUPS = new Set(["PROXY", "MANUAL", "ACTIVE"]);
 // but point at 127.0.0.1, so they can never carry traffic.
 const FAKE_NODE = /^(说明|剩余|到期|过期|官网|订阅|流量|套餐|时效|天数|群组|客服|邮箱|公告|重置|续费|防失联|请勿|转发卡)/;
 
+// Binance 明确封禁的地区（100% 会触发 HTTP 451）：美国、加拿大等
+const RESTRICTED_REGION = /(美国|美|US|USA|United States|加拿大|CA|Canada)/i;
+
+// Binance 友好支持的地区（优先挑选尝试）：香港、日本、新加坡、台湾、韩国、德国等
+const PREFERRED_REGION = /(香港|HK|Hong\s*Kong|日本|JP|Japan|东京|新加坡|SG|Singapore|台湾|TW|Taiwan|韩国|KR|Korea|德国|DE|Germany)/i;
+
 const badNodes = new Set<string>();
 
 // Nodes that have actually served Binance. Re-tried first on the next rotation:
@@ -93,11 +99,26 @@ async function candidates(): Promise<string[]> {
 
   // Always re-filter against the current blacklist: the cache holds the raw pool,
   // and bad nodes must never be handed back out just because the entry is cached.
-  // Previously-verified good nodes float to the front.
+  // Previously-verified good nodes float to the front, followed by preferred regions.
   const usable = pool.filter((n) => !badNodes.has(n));
-  const preferred = goodNodes.filter((n) => usable.includes(n));
-  const rest = usable.filter((n) => !goodNodes.includes(n));
-  return [...preferred, ...rest];
+  const verifiedGood = goodNodes.filter((n) => usable.includes(n));
+  const remaining = usable.filter((n) => !goodNodes.includes(n));
+
+  const preferredRegionNodes: string[] = [];
+  const normalNodes: string[] = [];
+  const restrictedRegionNodes: string[] = [];
+
+  for (const name of remaining) {
+    if (RESTRICTED_REGION.test(name)) {
+      restrictedRegionNodes.push(name);
+    } else if (PREFERRED_REGION.test(name)) {
+      preferredRegionNodes.push(name);
+    } else {
+      normalNodes.push(name);
+    }
+  }
+
+  return [...verifiedGood, ...preferredRegionNodes, ...normalNodes, ...restrictedRegionNodes];
 }
 
 /** True when the control API answers and the group we manage actually exists. */
@@ -111,7 +132,17 @@ export async function currentProxyNode(): Promise<string | null> {
   const r = await api("/proxies/" + encodeURIComponent(GROUP));
   if (!r?.ok) return null;
   try {
-    return (await r.json())?.now ?? null;
+    const data = await r.json();
+    const now = data?.now ?? null;
+    if (now && GROUPS.has(now)) {
+      // 若当前 ACTIVE 停留在 PROXY / MANUAL 等分组，进一步递归解析该分组底层正在使用的具体节点
+      const sub = await api("/proxies/" + encodeURIComponent(now));
+      if (sub?.ok) {
+        const subData = await sub.json();
+        return subData?.now ?? now;
+      }
+    }
+    return now;
   } catch {
     return null;
   }
@@ -211,7 +242,7 @@ export async function probeNodeWorks(
 export async function findWorkingNode(
   probeUrl: string,
   dispatcher: unknown,
-  maxTries = Number(process.env.PROXY_ROBE_TRIES ?? 6),
+  maxTries = Number(process.env.PROXY_PROBE_TRIES ?? process.env.PROXY_ROBE_TRIES ?? 15),
 ): Promise<string | null> {
   const candidates = await nextProxyCandidates(maxTries);
   for (const name of candidates) {

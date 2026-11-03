@@ -303,6 +303,9 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
       return handleBinanceResponse(r);
     } catch (e) {
       lastError = e;
+      if (isNetworkError(e) && attempt < maxNodeRotations) {
+        markProxyNodeBad(await currentProxyNode());
+      }
       // 网络层失败：换节点后再试；没有 fallback base 时这里原本会直接抛出。
       if (isNetworkError(e) && canFallback && attempt === 0) {
         return await undiciFetch(`${fallback}${path}`, {
