@@ -42,6 +42,7 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
         parse_mode: "HTML",
         disable_web_page_preview: true,
       }),
+      signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");

@@ -314,11 +314,16 @@ export async function buildBoards(
 
     let didRest = false;
     try {
-      const res = await fetchRowData(item, {
-        isGainerPriority: true,
-        allowRestKline: true,
-        klineLimit: willColdStart ? KLINE_INIT_LIMIT : KLINE_LIMIT,
-      });
+      const res = await Promise.race([
+        fetchRowData(item, {
+          isGainerPriority: true,
+          allowRestKline: true,
+          klineLimit: willColdStart ? KLINE_INIT_LIMIT : KLINE_LIMIT,
+        }),
+        new Promise<FetchRowResult>((_, reject) =>
+          setTimeout(() => reject(new Error(`同步 ${item.symbol} K线超时`)), 5000),
+        ),
+      ]);
       resultMap.set(item.symbol, res.row);
       syncedSymbols.add(item.symbol);
       didRest = res.didRest;
@@ -327,6 +332,7 @@ export async function buildBoards(
         console.warn(`[binance] 同步涨幅榜标的 ${item.symbol} 时检测到 429/418 限频，立即停止同步: ${(e as any)?.message ?? e}`);
         break;
       }
+      console.warn(`[binance] 同步标的 ${item.symbol} 失败或超时，降级展示基础行情: ${(e as any)?.message ?? e}`);
     }
 
     // 平滑请求节奏防突发
@@ -360,11 +366,16 @@ export async function buildBoards(
         try {
           const symCache = candleCache.get(item.symbol);
           const willColdStart = !symCache || !symCache.initialized || symCache.candles1m.length < 35;
-          const res = await fetchRowData(item, {
-            isGainerPriority: true,
-            allowRestKline: true,
-            klineLimit: willColdStart ? KLINE_INIT_LIMIT : KLINE_LIMIT,
-          });
+          const res = await Promise.race([
+            fetchRowData(item, {
+              isGainerPriority: true,
+              allowRestKline: true,
+              klineLimit: willColdStart ? KLINE_INIT_LIMIT : KLINE_LIMIT,
+            }),
+            new Promise<FetchRowResult>((_, reject) =>
+              setTimeout(() => reject(new Error(`补齐 ${item.symbol} K线超时`)), 5000),
+            ),
+          ]);
           resultMap.set(item.symbol, res.row);
           syncedSymbols.add(item.symbol);
           wsManager.setSymbols(Array.from(syncedSymbols));
@@ -427,6 +438,47 @@ async function refresh(): Promise<Status> {
   // 榜单选取 TOP_N（排除置顶的 BTC 和 SOL，避免列表重复）
   const unpinnedTickers = tickers.filter((t) => !PINNED_SYMBOLS.includes(t.symbol));
   const tops: TickerTops = pickTops(unpinnedTickers, TOP_N);
+
+  // 若尚未初始化 lastKnownStatus，立即基于 24h tickers 预填充基础榜单数据
+  // 确保冷启动时外部并发请求 /api/status 无需等待整轮 K 线拉取即可立即拿到完整涨幅榜
+  if (!lastKnownStatus) {
+    const bootstrapRows: Row[] = [
+      ...pinnedTickers.map((t) => ({ ...t, isPinned: true })),
+      ...tops.gainers,
+    ].map((t) => ({
+      ...t,
+      rank: null,
+      prevRank: null,
+      rankChange: null,
+      rankDelta: null,
+      isDropped: false,
+      state: "n/a",
+      alert: false,
+      bullish: null,
+      high: null,
+      dea: null,
+      deaLevel: null,
+      diff1m: null,
+      diff1mLevel: null,
+      supportMa: null,
+      streakCount: 0,
+      streakDir: null,
+      streakGainPercent: null,
+      greenBarRatio30: null,
+      greenBarCount30: null,
+    }));
+    lastKnownStatus = {
+      at: new Date().toISOString(),
+      base,
+      topN: TOP_N,
+      highRatio: HIGH_RATIO,
+      highWindow: HIGH_WINDOW,
+      gainers: bootstrapRows,
+      losers: [],
+      volume: [],
+      paperTrading: paperTrading.getSummary(),
+    };
+  }
 
   // 找出跌出前十的标的（上期在 Top 10，但当前不在自然 Top 10 中）
   const prevGainers = lastSnapshot?.gainers ?? null;
@@ -753,7 +805,49 @@ function readJsonBody(req: http.IncomingMessage): Promise<any> {
 const server = http.createServer(async (req, res) => {
   if (req.url === "/api/status" || req.url?.startsWith("/api/status?")) {
     try {
-      const status = await getStatus();
+      let status: Status;
+      if (lastKnownStatus && lastKnownStatus.gainers.length > 0) {
+        // 已有数据快照：等待最新刷新最多 2.5 秒；若超时则立即以旧带新响应（Stale-While-Revalidate），绝不阻塞 HTTP
+        status = await Promise.race([
+          getStatus(),
+          new Promise<Status>((resolve) =>
+            setTimeout(() => {
+              resolve({
+                ...lastKnownStatus!,
+                paperTrading: paperTrading.getSummary(),
+              });
+            }, 2500),
+          ),
+        ]);
+      } else {
+        // 冷启动无历史快照时，最多等待 8 秒完成基础同步
+        status = await Promise.race([
+          getStatus(),
+          new Promise<Status>((resolve) =>
+            setTimeout(() => {
+              if (lastKnownStatus) {
+                resolve({
+                  ...lastKnownStatus,
+                  paperTrading: paperTrading.getSummary(),
+                });
+              } else {
+                resolve({
+                  at: new Date().toISOString(),
+                  base: process.env.BINANCE_BASE ?? "https://fapi.binance.com",
+                  topN: TOP_N,
+                  highRatio: HIGH_RATIO,
+                  highWindow: HIGH_WINDOW,
+                  gainers: [],
+                  losers: [],
+                  volume: [],
+                  paperTrading: paperTrading.getSummary(),
+                  error: "服务启动中，正在同步币安数据...",
+                });
+              }
+            }, 8000),
+          ),
+        ]);
+      }
       const responseStatus: Status = {
         ...status,
         paperTrading: paperTrading.getSummary(),

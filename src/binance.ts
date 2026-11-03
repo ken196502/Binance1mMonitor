@@ -77,15 +77,24 @@ function isUsdtPerp(symbol: string): boolean {
 // a normal HTTP error like 429/451. We do NOT retry on HTTP errors, since those
 // are real API responses the caller wants to see.
 function isNetworkError(e: unknown): boolean {
-  if (!(e instanceof TypeError)) return false; // undici fetch failures are TypeError("fetch failed")
-  const code = (e as any)?.cause?.code;
-  return (
+  if (!e) return false;
+  if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) return true;
+  const name = (e as any)?.name;
+  if (name === "TimeoutError" || name === "AbortError") return true;
+  const code = (e as any)?.cause?.code ?? (e as any)?.code;
+  if (
     code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "UND_ERR_HEADERS_TIMEOUT" ||
+    code === "UND_ERR_BODY_TIMEOUT" ||
+    code === "UND_ERR_SOCKET" ||
     code === "ECONNREFUSED" ||
     code === "ECONNRESET" ||
     code === "ENOTFOUND" ||
     code === "ETIMEDOUT"
-  );
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /** Timestamp in ms until which we must back off due to 418 IP ban, 429 rate limit, or proactive backoff. */
@@ -248,6 +257,8 @@ const DEFAULT_HEADERS: Record<string, string> = {
   Accept: "application/json",
 };
 
+const BINANCE_FETCH_TIMEOUT_MS = Number(process.env.BINANCE_FETCH_TIMEOUT_MS ?? 8_000);
+
 /** fetch() wrapper that handles rate limiting, bans, proactive backoff, and fallback base retry. */
 async function binanceFetch(path: string): Promise<UndiciResponse> {
   const now = Date.now();
@@ -279,6 +290,7 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
       const r = await undiciFetch(`${base}${path}`, {
         dispatcher,
         headers: DEFAULT_HEADERS,
+        signal: AbortSignal.timeout(BINANCE_FETCH_TIMEOUT_MS),
       });
 
       // 只有「节点」把我们带到被封禁地区时（451）才换节点；429/418 是全局限频，
@@ -296,6 +308,7 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
         return await undiciFetch(`${fallback}${path}`, {
           dispatcher,
           headers: DEFAULT_HEADERS,
+          signal: AbortSignal.timeout(BINANCE_FETCH_TIMEOUT_MS),
         });
       }
       if (!isNetworkError(e)) throw e;

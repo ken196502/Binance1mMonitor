@@ -24,20 +24,24 @@ export function useStatus(): StatusState {
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const poll = async () => {
+      req.current?.abort();
+      const ac = new AbortController();
+      req.current = ac;
+      const timeoutId = setTimeout(() => ac.abort(), 10000);
+
       try {
-        req.current?.abort();
-        const ac = new AbortController();
-        req.current = ac;
         const r = await fetch("/api/status", { signal: ac.signal });
+        clearTimeout(timeoutId);
         const s = (await r.json()) as Status;
         if (active) setState({ status: s, error: null });
       } catch (e) {
+        clearTimeout(timeoutId);
         if (!active) return;
         if (e instanceof DOMException && e.name === "AbortError") return;
-        setState({
-          status: null,
+        setState((prev) => ({
+          status: prev.status,
           error: e instanceof Error ? e.message : String(e),
-        });
+        }));
       }
     };
 

@@ -87,7 +87,7 @@ export default function App() {
           id="s1"
           title="24h 涨幅榜"
           changeHeader="24h涨幅%"
-          rows={status && !status.error ? status.gainers : []}
+          rows={status?.gainers ?? []}
           changeKey="priceChangePercent"
           active={true}
           onSelectSymbol={selectSymbol}
@@ -98,7 +98,7 @@ export default function App() {
           symbol={chartSymbol}
           onSymbolChange={setChartSymbol}
           active={true}
-          markerTime={status && !status.error ? Date.parse(status.at) : null}
+          markerTime={status?.at ? Date.parse(status.at) : null}
           dayChangePercent={dayChangePercent}
         />
       </div>
