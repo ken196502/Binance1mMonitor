@@ -28,21 +28,16 @@ export function sma(values: number[], period: number): (number | null)[] {
 }
 
 /**
- * 把 K 线序列转成图表 payload。最后一根可能是未收盘的实时 K 线（监控侧由 WS 推进），
- * 前端照常绘制为当前这根。
+ * 把原始 1m K 线数组转换为包含均线与 MACD 状态的 ChartBar 数组
  */
-export function buildChartPayload(
-  symbol: string,
-  candles: Candle[],
-  source: ChartPayload["source"],
-): ChartPayload {
+export function candlesToChartBars(candles: Candle[]): ChartBar[] {
   const closes = candles.map((c) => c.close);
   const maSeries = new Map<number, (number | null)[]>(
     CHART_MA_PERIODS.map((p) => [p, sma(closes, p)]),
   );
   const { dif, dea, hist } = computeMacd(closes, CHART_MACD.fast, CHART_MACD.slow, CHART_MACD.signal);
 
-  const bars: ChartBar[] = candles.map((c, i) => {
+  return candles.map((c, i) => {
     const ma: Record<string, number | null> = {};
     for (const period of CHART_MA_PERIODS) {
       ma[String(period)] = maSeries.get(period)?.[i] ?? null;
@@ -60,6 +55,19 @@ export function buildChartPayload(
       hist: hist[i],
     };
   });
+}
+
+/**
+ * 把 K 线序列转成图表 payload。最后一根可能是未收盘的实时 K 线（监控侧由 WS 推进），
+ * 前端照常绘制为当前这根。
+ */
+export function buildChartPayload(
+  symbol: string,
+  candles: Candle[],
+  source: ChartPayload["source"],
+  dayChangePercent?: number | null,
+): ChartPayload {
+  const bars = candlesToChartBars(candles);
 
   return {
     symbol,
@@ -69,6 +77,7 @@ export function buildChartPayload(
     maPeriods: [...CHART_MA_PERIODS],
     macd: { ...CHART_MACD },
     bars,
+    dayChangePercent: dayChangePercent ?? null,
   };
 }
 

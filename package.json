@@ -15,7 +15,9 @@
     "research": "tsx --env-file-if-exists=.env research/cli.ts",
     "research:wick": "tsx --env-file-if-exists=.env research/cli.ts wick",
     "mine:setup": "uv venv --python 3.12 .venv-gpu && uv pip install --python .venv-gpu/bin/python -r research/gpu/requirements.txt",
-    "mine:peak-rebound": "tsx --env-file-if-exists=.env research/peak-rebound-miner.ts"
+    "mine:peak-rebound": "tsx --env-file-if-exists=.env research/peak-rebound-miner.ts",
+    "mine:strategy": "tsx scripts/mine-strategy.ts",
+    "deploy:strategy": "tsx scripts/deploy-strategy.ts"
   },
   "dependencies": {
     "@esbuild/linux-arm64": "^0.28.2",

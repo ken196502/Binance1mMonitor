@@ -59,6 +59,10 @@ export default function App() {
     }
   };
 
+  // 查找当前标的在涨幅榜/快照中的 24h 涨跌幅
+  const currentGainer = status?.gainers?.find((r) => r.symbol === chartSymbol);
+  const dayChangePercent = currentGainer?.priceChangePercent ?? null;
+
   return (
     <>
       <header>
@@ -95,6 +99,7 @@ export default function App() {
           onSymbolChange={setChartSymbol}
           active={true}
           markerTime={status && !status.error ? Date.parse(status.at) : null}
+          dayChangePercent={dayChangePercent}
         />
       </div>
     </>

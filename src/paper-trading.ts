@@ -10,9 +10,16 @@ import path from "node:path";
 import {
   consecutiveStreakAt,
   calculateSupportMaAt,
+  calculateSma,
   computeMacd,
   type Candle,
 } from "./macd.ts";
+import { candlesToChartBars } from "./chart.ts";
+import {
+  analyzeMaAlignment,
+  analyzeOhlcComparison,
+  analyzeMacdStats,
+} from "./kline-stats.ts";
 import { sendTelegramMessage, telegramConfigured } from "./telegram.ts";
 import {
   UnifiedShortStrategyTracker,
@@ -47,6 +54,7 @@ import type {
   PaperSignalType,
   PaperSignalLabel,
   PaperExitParams,
+  KlineStatsStrategyLiveConfig,
 } from "./types.ts";
 import type { Ticker24h } from "./binance.ts";
 import type { TradeTick } from "./ws.ts";
@@ -71,11 +79,12 @@ export interface PaperStrategyConfig {
   streakLeverage?: number;    // 新高顶背离闪击专属杠杆 (回测最优 10x)
   trendLeverage?: number;     // 顺势衰竭专属杠杆 (默认 3x)
   longLeverage?: number;      // 做多专属杠杆 (默认 3x)
+  klineStatsLeverage?: number;// 量化特征专属杠杆 (默认 10x)
   marginUsdt: number;         // 单笔保证金金额基准 (默认 20 USDT 参考值)
   marginRate?: number;        // 单笔保证金占总资产比例 (默认 0.20 即 20% 资产量)
   marginPercent?: number;     // 百分比格式 (默认 20)
   maxPositions?: number;      // 全局最大同时持仓数 (默认 5)
-  maxPositionsPerStrategy?: number; // 单策略最大同时持仓数 (默认 1，保证5大策略各持仓至多 1 笔)
+  maxPositionsPerStrategy?: number; // 单策略最大同时持仓数 (默认 1，保证各大策略各持仓至多 1 笔)
   takerFeeBps: number;
   slippageBps: number;
   limitDivisor: number; // 挂单上浮幅度分母 N: 挂单上浮 = dayChangePercent / limitDivisor (默认 100)
@@ -89,11 +98,15 @@ export interface PaperStrategyConfig {
   enableHourlySuppression?: boolean; // 是否启用小时线压制做空 (默认 true)
   enableLongs?: boolean;      // 是否启用涨幅榜做多 (默认 true)
   enableWBottomDivergence?: boolean; // 是否启用左侧3W底背离弹射做多 (默认 true)
+  enableKlineStatsShort?: boolean;   // 是否启用量化K线特征挖掘做空 (默认 true)
+  enableKlineStatsLong?: boolean;    // 是否启用量化K线特征挖掘做多 (默认 true)
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
   hourlySuppressionConfig?: Partial<HourlySuppressionLiveConfig>;
   wBottomDivergenceConfig?: Partial<WBottomDivergenceLiveConfig>;
+  klineStatsShortConfig?: Partial<KlineStatsStrategyLiveConfig>;
+  klineStatsLongConfig?: Partial<KlineStatsStrategyLiveConfig>;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -119,6 +132,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   trendLeverage: 3,        // 顺势衰竭长波段杠杆 3x
   streakLeverage: 10,      // 新高顶背离闪击战杠杆 10x
   longLeverage: 3,         // 做多专属杠杆 3x (回测黄金参数)
+  klineStatsLeverage: 10,  // 量化特征做空专属杠杆 10x
   marginUsdt: 20,          // 单笔保证金基准 20 USDT (100U 初本时对应 20%)
   marginRate: 0.20,        // 单笔保证金占当前总资产 20%
   marginPercent: 20,       // 20%
@@ -136,6 +150,8 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   enableHourlySuppression: true, // 策略 6: 开启小时线压制做空 (最大 30m 持仓)
   enableLongs: true,       // 默认 true (开启涨幅榜做多)
   enableWBottomDivergence: true, // 策略 1: 开启左侧3W底背离弹射做多 (最大 30m 持仓)
+  enableKlineStatsShort: true,   // 策略 7: 开启量化K线统计特征做空 (45m 持仓，回测胜率 85%, PF 3.33)
+  enableKlineStatsLong: true,    // 策略 8: 开启量化K线统计特征做多 (30m 持仓，回测胜率 70.4%, PF 1.90)
   storageFile: STATE_FILE,
   streakConfig: {
     ...STREAK_LIVE_DEFAULT_CONFIG,
@@ -175,6 +191,36 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     stopLossPercent: 7.0,
     moveSlToEntryAfterTp1: true,
   },
+  klineStatsShortConfig: {
+    topN: 10,
+    minDayChange: 10,
+    intervalWindow: 5,
+    ampDivisor: 8,
+    maRequirement: "MA10_BREAKDOWN",
+    macdRequirement: "GREEN_RATIO_30_80",
+    holdMinutes: 45,
+    tp1Percent: 3.0,
+    tp2Percent: 7.0,
+    stopLossPercent: 5.0,
+    moveSlToEntryAfterTp1: true,
+    cooldownMinutes: 20,
+    leverage: 10,
+  },
+  klineStatsLongConfig: {
+    topN: 10,
+    minDayChange: 10,
+    intervalWindow: 5,
+    ampDivisor: 8,
+    maRequirement: "MA20_SUPPORT",
+    macdRequirement: "GREEN_RATIO_15_70",
+    holdMinutes: 30,
+    tp1Percent: 2.5,
+    tp2Percent: 5.5,
+    stopLossPercent: 3.5,
+    moveSlToEntryAfterTp1: true,
+    cooldownMinutes: 20,
+    leverage: 5,
+  },
 };
 
 export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLabel): PaperSignalLabel {
@@ -183,6 +229,8 @@ export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLab
   if (type === "rebound") return "首次跌10%";
   if (type === "hourly_suppression") return "小时线压制";
   if (type === "w_bottom_divergence") return "左侧3W底背离";
+  if (type === "kline_stats_short") return "量化特征做空";
+  if (type === "kline_stats_long") return "量化特征做多";
   return "新高顶背离";
 }
 
@@ -286,9 +334,11 @@ export class PaperTradingEngine {
   private closedPositions: PaperPosition[] = [];
   private account: PaperAccount;
   private stats: PaperTradingStats;
+  private stats24h: PaperTradingStats;
   private saveTimeout: NodeJS.Timeout | null = null;
   private unifiedTracker: UnifiedShortStrategyTracker;
   private longTracker: UnifiedLongStrategyTracker;
+  private klineStatsCooldown = new Map<string, number>();
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
     this.config = { ...PAPER_DEFAULT_CONFIG, ...config };
@@ -360,6 +410,23 @@ export class PaperTradingEngine {
       avgTradePnlUsdt: 0,
       realizedRewardRisk: null,
     };
+    this.stats24h = {
+      initialBalanceUsdt: this.config.initialBalanceUsdt,
+      balanceUsdt: this.config.initialBalanceUsdt,
+      equityUsdt: this.config.initialBalanceUsdt,
+      accountRoiPercent: 0,
+      totalTrades: 0,
+      winningTrades: 0,
+      losingTrades: 0,
+      breakevenTrades: 0,
+      winRate: 0,
+      totalNetPnlUsdt: 0,
+      grossGainsUsdt: 0,
+      grossLossesUsdt: 0,
+      profitFactor: 1.0,
+      avgTradePnlUsdt: 0,
+      realizedRewardRisk: null,
+    };
     this.loadState();
   }
 
@@ -381,6 +448,12 @@ export class PaperTradingEngine {
     }
     if (signalType === "w_bottom_divergence") {
       return this.config.longLeverage ?? 3;
+    }
+    if (signalType === "kline_stats_long") {
+      return this.config.klineStatsLongConfig?.leverage ?? this.config.longLeverage ?? 5;
+    }
+    if (signalType === "kline_stats_short") {
+      return this.config.klineStatsShortConfig?.leverage ?? this.config.klineStatsLeverage ?? 10;
     }
     return this.config.trendLeverage ?? this.config.leverage;
   }
@@ -411,6 +484,164 @@ export class PaperTradingEngine {
     return Math.max(5, Math.round(margin * 100) / 100);
   }
 
+  /**
+   * 检查 K 线统计量化特征策略入场信号 (做多或做空)
+   */
+  public checkKlineStatsSignal(
+    side: "SHORT" | "LONG",
+    symbol: string,
+    dayChangePercent: number,
+    rank: number,
+    candles: Candle[],
+    now = Date.now(),
+  ): {
+    side: "SHORT" | "LONG";
+    type: PaperSignalType;
+    label: PaperSignalLabel;
+    entryPrice: number;
+    exitParams: PaperExitParams;
+    signalDetails: SignalMatchDetails;
+  } | null {
+    const config =
+      side === "SHORT"
+        ? this.config.klineStatsShortConfig
+        : this.config.klineStatsLongConfig;
+
+    if (!config) return null;
+
+    // 1. 榜单排名与 24h 涨跌幅门槛
+    const maxRank = config.topN ?? 10;
+    if (rank > maxRank) return null;
+    const minDayChange = config.minDayChange ?? 10;
+    if (dayChangePercent < minDayChange) return null;
+
+    // 2. 冷却时间检查
+    const cdUntil = this.klineStatsCooldown.get(symbol) ?? 0;
+    if (cdUntil > now) return null;
+
+    // 3. K 线数量充足性检查 (至少需 65 根计算 MA60 和 MACD)
+    // 最后一根 candles[candles.length - 1] 为当前正在走动的 forming bar，targetIdx 为最新收盘 bar
+    const targetIdx = candles.length - 2;
+    if (targetIdx < 60) return null;
+
+    const targetCandle = candles[targetIdx];
+    if (!targetCandle || targetCandle.close <= 0) return null;
+
+    // 4. 计算指定 intervalWindow 内的冲高/振幅是否达标 (>= 24h涨幅 / ampDivisor)
+    const windowBars = config.intervalWindow ?? 5;
+    const wStart = Math.max(0, targetIdx - windowBars + 1);
+    let minLow = Infinity;
+    let maxHigh = -Infinity;
+    for (let k = wStart; k <= targetIdx; k++) {
+      if (candles[k].low < minLow) minLow = candles[k].low;
+      if (candles[k].high > maxHigh) maxHigh = candles[k].high;
+    }
+    if (minLow <= 0 || maxHigh <= 0) return null;
+
+    const risePercent = ((targetCandle.high - minLow) / minLow) * 100;
+    const divisor = config.ampDivisor ?? 8;
+    const requiredRise = dayChangePercent / divisor;
+    if (risePercent < requiredRise) return null;
+
+    // 5. 转换为 ChartBar 计算均线和 MACD
+    const bars = candlesToChartBars(candles);
+    const closedBar = bars[targetIdx];
+    if (!closedBar) return null;
+
+    // 6. 均线排列与支撑/压制条件判定
+    const maAlignment = analyzeMaAlignment(bars, targetIdx);
+    const ohlc = analyzeOhlcComparison(bars, targetIdx);
+
+    let maPass = true;
+    switch (config.maRequirement) {
+      case "MA10_SUPPORT":
+        maPass = ohlc.supports.includes(10);
+        break;
+      case "MA20_SUPPORT":
+        maPass = ohlc.supports.includes(20);
+        break;
+      case "MA60_SUPPORT":
+        maPass = ohlc.supports.includes(60);
+        break;
+      case "MA_BULLISH_STACK":
+        maPass =
+          maAlignment.type === "bullish_full" ||
+          maAlignment.type === "bullish_short";
+        break;
+      case "MA60_RESIST":
+        maPass = ohlc.resistances.includes(60);
+        break;
+      case "MA20_RESIST":
+        maPass = ohlc.resistances.includes(20);
+        break;
+      case "MA10_BREAKDOWN":
+        maPass =
+          closedBar.open >= (closedBar.ma["10"] ?? 0) &&
+          closedBar.close < (closedBar.ma["10"] ?? 0);
+        break;
+      case "NONE":
+      default:
+        maPass = true;
+        break;
+    }
+    if (!maPass) return null;
+
+    // 7. MACD 绿柱比例条件判定
+    const macd = analyzeMacdStats(bars, targetIdx);
+    let macdPass = true;
+    switch (config.macdRequirement) {
+      case "GREEN_RATIO_15_70":
+        macdPass = macd.greenBarRatio15 >= 0.7 && macd.isBullishCross;
+        break;
+      case "GREEN_RATIO_30_70":
+        macdPass = macd.greenBarRatio30 >= 0.7;
+        break;
+      case "GREEN_RATIO_30_80":
+        macdPass = macd.greenBarRatio30 >= 0.8;
+        break;
+      case "GREEN_STREAK_3":
+        macdPass = macd.greenStreak >= 3;
+        break;
+      case "HIST_WEAKENING": {
+        const prevHist = targetIdx > 0 ? bars[targetIdx - 1].hist : 0;
+        macdPass = prevHist > 0 && (closedBar.hist < prevHist || closedBar.hist <= 0);
+        break;
+      }
+      case "NONE":
+      default:
+        macdPass = true;
+        break;
+    }
+    if (!macdPass) return null;
+
+    const formingBar = candles[candles.length - 1];
+    const entryPrice = formingBar && formingBar.close > 0 ? formingBar.close : targetCandle.close;
+    const signalType: PaperSignalType = side === "SHORT" ? "kline_stats_short" : "kline_stats_long";
+    const signalLabel: PaperSignalLabel = side === "SHORT" ? "量化特征做空" : "量化特征做多";
+
+    return {
+      side,
+      type: signalType,
+      label: signalLabel,
+      entryPrice,
+      exitParams: {
+        holdMinutes: config.holdMinutes ?? (side === "SHORT" ? 45 : 30),
+        tp1Percent: config.tp1Percent ?? (side === "SHORT" ? 3.0 : 2.5),
+        tp2Percent: config.tp2Percent ?? (side === "SHORT" ? 7.0 : 5.5),
+        stopLossPercent: config.stopLossPercent ?? (side === "SHORT" ? 5.0 : 3.5),
+        moveSlToEntryAfterTp1: config.moveSlToEntryAfterTp1 ?? true,
+      },
+      signalDetails: {
+        candle: targetCandle,
+        streakCount: macd.greenStreak,
+        amp30Percent: risePercent,
+        upperShadowRatio: ohlc.upperWickPercent,
+        greenRatio: macd.greenBarRatio30,
+        consecutiveGreenBars: macd.greenStreak,
+      },
+    };
+  }
+
   public updateConfig(updates: Partial<PaperStrategyConfig>): PaperStrategyConfig {
     if (typeof updates.leverage === "number" && Number.isFinite(updates.leverage) && updates.leverage >= 1 && updates.leverage <= 100) {
       this.config.leverage = updates.leverage;
@@ -423,6 +654,9 @@ export class PaperTradingEngine {
     }
     if (typeof updates.longLeverage === "number" && Number.isFinite(updates.longLeverage) && updates.longLeverage >= 1 && updates.longLeverage <= 100) {
       this.config.longLeverage = updates.longLeverage;
+    }
+    if (typeof updates.klineStatsLeverage === "number" && Number.isFinite(updates.klineStatsLeverage) && updates.klineStatsLeverage >= 1 && updates.klineStatsLeverage <= 100) {
+      this.config.klineStatsLeverage = updates.klineStatsLeverage;
     }
     if (typeof updates.marginRate === "number" && Number.isFinite(updates.marginRate) && updates.marginRate > 0 && updates.marginRate <= 1) {
       this.config.marginRate = updates.marginRate;
@@ -481,8 +715,71 @@ export class PaperTradingEngine {
       this.config.enableWBottomDivergence = updates.enableWBottomDivergence;
       this.longTracker.updateConfig({ enableWBottomDivergence: updates.enableWBottomDivergence });
     }
+    if (typeof updates.enableKlineStatsShort === "boolean") {
+      this.config.enableKlineStatsShort = updates.enableKlineStatsShort;
+    }
+    if (typeof updates.enableKlineStatsLong === "boolean") {
+      this.config.enableKlineStatsLong = updates.enableKlineStatsLong;
+    }
+    if (typeof updates.topN === "number" && Number.isFinite(updates.topN) && updates.topN >= 1) {
+      this.config.topN = Math.floor(updates.topN);
+    }
+    if (typeof updates.ampDivisor === "number" && Number.isFinite(updates.ampDivisor) && updates.ampDivisor > 0) {
+      this.config.ampDivisor = updates.ampDivisor;
+      if (this.config.streakConfig) {
+        this.config.streakConfig = { ...this.config.streakConfig, ampDivisor: updates.ampDivisor };
+      }
+      this.unifiedTracker.updateConfig({
+        streakConfig: { ...this.config.streakConfig, ampDivisor: updates.ampDivisor },
+      });
+    }
+    if (Array.isArray(updates.supportMaPeriods) && updates.supportMaPeriods.every((p) => typeof p === "number" && p > 0)) {
+      this.config.supportMaPeriods = [...updates.supportMaPeriods];
+      if (this.config.streakConfig) {
+        this.config.streakConfig = { ...this.config.streakConfig, supportMaPeriods: this.config.supportMaPeriods };
+      }
+      this.unifiedTracker.updateConfig({
+        streakConfig: { ...this.config.streakConfig, supportMaPeriods: this.config.supportMaPeriods },
+      });
+    }
+    if (typeof updates.minStreakCount === "number" && Number.isFinite(updates.minStreakCount) && updates.minStreakCount >= 1) {
+      this.config.minStreakCount = Math.floor(updates.minStreakCount);
+    }
+    if (typeof updates.minUpperShadowRatio === "number" && Number.isFinite(updates.minUpperShadowRatio)) {
+      this.config.minUpperShadowRatio = updates.minUpperShadowRatio;
+    }
+    if (typeof updates.maxUpperShadowRatio === "number" && Number.isFinite(updates.maxUpperShadowRatio)) {
+      this.config.maxUpperShadowRatio = updates.maxUpperShadowRatio;
+    }
+    if (typeof updates.greenWindow === "number" && Number.isFinite(updates.greenWindow) && updates.greenWindow > 0) {
+      this.config.greenWindow = Math.floor(updates.greenWindow);
+    }
+    if (typeof updates.minGreenRatio === "number" && Number.isFinite(updates.minGreenRatio) && updates.minGreenRatio >= 0 && updates.minGreenRatio <= 1) {
+      this.config.minGreenRatio = updates.minGreenRatio;
+    }
+    if (typeof updates.minConsecutiveGreenBars === "number" && Number.isFinite(updates.minConsecutiveGreenBars) && updates.minConsecutiveGreenBars >= 0) {
+      this.config.minConsecutiveGreenBars = Math.floor(updates.minConsecutiveGreenBars);
+    }
     if (typeof updates.holdMinutes === "number" && Number.isFinite(updates.holdMinutes) && updates.holdMinutes > 0) {
       this.config.holdMinutes = updates.holdMinutes;
+    }
+    if (typeof updates.exitX === "number" && Number.isFinite(updates.exitX) && updates.exitX > 0) {
+      this.config.exitX = updates.exitX;
+    }
+    if (typeof updates.exitN === "number" && Number.isFinite(updates.exitN) && updates.exitN > 0) {
+      this.config.exitN = updates.exitN;
+    }
+    if (typeof updates.exitM === "number" && Number.isFinite(updates.exitM) && updates.exitM > 0) {
+      this.config.exitM = updates.exitM;
+    }
+    if (typeof updates.firstCloseFraction === "number" && Number.isFinite(updates.firstCloseFraction) && updates.firstCloseFraction > 0 && updates.firstCloseFraction <= 1) {
+      this.config.firstCloseFraction = updates.firstCloseFraction;
+    }
+    if (typeof updates.takerFeeBps === "number" && Number.isFinite(updates.takerFeeBps)) {
+      this.config.takerFeeBps = updates.takerFeeBps;
+    }
+    if (typeof updates.slippageBps === "number" && Number.isFinite(updates.slippageBps)) {
+      this.config.slippageBps = updates.slippageBps;
     }
     if (updates.streakConfig && typeof updates.streakConfig === "object") {
       this.config.streakConfig = { ...this.config.streakConfig, ...updates.streakConfig };
@@ -504,10 +801,22 @@ export class PaperTradingEngine {
       this.config.wBottomDivergenceConfig = { ...this.config.wBottomDivergenceConfig, ...updates.wBottomDivergenceConfig };
       this.longTracker.updateConfig({ wBottomDivergenceConfig: this.config.wBottomDivergenceConfig });
     }
+    if (updates.klineStatsShortConfig && typeof updates.klineStatsShortConfig === "object") {
+      this.config.klineStatsShortConfig = {
+        ...this.config.klineStatsShortConfig,
+        ...updates.klineStatsShortConfig,
+      };
+    }
+    if (updates.klineStatsLongConfig && typeof updates.klineStatsLongConfig === "object") {
+      this.config.klineStatsLongConfig = {
+        ...this.config.klineStatsLongConfig,
+        ...updates.klineStatsLongConfig,
+      };
+    }
 
     const currentMargin = this.calculateOrderMargin();
     console.log(
-      `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高闪击杠杆 ${this.config.streakLeverage ?? 10}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 做多杠杆 ${this.config.longLeverage ?? 3}x, 仓位比例 ${((this.config.marginRate ?? 0.2) * 100).toFixed(0)}% (约 ${currentMargin.toFixed(1)}U), 最大持仓 ${this.config.maxPositions ?? 5} 笔 (每策略 ${this.config.maxPositionsPerStrategy ?? 1} 笔)`,
+      `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高闪击杠杆 ${this.config.streakLeverage ?? 10}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 量化特征杠杆 ${this.config.klineStatsLeverage ?? 10}x, 做多杠杆 ${this.config.longLeverage ?? 3}x, 仓位比例 ${((this.config.marginRate ?? 0.2) * 100).toFixed(0)}% (约 ${currentMargin.toFixed(1)}U), 最大持仓 ${this.config.maxPositions ?? 5} 笔 (每策略 ${this.config.maxPositionsPerStrategy ?? 1} 笔), ampDivisor=${this.config.ampDivisor ?? 10}`,
     );
 
     this.scheduleSave();
@@ -811,6 +1120,54 @@ export class PaperTradingEngine {
           } else {
             console.log(
               `[paper-trading] 做多策略 [${formatSignalLabel(signalType, longSignal.label as any)}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，跳过 ${ticker.symbol}`,
+            );
+          }
+        }
+      }
+
+      // 5. 量化特征做空信号检测 (策略 7)
+      if (!chosenSignal && (this.config.enableKlineStatsShort ?? true)) {
+        const klineShortSignal = this.checkKlineStatsSignal(
+          "SHORT",
+          ticker.symbol,
+          ticker.priceChangePercent,
+          rank,
+          symCache.candles1m,
+          now,
+        );
+        if (klineShortSignal) {
+          const signalType = klineShortSignal.type;
+          const currentStrategyPositions = this.countPositionsByStrategy(signalType);
+          const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
+          if (currentStrategyPositions < maxPerStrategy) {
+            chosenSignal = klineShortSignal;
+          } else {
+            console.log(
+              `[paper-trading] 量化特征策略 [${klineShortSignal.label}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，跳过 ${ticker.symbol}`,
+            );
+          }
+        }
+      }
+
+      // 6. 量化特征做多信号检测 (策略 8)
+      if (!chosenSignal && (this.config.enableLongs ?? true) && (this.config.enableKlineStatsLong ?? true)) {
+        const klineLongSignal = this.checkKlineStatsSignal(
+          "LONG",
+          ticker.symbol,
+          ticker.priceChangePercent,
+          rank,
+          symCache.candles1m,
+          now,
+        );
+        if (klineLongSignal) {
+          const signalType = klineLongSignal.type;
+          const currentStrategyPositions = this.countPositionsByStrategy(signalType);
+          const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
+          if (currentStrategyPositions < maxPerStrategy) {
+            chosenSignal = klineLongSignal;
+          } else {
+            console.log(
+              `[paper-trading] 量化特征策略 [${klineLongSignal.label}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，跳过 ${ticker.symbol}`,
             );
           }
         }
@@ -1333,9 +1690,17 @@ export class PaperTradingEngine {
     this.activePositions.delete(pos.symbol);
     this.unifiedTracker.closePosition(pos.symbol);
     this.longTracker.closePosition(pos.symbol);
+    if (pos.signalType === "kline_stats_short") {
+      const cd = (this.config.klineStatsShortConfig?.cooldownMinutes ?? 20) * 60 * 1000;
+      this.klineStatsCooldown.set(pos.symbol, Date.now() + cd);
+    } else if (pos.signalType === "kline_stats_long") {
+      const cd = (this.config.klineStatsLongConfig?.cooldownMinutes ?? 20) * 60 * 1000;
+      this.klineStatsCooldown.set(pos.symbol, Date.now() + cd);
+    }
     this.closedPositions.unshift(pos);
-    if (this.closedPositions.length > 500) {
-      this.closedPositions.length = 500;
+    // 默认保留最近 1000 笔平仓明细，确保至少完整保留 24 小时内的所有交易记录
+    if (this.closedPositions.length > 1000) {
+      this.closedPositions.length = 1000;
     }
 
     // Add realized profit to cash balance
@@ -1354,8 +1719,17 @@ export class PaperTradingEngine {
     );
   }
 
-  private recalculateStats(): void {
-    const totalTrades = this.closedPositions.length;
+  public getClosedPositions24h(): PaperPosition[] {
+    const cutoff24h = Date.now() - 24 * 60 * 60 * 1000;
+    return this.closedPositions.filter((p) => (p.closedAt ?? p.entryTime) >= cutoff24h);
+  }
+
+  public getStats24h(): PaperTradingStats {
+    return { ...this.stats24h };
+  }
+
+  private computeStatsForPositions(positions: PaperPosition[]): PaperTradingStats {
+    const totalTrades = positions.length;
     let winningTrades = 0;
     let losingTrades = 0;
     let breakevenTrades = 0;
@@ -1363,7 +1737,7 @@ export class PaperTradingEngine {
     let grossGainsUsdt = 0;
     let grossLossesUsdt = 0;
 
-    for (const p of this.closedPositions) {
+    for (const p of positions) {
       totalNetPnlUsdt += p.totalNetPnlUsdt;
       if (p.totalNetPnlUsdt > 0.001) {
         winningTrades++;
@@ -1390,7 +1764,44 @@ export class PaperTradingEngine {
     const realizedRewardRisk =
       meanWin > 0 && meanLoss > 0 ? meanWin / meanLoss : null;
 
-    // Recalculate account equity and used margin
+    let totalUnrealized = 0;
+    for (const p of this.activePositions.values()) {
+      totalUnrealized += p.unrealizedNetPnlUsdt;
+    }
+    const equity = this.account ? this.account.balanceUsdt + totalUnrealized : this.config.initialBalanceUsdt;
+    const totalPnl = equity - this.config.initialBalanceUsdt;
+    const accountRoiPercent =
+      this.config.initialBalanceUsdt > 0
+        ? (totalPnl / this.config.initialBalanceUsdt) * 100
+        : 0;
+
+    return {
+      initialBalanceUsdt: this.config.initialBalanceUsdt,
+      balanceUsdt: this.account?.balanceUsdt ?? this.config.initialBalanceUsdt,
+      equityUsdt: equity,
+      accountRoiPercent,
+      totalTrades,
+      winningTrades,
+      losingTrades,
+      breakevenTrades,
+      winRate,
+      totalNetPnlUsdt,
+      grossGainsUsdt,
+      grossLossesUsdt,
+      profitFactor,
+      avgTradePnlUsdt,
+      realizedRewardRisk,
+    };
+  }
+
+  private recalculateStats(): void {
+    // 1. 全量历史统计
+    this.stats = this.computeStatsForPositions(this.closedPositions);
+
+    // 2. 过去 24 小时滚动窗口统计
+    this.stats24h = this.computeStatsForPositions(this.getClosedPositions24h());
+
+    // 3. 账户净值与可用保证金计算
     let totalUnrealized = 0;
     for (const p of this.activePositions.values()) {
       totalUnrealized += p.unrealizedNetPnlUsdt;
@@ -1413,24 +1824,6 @@ export class PaperTradingEngine {
       availableMarginUsdt: availableMargin,
       totalPnlUsdt: totalPnl,
       accountRoiPercent,
-    };
-
-    this.stats = {
-      initialBalanceUsdt: this.config.initialBalanceUsdt,
-      balanceUsdt: this.account.balanceUsdt,
-      equityUsdt: equity,
-      accountRoiPercent,
-      totalTrades,
-      winningTrades,
-      losingTrades,
-      breakevenTrades,
-      winRate,
-      totalNetPnlUsdt,
-      grossGainsUsdt,
-      grossLossesUsdt,
-      profitFactor,
-      avgTradePnlUsdt,
-      realizedRewardRisk,
     };
   }
 
@@ -1609,29 +2002,8 @@ export class PaperTradingEngine {
         reboundWatchlist: this.unifiedTracker.getReboundWatchlist(),
         updatedAt: new Date().toISOString(),
         configOverrides: {
-          leverage: this.config.leverage,
-          streakLeverage: this.config.streakLeverage,
-          trendLeverage: this.config.trendLeverage,
-          longLeverage: this.config.longLeverage,
-          marginUsdt: this.config.marginUsdt,
-          marginRate: this.config.marginRate,
-          marginPercent: this.config.marginPercent,
-          maxPositions: this.config.maxPositions,
-          maxPositionsPerStrategy: this.config.maxPositionsPerStrategy,
-          limitDivisor: this.config.limitDivisor,
-          limitExpireMinutes: this.config.limitExpireMinutes,
-          stopAtHigh: this.config.stopAtHigh,
-          stopAtLow: this.config.stopAtLow,
-          enableStreak: this.config.enableStreak,
-          enableRebound: this.config.enableRebound,
-          enableDeepRebound: this.config.enableDeepRebound,
-          enableLongs: this.config.enableLongs,
-          enableWBottomDivergence: this.config.enableWBottomDivergence,
-          holdMinutes: this.config.holdMinutes,
-          streakConfig: this.config.streakConfig,
-          reboundConfig: this.config.reboundConfig,
-          deepReboundConfig: this.config.deepReboundConfig,
-          wBottomDivergenceConfig: this.config.wBottomDivergenceConfig,
+          ...this.config,
+          storageFile: undefined,
         },
       };
       fs.writeFileSync(this.config.storageFile, JSON.stringify(data, null, 2), "utf8");
@@ -1677,7 +2049,7 @@ export class PaperTradingEngine {
           this.activePositions.clear();
           for (const p of data.activePositions) {
             p.side = p.side ?? (
-              p.signalType === "w_bottom_divergence" ? "LONG" : "SHORT"
+              p.signalType === "w_bottom_divergence" || p.signalType === "kline_stats_long" ? "LONG" : "SHORT"
             );
             p.signalType = p.signalType ?? "streak";
             p.signalLabel = formatSignalLabel(p.signalType, p.signalLabel);
@@ -1702,7 +2074,7 @@ export class PaperTradingEngine {
         if (Array.isArray(data.closedPositions)) {
           this.closedPositions = data.closedPositions.map((p) => {
             p.side = p.side ?? (
-              p.signalType === "w_bottom_divergence" ? "LONG" : "SHORT"
+              p.signalType === "w_bottom_divergence" || p.signalType === "kline_stats_long" ? "LONG" : "SHORT"
             );
             p.signalType = p.signalType ?? "streak";
             p.signalLabel = formatSignalLabel(p.signalType, p.signalLabel);
@@ -1715,63 +2087,9 @@ export class PaperTradingEngine {
         if (data.stats) {
           this.stats = data.stats;
         }
+        this.recalculateStats();
         if ((data as any).configOverrides) {
-          const cfg = (data as any).configOverrides;
-          if (typeof cfg.leverage === "number") this.config.leverage = cfg.leverage;
-          if (typeof cfg.streakLeverage === "number") this.config.streakLeverage = cfg.streakLeverage;
-          if (typeof cfg.trendLeverage === "number") this.config.trendLeverage = cfg.trendLeverage;
-          if (typeof cfg.longLeverage === "number") this.config.longLeverage = cfg.longLeverage;
-          if (typeof cfg.marginUsdt === "number") this.config.marginUsdt = cfg.marginUsdt;
-          if (typeof cfg.marginRate === "number") this.config.marginRate = cfg.marginRate;
-          if (typeof cfg.marginPercent === "number") this.config.marginPercent = cfg.marginPercent;
-          if (typeof cfg.maxPositions === "number") this.config.maxPositions = cfg.maxPositions;
-          if (typeof cfg.maxPositionsPerStrategy === "number") this.config.maxPositionsPerStrategy = cfg.maxPositionsPerStrategy;
-          if (typeof cfg.limitDivisor === "number") this.config.limitDivisor = cfg.limitDivisor;
-          if (typeof cfg.limitExpireMinutes === "number") this.config.limitExpireMinutes = cfg.limitExpireMinutes;
-          if (typeof cfg.stopAtHigh === "boolean") this.config.stopAtHigh = cfg.stopAtHigh;
-          if (typeof cfg.stopAtLow === "boolean") this.config.stopAtLow = cfg.stopAtLow;
-          if (typeof cfg.enableStreak === "boolean") {
-            this.config.enableStreak = cfg.enableStreak;
-            this.unifiedTracker.updateConfig({ enableStreak: cfg.enableStreak });
-          }
-          if (typeof cfg.enableRebound === "boolean") {
-            this.config.enableRebound = cfg.enableRebound;
-            this.unifiedTracker.updateConfig({ enableRebound: cfg.enableRebound });
-          }
-          if (typeof cfg.enableDeepRebound === "boolean") {
-            this.config.enableDeepRebound = cfg.enableDeepRebound;
-            this.unifiedTracker.updateConfig({ enableDeepRebound: cfg.enableDeepRebound });
-          }
-          if (typeof cfg.enableHourlySuppression === "boolean") {
-            this.config.enableHourlySuppression = cfg.enableHourlySuppression;
-            this.unifiedTracker.updateConfig({ enableHourlySuppression: cfg.enableHourlySuppression });
-          }
-          if (typeof cfg.enableLongs === "boolean") this.config.enableLongs = cfg.enableLongs;
-          if (typeof cfg.enableWBottomDivergence === "boolean") {
-            this.config.enableWBottomDivergence = cfg.enableWBottomDivergence;
-            this.longTracker.updateConfig({ enableWBottomDivergence: cfg.enableWBottomDivergence });
-          }
-          if (typeof cfg.holdMinutes === "number") this.config.holdMinutes = cfg.holdMinutes;
-          if (cfg.streakConfig && typeof cfg.streakConfig === "object") {
-            this.config.streakConfig = { ...this.config.streakConfig, ...cfg.streakConfig };
-            this.unifiedTracker.updateConfig({ streakConfig: this.config.streakConfig });
-          }
-          if (cfg.reboundConfig && typeof cfg.reboundConfig === "object") {
-            this.config.reboundConfig = { ...this.config.reboundConfig, ...cfg.reboundConfig };
-            this.unifiedTracker.updateConfig({ reboundConfig: this.config.reboundConfig });
-          }
-          if (cfg.deepReboundConfig && typeof cfg.deepReboundConfig === "object") {
-            this.config.deepReboundConfig = { ...this.config.deepReboundConfig, ...cfg.deepReboundConfig };
-            this.unifiedTracker.updateConfig({ deepReboundConfig: this.config.deepReboundConfig });
-          }
-          if (cfg.hourlySuppressionConfig && typeof cfg.hourlySuppressionConfig === "object") {
-            this.config.hourlySuppressionConfig = { ...this.config.hourlySuppressionConfig, ...cfg.hourlySuppressionConfig };
-            this.unifiedTracker.updateConfig({ hourlySuppressionConfig: this.config.hourlySuppressionConfig });
-          }
-          if (cfg.wBottomDivergenceConfig && typeof cfg.wBottomDivergenceConfig === "object") {
-            this.config.wBottomDivergenceConfig = { ...this.config.wBottomDivergenceConfig, ...cfg.wBottomDivergenceConfig };
-            this.longTracker.updateConfig({ wBottomDivergenceConfig: this.config.wBottomDivergenceConfig });
-          }
+          this.updateConfig((data as any).configOverrides);
         }
         console.log(
           `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
@@ -1786,6 +2104,7 @@ export class PaperTradingEngine {
     this.pendingOrders.clear();
     this.activePositions.clear();
     this.closedPositions = [];
+    this.klineStatsCooldown.clear();
     this.unifiedTracker = new UnifiedShortStrategyTracker({
       streakConfig: {
         ...STREAK_LIVE_DEFAULT_CONFIG,
@@ -1838,6 +2157,23 @@ export class PaperTradingEngine {
       avgTradePnlUsdt: 0,
       realizedRewardRisk: null,
     };
+    this.stats24h = {
+      initialBalanceUsdt: this.config.initialBalanceUsdt,
+      balanceUsdt: this.config.initialBalanceUsdt,
+      equityUsdt: this.config.initialBalanceUsdt,
+      accountRoiPercent: 0,
+      totalTrades: 0,
+      winningTrades: 0,
+      losingTrades: 0,
+      breakevenTrades: 0,
+      winRate: 0,
+      totalNetPnlUsdt: 0,
+      grossGainsUsdt: 0,
+      grossLossesUsdt: 0,
+      profitFactor: 1.0,
+      avgTradePnlUsdt: 0,
+      realizedRewardRisk: null,
+    };
     this.saveState();
     console.log(`[paper-trading] 🔄 模拟交易账户、活跃持仓、挂单与历史明细已全部重置为初始状态 (100 USDT)`);
   }
@@ -1855,11 +2191,13 @@ export class PaperTradingEngine {
       totalNetPnlUsdt: this.stats.totalNetPnlUsdt,
       profitFactor: this.stats.profitFactor,
       activePositions: Array.from(this.activePositions.values()),
+      stats24h: this.stats24h,
       config: {
         leverage: this.config.leverage,
         streakLeverage: this.config.streakLeverage ?? 10,
         trendLeverage: this.config.trendLeverage ?? this.config.leverage,
         longLeverage: this.config.longLeverage ?? 3,
+        klineStatsLeverage: this.config.klineStatsLeverage ?? 10,
         marginUsdt: this.calculateOrderMargin(),
         marginRate: this.config.marginRate ?? 0.20,
         marginPercent: this.config.marginPercent ?? (this.config.marginRate ? Math.round(this.config.marginRate * 100) : 20),
@@ -1868,6 +2206,24 @@ export class PaperTradingEngine {
         limitDivisor: this.config.limitDivisor,
         holdMinutes: this.config.holdMinutes,
         initialBalanceUsdt: this.config.initialBalanceUsdt,
+        topN: this.config.topN,
+        ampDivisor: this.config.ampDivisor,
+        supportMaPeriods: this.config.supportMaPeriods,
+        enableStreak: this.config.enableStreak ?? true,
+        enableRebound: this.config.enableRebound ?? true,
+        enableDeepRebound: this.config.enableDeepRebound ?? true,
+        enableHourlySuppression: this.config.enableHourlySuppression ?? true,
+        enableLongs: this.config.enableLongs ?? true,
+        enableWBottomDivergence: this.config.enableWBottomDivergence ?? true,
+        enableKlineStatsShort: this.config.enableKlineStatsShort ?? true,
+        enableKlineStatsLong: this.config.enableKlineStatsLong ?? true,
+        streakConfig: this.config.streakConfig,
+        reboundConfig: this.config.reboundConfig,
+        deepReboundConfig: this.config.deepReboundConfig,
+        hourlySuppressionConfig: this.config.hourlySuppressionConfig,
+        wBottomDivergenceConfig: this.config.wBottomDivergenceConfig,
+        klineStatsShortConfig: this.config.klineStatsShortConfig,
+        klineStatsLongConfig: this.config.klineStatsLongConfig,
       },
     };
   }
@@ -1879,6 +2235,7 @@ export class PaperTradingEngine {
       activePositions: Array.from(this.activePositions.values()),
       closedPositions: this.closedPositions,
       stats: this.stats,
+      stats24h: this.stats24h,
       updatedAt: new Date().toISOString(),
       config: this.config,
       summary: this.getSummary(),

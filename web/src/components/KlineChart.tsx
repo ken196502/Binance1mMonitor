@@ -6,15 +6,20 @@ import {
   HistogramSeries,
   LineSeries,
   createChart,
+  createSeriesMarkers,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type LogicalRange,
   type MouseEventParams,
+  type SeriesMarker,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useKlines } from "../hooks/useKlines";
 import type { ChartBar } from "../../../src/types.ts";
+import { detectIntervalSignals } from "../../../src/kline-stats.ts";
+import { KlineStatsPanel } from "./KlineStatsPanel";
 
 // 页面右侧的 1m 图表：主图 K 线 + 均线，副图 MACD(12,26,9)。
 // 指标由后端 /api/klines 算好（与监控同源同口径），这里只负责渲染与交互。
@@ -76,17 +81,32 @@ interface ChartPanelProps {
   onSymbolChange: (symbol: string) => void;
   active?: boolean; // 窄屏 tab 状态（与榜单保持一致，始终可见）
   markerTime?: number | null; // 榜单快照时间(ms)：在时间轴上标出"榜单数据截至此刻"
+  dayChangePercent?: number | null; // 24h 涨跌幅
 }
 
-export function ChartPanel({ symbols, symbol, onSymbolChange, active, markerTime }: ChartPanelProps) {
+export function ChartPanel({
+  symbols,
+  symbol,
+  onSymbolChange,
+  active,
+  markerTime,
+  dayChangePercent,
+}: ChartPanelProps) {
   const [hiddenMa, setHiddenMa] = useState<ReadonlySet<number>>(() => new Set<number>());
   const [hoverTime, setHoverTime] = useState<number | null>(null);
+
+  // K线量化统计参数控制
+  const [windowMinutes, setWindowMinutes] = useState(5);
+  const [divisor, setDivisor] = useState(10);
+  const [mode, setMode] = useState<"surge" | "drop" | "both">("surge");
+  const [showMarkers, setShowMarkers] = useState(true);
 
   const { data, error, loading } = useKlines(symbol);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const markerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const maRef = useRef<Map<number, ISeriesApi<"Line">>>(new Map());
   const histRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const difRef = useRef<ISeriesApi<"Line"> | null>(null);
@@ -141,6 +161,8 @@ export function ChartPanel({ symbols, symbol, onSymbolChange, active, markerTime
       priceLineVisible: false,
     });
 
+    markersPluginRef.current = createSeriesMarkers(candleRef.current, []);
+
     // paneIndex=1 会新建副图，MACD 独占一个窗格，与主图共用时间轴/十字线
     histRef.current = chart.addSeries(
       HistogramSeries,
@@ -182,6 +204,7 @@ export function ChartPanel({ symbols, symbol, onSymbolChange, active, markerTime
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
+      markersPluginRef.current = null;
       histRef.current = null;
       difRef.current = null;
       deaRef.current = null;
@@ -329,6 +352,64 @@ export function ChartPanel({ symbols, symbol, onSymbolChange, active, markerTime
 
   const maPeriods = useMemo(() => data?.maPeriods ?? [], [data]);
 
+  const effectiveDayChange = dayChangePercent ?? data?.dayChangePercent ?? null;
+
+  const signals = useMemo(() => {
+    if (!data || !data.bars.length) return [];
+    return detectIntervalSignals(data.bars, effectiveDayChange, {
+      windowMinutes,
+      ampDivisor: divisor,
+      mode,
+    });
+  }, [data, effectiveDayChange, windowMinutes, divisor, mode]);
+
+  useEffect(() => {
+    const plugin = markersPluginRef.current;
+    if (!plugin) return;
+    if (!showMarkers || signals.length === 0) {
+      plugin.setMarkers([]);
+      return;
+    }
+    const markers: SeriesMarker<Time>[] = signals.map((s) => {
+      const isSurge = s.type === "surge";
+      return {
+        time: toTs(s.time),
+        position: isSurge ? "belowBar" : "aboveBar",
+        color: isSurge ? UP : DOWN,
+        shape: isSurge ? "arrowUp" : "arrowDown",
+        text: isSurge
+          ? `🎯${s.windowMinutes}m+${s.intervalChangePercent.toFixed(1)}%(24h/${s.divisor})`
+          : `🔻${s.windowMinutes}m-${s.intervalChangePercent.toFixed(1)}%(24h/${s.divisor})`,
+        size: 1,
+      };
+    });
+    markers.sort((a, b) => (a.time as number) - (b.time as number));
+    plugin.setMarkers(markers);
+  }, [signals, showMarkers]);
+
+  const hoverIndex = useMemo(() => {
+    if (hoverTime == null || !data) return null;
+    return data.bars.findIndex((b) => toTs(b.time) === hoverTime);
+  }, [hoverTime, data]);
+
+  const handleSelectTime = (timeMs: number) => {
+    const chart = chartRef.current;
+    if (!chart || !data) return;
+    const barTime = Math.floor(timeMs / 60_000) * 60_000;
+    const targetBarTs = toTs(barTime);
+    const idx = data.bars.findIndex((b) => toTs(b.time) === targetBarTs);
+    if (idx !== -1) {
+      const ts = chart.timeScale();
+      const halfVisible = 25;
+      ts.setVisibleLogicalRange({
+        from: Math.max(0, idx - halfVisible),
+        to: idx + halfVisible,
+      });
+      setHoverTime(targetBarTs);
+      hoverRef.current = targetBarTs;
+    }
+  };
+
   // 图例：默认显示最后一根 K 线，鼠标悬停时切到十字线所在的那根
   const lastBar = data && data.bars.length > 0 ? data.bars[data.bars.length - 1] : null;
   const shown = (hoverTime != null ? barsRef.current.get(hoverTime) : null) ?? lastBar;
@@ -429,6 +510,25 @@ export function ChartPanel({ symbols, symbol, onSymbolChange, active, markerTime
         {loading && <div className="chart-mask">加载中…</div>}
         {!loading && error && <div className="chart-mask err">K 线加载失败: {error}</div>}
       </div>
+
+      {data && data.bars.length > 0 && (
+        <KlineStatsPanel
+          symbol={symbol}
+          bars={data.bars}
+          dayChangePercent={effectiveDayChange}
+          hoverIndex={hoverIndex}
+          onSelectTime={handleSelectTime}
+          windowMinutes={windowMinutes}
+          onWindowMinutesChange={setWindowMinutes}
+          divisor={divisor}
+          onDivisorChange={setDivisor}
+          mode={mode}
+          onModeChange={setMode}
+          showMarkers={showMarkers}
+          onToggleMarkers={() => setShowMarkers((v) => !v)}
+          signals={signals}
+        />
+      )}
     </section>
   );
 }

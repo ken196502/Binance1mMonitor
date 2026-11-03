@@ -84,13 +84,47 @@ export type PaperSignalType =
   | "rebound"             // 策略 2: 首次跌10%弱反弹做空
   | "streak"              // 策略 4: 新高顶背离闪击做空
   | "deep_rebound"        // 策略 5: 跌到20%+次级反弹做空
-  | "hourly_suppression"; // 策略 6: 小时线压制做空
+  | "hourly_suppression"  // 策略 6: 小时线压制做空
+  | "kline_stats_short"   // 策略 7: 量化K线统计挖掘做空
+  | "kline_stats_long";   // 策略 8: 量化K线统计挖掘做多
 export type PaperSignalLabel =
   | "左侧3W底背离"
   | "首次跌10%"
   | "新高顶背离"
   | "跌到20%+"
-  | "小时线压制";
+  | "小时线压制"
+  | "量化特征做空"
+  | "量化特征做多";
+
+export interface KlineStatsStrategyLiveConfig {
+  topN?: number;               // 适用榜单 Top N (默认 10)
+  minDayChange?: number;       // 24h 涨幅门槛 (默认 10%)
+  intervalWindow: number;      // 冲高/回溯窗口 (如 5m, 10m, 15m)
+  ampDivisor: number;          // 冲高涨幅 >= 24h 涨幅 / ampDivisor (如 8, 10, 12)
+  maRequirement:               // 均线条件
+    | "MA10_SUPPORT"
+    | "MA20_SUPPORT"
+    | "MA60_SUPPORT"
+    | "MA_BULLISH_STACK"
+    | "MA60_RESIST"
+    | "MA20_RESIST"
+    | "MA10_BREAKDOWN"
+    | "NONE";
+  macdRequirement:             // MACD 条件
+    | "GREEN_RATIO_15_70"
+    | "GREEN_RATIO_30_70"
+    | "GREEN_RATIO_30_80"
+    | "GREEN_STREAK_3"
+    | "HIST_WEAKENING"
+    | "NONE";
+  holdMinutes: number;         // 持仓分钟数 (如 15m, 30m, 45m)
+  tp1Percent: number;          // TP1 止盈 % (如 3.0%)
+  tp2Percent: number;          // TP2 止盈 % (如 7.0%)
+  stopLossPercent: number;     // 止损 % (如 5.0%)
+  moveSlToEntryAfterTp1?: boolean; // TP1 达成后是否移动保本
+  cooldownMinutes?: number;    // 同币种冷静期 (默认 20m)
+  leverage?: number;           // 策略杠杆
+}
 
 export interface PaperExitParams {
   holdMinutes: number;
@@ -226,6 +260,7 @@ export interface PaperTradingState {
   activePositions: PaperPosition[];
   closedPositions: PaperPosition[];
   stats: PaperTradingStats;
+  stats24h?: PaperTradingStats;
   updatedAt: string;
   reboundWatchlist?: any[];
   summary?: PaperTradingSummary;
@@ -236,6 +271,7 @@ export interface PaperTradingSummaryConfig {
   streakLeverage?: number;
   trendLeverage?: number;
   longLeverage?: number;
+  klineStatsLeverage?: number;
   marginUsdt: number;
   marginRate?: number;             // 单笔保证金占总资产比例 (默认 0.20 即 20%)
   marginPercent?: number;          // 百分比格式 (默认 20%)
@@ -244,6 +280,24 @@ export interface PaperTradingSummaryConfig {
   limitDivisor: number;
   holdMinutes: number;
   initialBalanceUsdt: number;
+  topN?: number;
+  ampDivisor?: number;
+  supportMaPeriods?: readonly number[];
+  enableStreak?: boolean;
+  enableRebound?: boolean;
+  enableDeepRebound?: boolean;
+  enableHourlySuppression?: boolean;
+  enableLongs?: boolean;
+  enableWBottomDivergence?: boolean;
+  enableKlineStatsShort?: boolean;
+  enableKlineStatsLong?: boolean;
+  streakConfig?: any;
+  reboundConfig?: any;
+  deepReboundConfig?: any;
+  hourlySuppressionConfig?: any;
+  wBottomDivergenceConfig?: any;
+  klineStatsShortConfig?: Partial<KlineStatsStrategyLiveConfig>;
+  klineStatsLongConfig?: Partial<KlineStatsStrategyLiveConfig>;
 }
 
 export interface PaperTradingSummary {
@@ -259,6 +313,7 @@ export interface PaperTradingSummary {
   profitFactor: number;
   activePositions: PaperPosition[];
   config?: PaperTradingSummaryConfig;
+  stats24h?: PaperTradingStats;
 }
 
 export interface Status {
@@ -302,4 +357,77 @@ export interface ChartPayload {
   maPeriods: number[];
   macd: { fast: number; slow: number; signal: number };
   bars: ChartBar[];
+  /** 24h 涨跌幅百分比（来自涨跌幅榜快照，未匹配时为 null） */
+  dayChangePercent?: number | null;
+}
+
+// ---- K线统计与特征挖掘 (K-Line Stats & Feature Analytics) ----
+export type MaAlignmentType =
+  | "bullish_full"      // 完全多头排列 (MA5 > MA10 > MA20 > MA30 > MA60)
+  | "bullish_short"     // 短期多头 (MA5 > MA10 > MA20)
+  | "bearish_full"      // 完全空头排列 (MA5 < MA10 < MA20 < MA30 < MA60)
+  | "bearish_short"     // 短期空头 (MA5 < MA10 < MA20)
+  | "tangled";          // 均线缠绕震荡
+
+export interface MaItem {
+  period: number;
+  value: number;
+  slope: "up" | "down" | "flat"; // 斜率趋势
+  biasPercent: number;           // (close - ma) / ma * 100% 乖离率
+  support: boolean;              // low <= ma && close > ma 回踩支撑
+  resistance: boolean;           // high >= ma && close < ma 冲高受阻
+  isAbove: boolean;              // close > ma
+  breakout: boolean;             // open <= ma && close > ma 向上突破
+  breakdown: boolean;            // open >= ma && close < ma 向下跌破
+}
+
+export interface MaAlignmentInfo {
+  type: MaAlignmentType;
+  label: string;                 // e.g. "完全多头排列"
+  order: number[];               // e.g. [5, 10, 20, 30, 60] 从大到小排列
+  orderText: string;             // e.g. "MA5 > MA10 > MA20 > MA30 > MA60"
+  mas: Record<number, MaItem>;
+}
+
+export interface OhlcComparisonInfo {
+  close: number;
+  open: number;
+  high: number;
+  low: number;
+  bodyPercent: number;           // (close - open) / open * 100%
+  upperWickPercent: number;      // 上影线百分比
+  lowerWickPercent: number;      // 下影线百分比
+  isBullish: boolean;            // close >= open
+  supports: number[];            // 获得支撑的MA周期列表，如 [10, 20]
+  resistances: number[];         // 受到压制的MA周期列表，如 [60]
+  aboveCount: number;            // 站上均线条数 (如 4/5)
+}
+
+export interface MacdStatsInfo {
+  hist: number;
+  dif: number;
+  dea: number;
+  isBullishCross: boolean;       // dif >= dea
+  isAboveZero: boolean;          // dif > 0 && dea > 0
+  greenBarRatio15: number;       // 近15根绿柱比例
+  greenCount15: number;
+  greenBarRatio30: number;       // 近30根绿柱比例
+  greenCount30: number;
+  greenStreak: number;           // 连绿根数
+  redStreak: number;             // 连红根数
+}
+
+export interface IntervalSignal {
+  time: number;                  // 发生时间 (epoch ms)
+  barIndex: number;              // 在当前 bars 中的索引
+  type: "surge" | "drop";        // 冲高 / 回撤
+  windowMinutes: number;         // 区间长度 (如 5m, 15m)
+  intervalChangePercent: number; // 区间实际涨跌幅% (冲高为从低点到高点涨幅，回撤为从高点到低点跌幅)
+  dayChangePercent: number;      // 24h 涨幅%
+  ratioToDayChange: number;      // 区间涨跌幅 / 24h涨幅 比例 (如 0.125 即 12.5% 或 1/8)
+  divisor: number;               // 对应的 1/ratio (如 8.0)
+  price: number;                 // 当时价格
+  maAlignment: MaAlignmentInfo;  // 当时均线排列
+  ohlc: OhlcComparisonInfo;      // 当时K线OHLC与均线对比
+  macd: MacdStatsInfo;           // 当时MACD绿柱比例
 }

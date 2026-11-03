@@ -43,6 +43,20 @@ function formatSignalLabel(type?: string, label?: string): string {
   return "新高顶背离";
 }
 
+function formatHistoryTime(timeMs?: number): string {
+  if (!timeMs) return "-";
+  const d = new Date(timeMs);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const timeStr = d.toLocaleTimeString("zh-CN", { hour12: false });
+  if (isToday) return `今天 ${timeStr}`;
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  if (d.toDateString() === yesterday.toDateString()) return `昨天 ${timeStr}`;
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${month}/${day} ${timeStr}`;
+}
+
 function formatPrice(price?: number): string {
   if (price == null || !Number.isFinite(price) || price === 0) return "0";
   const abs = Math.abs(price);
@@ -96,6 +110,7 @@ export function PaperTradingPanel({
   const [liveSummary, setLiveSummary] = useState<PaperTradingSummary | undefined>(propSummary);
   const [showHistory, setShowHistory] = useState(false);
   const [historyList, setHistoryList] = useState<ClosedTradeItem[]>([]);
+  const [historyFilter, setHistoryFilter] = useState<"24h" | "all">("24h");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [, setTick] = useState(0);
@@ -104,10 +119,21 @@ export function PaperTradingPanel({
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [streakLevInput, setStreakLevInput] = useState<number>(10);
   const [trendLevInput, setTrendLevInput] = useState<number>(3);
+  const [klineStatsLevInput, setKlineStatsLevInput] = useState<number>(10);
+  const [longLevInput, setLongLevInput] = useState<number>(3);
   const [marginPercentInput, setMarginPercentInput] = useState<number>(20);
   const [maxPositionsInput, setMaxPositionsInput] = useState<number>(5);
   const [maxPerStrategyInput, setMaxPerStrategyInput] = useState<number>(1);
   const [limitDivisorInput, setLimitDivisorInput] = useState<number>(0);
+  const [ampDivisorInput, setAmpDivisorInput] = useState<number>(8);
+  const [enableStreakInput, setEnableStreakInput] = useState<boolean>(true);
+  const [enableReboundInput, setEnableReboundInput] = useState<boolean>(true);
+  const [enableDeepReboundInput, setEnableDeepReboundInput] = useState<boolean>(true);
+  const [enableHourlySuppressionInput, setEnableHourlySuppressionInput] = useState<boolean>(true);
+  const [enableLongsInput, setEnableLongsInput] = useState<boolean>(true);
+  const [enableWBottomDivergenceInput, setEnableWBottomDivergenceInput] = useState<boolean>(true);
+  const [enableKlineStatsShortInput, setEnableKlineStatsShortInput] = useState<boolean>(true);
+  const [enableKlineStatsLongInput, setEnableKlineStatsLongInput] = useState<boolean>(true);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
   // 自主同步与高频轮询 /api/paper-trading，彻底摆脱主状态依赖与轮询迟滞
@@ -131,6 +157,7 @@ export function PaperTradingPanel({
           totalNetPnlUsdt: data.stats.totalNetPnlUsdt ?? 0,
           profitFactor: data.stats.profitFactor ?? 1,
           activePositions: data.activePositions ?? [],
+          stats24h: data.stats24h,
           config: {
             leverage: data.config?.leverage ?? 3,
             streakLeverage: data.config?.streakLeverage ?? 10,
@@ -187,10 +214,21 @@ export function PaperTradingPanel({
     if (summary?.config) {
       setStreakLevInput(summary.config.streakLeverage ?? 10);
       setTrendLevInput(summary.config.trendLeverage ?? summary.config.leverage ?? 3);
+      setKlineStatsLevInput(summary.config.klineStatsLeverage ?? 10);
+      setLongLevInput(summary.config.longLeverage ?? 3);
       setMarginPercentInput(summary.config.marginPercent ?? 20);
       setMaxPositionsInput(summary.config.maxPositions ?? 5);
       setMaxPerStrategyInput(summary.config.maxPositionsPerStrategy ?? 1);
       setLimitDivisorInput(summary.config.limitDivisor ?? 0);
+      setAmpDivisorInput(summary.config.ampDivisor ?? 8);
+      setEnableStreakInput(summary.config.enableStreak ?? true);
+      setEnableReboundInput(summary.config.enableRebound ?? true);
+      setEnableDeepReboundInput(summary.config.enableDeepRebound ?? true);
+      setEnableHourlySuppressionInput(summary.config.enableHourlySuppression ?? true);
+      setEnableLongsInput(summary.config.enableLongs ?? true);
+      setEnableWBottomDivergenceInput(summary.config.enableWBottomDivergence ?? true);
+      setEnableKlineStatsShortInput(summary.config.enableKlineStatsShort ?? true);
+      setEnableKlineStatsLongInput(summary.config.enableKlineStatsLong ?? true);
     }
   }, [summary?.config]);
 
@@ -204,12 +242,23 @@ export function PaperTradingPanel({
         body: JSON.stringify({
           streakLeverage: Number(streakLevInput),
           trendLeverage: Number(trendLevInput),
+          klineStatsLeverage: Number(klineStatsLevInput),
+          longLeverage: Number(longLevInput),
           leverage: Number(trendLevInput),
           marginRate: Number(marginPercentInput) / 100,
           marginPercent: Number(marginPercentInput),
           maxPositions: Number(maxPositionsInput),
           maxPositionsPerStrategy: Number(maxPerStrategyInput),
           limitDivisor: Number(limitDivisorInput),
+          ampDivisor: Number(ampDivisorInput),
+          enableStreak: enableStreakInput,
+          enableRebound: enableReboundInput,
+          enableDeepRebound: enableDeepReboundInput,
+          enableHourlySuppression: enableHourlySuppressionInput,
+          enableLongs: enableLongsInput,
+          enableWBottomDivergence: enableWBottomDivergenceInput,
+          enableKlineStatsShort: enableKlineStatsShortInput,
+          enableKlineStatsLong: enableKlineStatsLongInput,
         }),
       });
       const data = await res.json();
@@ -230,10 +279,41 @@ export function PaperTradingPanel({
   const handleResetOptimal = () => {
     setStreakLevInput(10);
     setTrendLevInput(3);
+    setKlineStatsLevInput(10);
+    setLongLevInput(3);
     setMarginPercentInput(20);
     setMaxPositionsInput(5);
     setMaxPerStrategyInput(1);
     setLimitDivisorInput(0);
+    setAmpDivisorInput(8);
+    setEnableStreakInput(true);
+    setEnableReboundInput(true);
+    setEnableDeepReboundInput(true);
+    setEnableHourlySuppressionInput(true);
+    setEnableLongsInput(true);
+    setEnableWBottomDivergenceInput(true);
+    setEnableKlineStatsShortInput(true);
+    setEnableKlineStatsLongInput(true);
+  };
+
+  const handleApplyMinedPreset = () => {
+    setKlineStatsLevInput(10);
+    setLongLevInput(5);
+    setStreakLevInput(10);
+    setTrendLevInput(3);
+    setMarginPercentInput(20);
+    setMaxPositionsInput(5);
+    setMaxPerStrategyInput(1);
+    setLimitDivisorInput(0);
+    setAmpDivisorInput(8);
+    setEnableStreakInput(true);
+    setEnableReboundInput(true);
+    setEnableDeepReboundInput(true);
+    setEnableHourlySuppressionInput(true);
+    setEnableLongsInput(true);
+    setEnableWBottomDivergenceInput(true);
+    setEnableKlineStatsShortInput(true);
+    setEnableKlineStatsLongInput(true);
   };
 
   const handleReset = async () => {
@@ -298,6 +378,8 @@ export function PaperTradingPanel({
   const config = summary?.config;
   const streakLev = config?.streakLeverage ?? 10;
   const trendLev = config?.trendLeverage ?? (config?.leverage ?? 3);
+  const klineStatsLev = config?.klineStatsLeverage ?? 10;
+  const longLev = config?.longLeverage ?? 3;
   const marginPercent = config?.marginPercent ?? 20;
   const marginUsdt = config?.marginUsdt ?? (activePositions[0]?.marginUsdt ?? 20);
   const maxPositions = config?.maxPositions ?? 5;
@@ -310,11 +392,11 @@ export function PaperTradingPanel({
         <div className="paper-title-wrap">
           <h2 style={{ margin: 0 }}>
             <span>⚡ 模拟实盘交易</span>
-            <span className="badge-leverage" title={`新高DEA顶背离闪击 ${streakLev}x (15m持仓) · 顺势衰竭长波段 ${trendLev}x (90m持仓) · 动态仓位 ${marginPercent}% (当前约 ${marginUsdt}U) · 最大 ${maxPositions} 仓 (每策略 ${maxPerStrategy})`}>
-              双速杠杆 ({streakLev}x 闪击 / {trendLev}x 波段) · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions} (每策略 {maxPerStrategy})
+            <span className="badge-leverage" title={`新高闪击 ${streakLev}x · 量化特征 ${klineStatsLev}x · 做多 ${longLev}x · 顺势波段 ${trendLev}x · 动态仓位 ${marginPercent}% (当前约 ${marginUsdt}U) · 最大 ${maxPositions} 仓 (每策略 ${maxPerStrategy})`}>
+              杠杆 (闪击{streakLev}x / 量化{klineStatsLev}x / 多{longLev}x / 波段{trendLev}x) · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions}
             </span>
-            <span className="badge-strategy" title="新高顶背离: 创24h新高 + 5m冲高收阴 + MA[3,7,15]悬空 + DEA顶背离拐头 · 首次跌10%: Rank1龙头弱反弹 · 跌到20%+: 次级反弹顺势空 · 小时线压制: 触碰1mMA60小时线天花板+近N根MACD绿柱 · 3W底背离: 龙头底背离弹射">
-              5大核心策略 · 首次跌10% · 新高顶背离 · 跌到20%+ · 小时线压制 · 左侧3W底背离
+            <span className="badge-strategy" title="7大核心策略：新高顶背离 · 首次跌10% · 跌到20%+ · 小时线压制 · 左侧3W底背离 · 量化特征做空 · 量化特征做多">
+              7大核心策略 · 首次跌10% · 新高顶背离 · 跌到20%+ · 小时线压制 · 3W底背离 · 量化做空 · 量化做多
             </span>
           </h2>
           <div className="paper-stats-chips">
@@ -333,6 +415,12 @@ export function PaperTradingPanel({
               成交: <b>{summary?.totalTrades ?? 0}</b> 笔
               <span className="sub-counts"> (胜 {summary?.winningTrades ?? 0} / 负 {summary?.losingTrades ?? 0})</span>
             </span>
+            {summary?.stats24h && summary.stats24h.totalTrades > 0 && (
+              <span className="chip" style={{ background: "rgba(52, 152, 219, 0.12)", borderColor: "rgba(52, 152, 219, 0.3)" }} title="过去 24 小时已结清订单战绩">
+                24h平仓: <b>{summary.stats24h.totalTrades}</b> 笔
+                <span className="sub-counts"> (胜率 {summary.stats24h.winRate.toFixed(1)}% · {summary.stats24h.totalNetPnlUsdt >= 0 ? "+" : ""}{summary.stats24h.totalNetPnlUsdt.toFixed(2)}U)</span>
+              </span>
+            )}
             {pendingOrders.length > 0 && (
               <span className="chip" style={{ background: "rgba(245, 166, 35, 0.15)", color: "#f5a623" }}>
                 挂单中: <b>{pendingOrders.length}</b> 笔
@@ -357,7 +445,7 @@ export function PaperTradingPanel({
             className="btn-history-toggle"
             onClick={loadHistory}
           >
-            {showHistory ? "收起历史记录" : "历史成交明细"}
+            {showHistory ? "收起历史记录" : "24h 历史成交明细"}
           </button>
           <button
             type="button"
@@ -573,88 +661,197 @@ export function PaperTradingPanel({
         )}
       </div>
 
-      {/* 历史记录展开抽屉 */}
-      {showHistory && (
-        <div className="paper-history-drawer">
-          <div className="history-header">
-            <h3>历史平仓明细 (近 {historyList.length} 笔)</h3>
-            {historyLoading && <span className="loading-hint">加载中…</span>}
-          </div>
-          {historyList.length === 0 ? (
-            <div className="empty-history">暂无历史结清订单</div>
-          ) : (
-            <div className="table-wrap">
-              <table className="paper-history-table">
-                <thead>
-                  <tr>
-                    <th style={{ textAlign: "left" }}>时间</th>
-                    <th style={{ textAlign: "left" }}>标的</th>
-                    <th>信号</th>
-                    <th>24h涨幅</th>
-                    <th>30m振幅</th>
-                    <th>开仓价</th>
-                    <th>平仓均价</th>
-                    <th>持仓耗时</th>
-                    <th>平仓原因</th>
-                    <th>净盈亏 (USDT)</th>
-                    <th>ROE (收益率)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {historyList.map((item) => {
-                    const avgExit =
-                      item.exits && item.exits.length > 0
-                        ? item.exits.reduce((sum, e) => sum + e.exitPrice * e.fraction, 0)
-                        : item.currentPrice;
-                    const pnl = item.totalNetPnlUsdt;
-                    const roe = item.roePercent ?? (pnl / item.marginUsdt) * 100;
-                    const holdDuration = formatHoldDuration(item.closedAt, item.entryTime);
+      {/* 历史记录展开抽屉 (默认优先呈现 24h 内的交易，支持查看全部) */}
+      {showHistory && (() => {
+        const nowMs = Date.now();
+        const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+        const history24h = historyList.filter(
+          (item) => (item.closedAt ?? item.entryTime) >= nowMs - ONE_DAY_MS
+        );
+        const displayedHistory = historyFilter === "24h" ? history24h : historyList;
 
-                    return (
-                      <tr
-                        key={item.id}
-                        className={selectedSymbol === item.symbol ? "chart-selected" : ""}
-                        onClick={() => onSelectSymbol?.(item.symbol)}
-                      >
-                        <td style={{ textAlign: "left" }}>
-                          {item.closedAt ? new Date(item.closedAt).toLocaleTimeString() : "-"}
-                        </td>
-                        <td style={{ textAlign: "left" }}>
-                          <a
-                            href={`https://www.binance.com/zh-CN/futures/${item.symbol}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <b>{item.symbol}</b>
-                          </a>
-                        </td>
-                        <td>
-                          <span className={`badge-signal badge-${item.signalType || "streak"}`}>
-                            {item.side === "LONG" ? "做多 · " : "做空 · "}{formatSignalLabel(item.signalType, item.signalLabel)}
-                          </span>
-                        </td>
-                        <td className="pos">+{item.dayChangePercent.toFixed(2)}%</td>
-                        <td>{item.amp30Percent ? `${item.amp30Percent.toFixed(2)}%` : "-"}</td>
-                        <td>{formatPrice(item.entryPrice)}</td>
-                        <td>{formatPrice(avgExit)}</td>
-                        <td>{holdDuration}</td>
-                        <td>{formatExitReason(item)}</td>
-                        <td className={pnl >= 0 ? "pos" : "neg"}>
-                          <b>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} U</b>
-                        </td>
-                        <td className={roe >= 0 ? "pos" : "neg"}>
-                          <b>{roe >= 0 ? "+" : ""}{roe.toFixed(1)}%</b>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+        return (
+          <div className="paper-history-drawer">
+            <div className="history-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <h3 style={{ margin: 0, fontSize: "14px" }}>
+                  {historyFilter === "24h"
+                    ? `🕒 过去 24 小时平仓明细 (${displayedHistory.length} 笔)`
+                    : `📜 全部历史平仓明细 (${displayedHistory.length} 笔)`}
+                </h3>
+                {historyLoading && <span className="loading-hint">加载中…</span>}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <button
+                  type="button"
+                  className={`btn-sub-tab ${historyFilter === "24h" ? "active" : ""}`}
+                  onClick={() => setHistoryFilter("24h")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "12px",
+                    borderRadius: "4px",
+                    cursor: "pointer",
+                    background: historyFilter === "24h" ? "#3498db" : "rgba(255, 255, 255, 0.05)",
+                    color: historyFilter === "24h" ? "#fff" : "var(--muted)",
+                    border: "1px solid " + (historyFilter === "24h" ? "#3498db" : "var(--border)"),
+                    fontWeight: historyFilter === "24h" ? "bold" : "normal",
+                  }}
+                >
+                  近 24 小时 ({history24h.length} 笔)
+                </button>
+                <button
+                  type="button"
+                  className={`btn-sub-tab ${historyFilter === "all" ? "active" : ""}`}
+                  onClick={() => setHistoryFilter("all")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "12px",
+                    borderRadius: "4px",
+                    cursor: "pointer",
+                    background: historyFilter === "all" ? "#3498db" : "rgba(255, 255, 255, 0.05)",
+                    color: historyFilter === "all" ? "#fff" : "var(--muted)",
+                    border: "1px solid " + (historyFilter === "all" ? "#3498db" : "var(--border)"),
+                    fontWeight: historyFilter === "all" ? "bold" : "normal",
+                  }}
+                >
+                  全部历史 ({historyList.length} 笔)
+                </button>
+              </div>
             </div>
-          )}
-        </div>
-      )}
+
+            {/* 24 小时平仓战绩概览条 */}
+            {history24h.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: "14px",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  padding: "8px 12px",
+                  background: "rgba(52, 152, 219, 0.08)",
+                  borderRadius: "6px",
+                  border: "1px solid rgba(52, 152, 219, 0.2)",
+                  marginBottom: "10px",
+                  fontSize: "12px",
+                }}
+              >
+                <span>
+                  🕒 <b>24h 战绩汇总</b>：成交 <b>{history24h.length}</b> 笔
+                  (胜 <b>{history24h.filter((t) => t.totalNetPnlUsdt > 0.001).length}</b> / 负 <b>{history24h.filter((t) => t.totalNetPnlUsdt < -0.001).length}</b>)
+                </span>
+                <span>
+                  24h 胜率: <b style={{ color: "#3498db" }}>{(history24h.filter((t) => t.totalNetPnlUsdt > 0.001).length / history24h.length * 100).toFixed(1)}%</b>
+                </span>
+                {(() => {
+                  const net24h = history24h.reduce((acc, t) => acc + t.totalNetPnlUsdt, 0);
+                  return (
+                    <span className={net24h >= 0 ? "pos" : "neg"}>
+                      24h 累计净盈亏: <b>{net24h >= 0 ? "+" : ""}{net24h.toFixed(2)} USDT</b>
+                    </span>
+                  );
+                })()}
+              </div>
+            )}
+
+            {displayedHistory.length === 0 ? (
+              <div className="empty-history" style={{ display: "flex", alignItems: "center", gap: "10px", padding: "12px 0" }}>
+                <span>
+                  {historyFilter === "24h"
+                    ? `近 24 小时暂无已结清订单 (历史总计 ${historyList.length} 笔)。`
+                    : "暂无历史结清订单"}
+                </span>
+                {historyFilter === "24h" && historyList.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setHistoryFilter("all")}
+                    style={{
+                      padding: "3px 10px",
+                      fontSize: "11px",
+                      borderRadius: "4px",
+                      border: "1px solid var(--border)",
+                      background: "rgba(255, 255, 255, 0.06)",
+                      color: "var(--text)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    查看全部历史订单
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="table-wrap">
+                <table className="paper-history-table">
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left" }}>平仓时间</th>
+                      <th style={{ textAlign: "left" }}>标的</th>
+                      <th>信号</th>
+                      <th>24h涨幅</th>
+                      <th>30m振幅</th>
+                      <th>开仓价</th>
+                      <th>平仓均价</th>
+                      <th>持仓耗时</th>
+                      <th>平仓原因</th>
+                      <th>净盈亏 (USDT)</th>
+                      <th>ROE (收益率)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayedHistory.map((item) => {
+                      const avgExit =
+                        item.exits && item.exits.length > 0
+                          ? item.exits.reduce((sum, e) => sum + e.exitPrice * e.fraction, 0)
+                          : item.currentPrice;
+                      const pnl = item.totalNetPnlUsdt;
+                      const roe = item.roePercent ?? (pnl / item.marginUsdt) * 100;
+                      const holdDuration = formatHoldDuration(item.closedAt, item.entryTime);
+
+                      return (
+                        <tr
+                          key={item.id}
+                          className={selectedSymbol === item.symbol ? "chart-selected" : ""}
+                          onClick={() => onSelectSymbol?.(item.symbol)}
+                        >
+                          <td style={{ textAlign: "left" }}>
+                            {formatHistoryTime(item.closedAt)}
+                          </td>
+                          <td style={{ textAlign: "left" }}>
+                            <a
+                              href={`https://www.binance.com/zh-CN/futures/${item.symbol}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <b>{item.symbol}</b>
+                            </a>
+                          </td>
+                          <td>
+                            <span className={`badge-signal badge-${item.signalType || "streak"}`}>
+                              {item.side === "LONG" ? "做多 · " : "做空 · "}{formatSignalLabel(item.signalType, item.signalLabel)}
+                            </span>
+                          </td>
+                          <td className="pos">+{item.dayChangePercent.toFixed(2)}%</td>
+                          <td>{item.amp30Percent ? `${item.amp30Percent.toFixed(2)}%` : "-"}</td>
+                          <td>{formatPrice(item.entryPrice)}</td>
+                          <td>{formatPrice(avgExit)}</td>
+                          <td>{holdDuration}</td>
+                          <td>{formatExitReason(item)}</td>
+                          <td className={pnl >= 0 ? "pos" : "neg"}>
+                            <b>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} U</b>
+                          </td>
+                          <td className={roe >= 0 ? "pos" : "neg"}>
+                            <b>{roe >= 0 ? "+" : ""}{roe.toFixed(1)}%</b>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {/* 策略参数设置模态框 */}
       {showConfigModal && (
         <div className="config-modal-backdrop" onClick={() => setShowConfigModal(false)}>
@@ -670,100 +867,190 @@ export function PaperTradingPanel({
               </button>
             </div>
             <form onSubmit={handleSaveConfig}>
-              <div className="config-form-group">
-                <label>
-                  <span>⚡ 新高顶背离闪击杠杆 (Streak Leverage)</span>
-                  <small>15m 紧止损 · 默认 10x · 24h新高+DEA顶背离拐头 (回测胜率 85.7%, PF 6.46)</small>
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="50"
-                  step="1"
-                  value={streakLevInput}
-                  onChange={(e) => setStreakLevInput(Number(e.target.value))}
-                  required
-                />
+              {/* 1. 杠杆倍数设置 */}
+              <div style={{ marginBottom: "14px", padding: "10px", background: "rgba(52, 152, 219, 0.08)", borderRadius: "8px", border: "1px solid rgba(52, 152, 219, 0.2)" }}>
+                <div style={{ fontSize: "12px", fontWeight: "bold", color: "#4d9dff", marginBottom: "8px" }}>⚡ 策略杠杆倍数设置</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  <div className="config-form-group" style={{ margin: 0 }}>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>新高闪击空 (Streak)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="50"
+                      value={streakLevInput}
+                      onChange={(e) => setStreakLevInput(Number(e.target.value))}
+                      required
+                    />
+                  </div>
+                  <div className="config-form-group" style={{ margin: 0 }}>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>量化做空杠杆 (Kline Stats)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="50"
+                      value={klineStatsLevInput}
+                      onChange={(e) => setKlineStatsLevInput(Number(e.target.value))}
+                      required
+                    />
+                  </div>
+                  <div className="config-form-group" style={{ margin: 0 }}>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>做多专属杠杆 (Longs)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="20"
+                      value={longLevInput}
+                      onChange={(e) => setLongLevInput(Number(e.target.value))}
+                      required
+                    />
+                  </div>
+                  <div className="config-form-group" style={{ margin: 0 }}>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>顺势衰竭杠杆 (Trend)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={trendLevInput}
+                      onChange={(e) => setTrendLevInput(Number(e.target.value))}
+                      required
+                    />
+                  </div>
+                </div>
               </div>
 
-              <div className="config-form-group">
-                <label>
-                  <span>🛡️ 顺势衰竭长波段杠杆 (Trend Leverage)</span>
-                  <small>90m 波段 / 10% 止损 · 默认 3x 低杠杆</small>
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="10"
-                  step="1"
-                  value={trendLevInput}
-                  onChange={(e) => setTrendLevInput(Number(e.target.value))}
-                  required
-                />
+              {/* 2. 仓位与风控 */}
+              <div style={{ marginBottom: "14px", padding: "10px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
+                <div style={{ fontSize: "12px", fontWeight: "bold", color: "var(--text)", marginBottom: "8px" }}>🛡️ 仓位风控与门槛参数</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  <div className="config-form-group" style={{ margin: 0 }}>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>单笔仓位比例 (%)</label>
+                    <input
+                      type="number"
+                      min="5"
+                      max="100"
+                      step="5"
+                      value={marginPercentInput}
+                      onChange={(e) => setMarginPercentInput(Number(e.target.value))}
+                      required
+                    />
+                  </div>
+                  <div className="config-form-group" style={{ margin: 0 }}>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>全局最大持仓数</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="20"
+                      value={maxPositionsInput}
+                      onChange={(e) => setMaxPositionsInput(Number(e.target.value))}
+                      required
+                    />
+                  </div>
+                  <div className="config-form-group" style={{ margin: 0 }}>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>单策略限仓 (笔)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={maxPerStrategyInput}
+                      onChange={(e) => setMaxPerStrategyInput(Number(e.target.value))}
+                      required
+                    />
+                  </div>
+                  <div className="config-form-group" style={{ margin: 0 }}>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>冲高分母 (24h/N)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="50"
+                      value={ampDivisorInput}
+                      onChange={(e) => setAmpDivisorInput(Number(e.target.value))}
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="config-form-group" style={{ marginTop: "8px", marginBottom: 0 }}>
+                  <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>入场挂单分母 (0=市价直开；&gt;0=向上溢价接针)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="500"
+                    step="10"
+                    value={limitDivisorInput}
+                    onChange={(e) => setLimitDivisorInput(Number(e.target.value))}
+                    required
+                  />
+                </div>
               </div>
 
-              <div className="config-form-group">
-                <label>
-                  <span>💰 单笔仓位比例 (Margin % of Equity)</span>
-                  <small>默认 20% (动态按账户当前净资产 20% 计算单笔保证金，当前约 {(account.equityUsdt * (marginPercentInput / 100)).toFixed(1)} USDT)</small>
-                </label>
-                <input
-                  type="number"
-                  min="5"
-                  max="100"
-                  step="5"
-                  value={marginPercentInput}
-                  onChange={(e) => setMarginPercentInput(Number(e.target.value))}
-                  required
-                />
-              </div>
-
-              <div className="config-form-group">
-                <label>
-                  <span>📊 全局最大同时持仓数 (Max Positions)</span>
-                  <small>默认 5 笔 (5 笔 × 20% = 100% 满仓风控上限)</small>
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="20"
-                  step="1"
-                  value={maxPositionsInput}
-                  onChange={(e) => setMaxPositionsInput(Number(e.target.value))}
-                  required
-                />
-              </div>
-
-              <div className="config-form-group">
-                <label>
-                  <span>⚖️ 单策略最大持仓数 (Max Per Strategy)</span>
-                  <small>默认 1 笔 (保证各大策略各持仓至多 1 笔，互不挤占)</small>
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="10"
-                  step="1"
-                  value={maxPerStrategyInput}
-                  onChange={(e) => setMaxPerStrategyInput(Number(e.target.value))}
-                  required
-                />
-              </div>
-
-              <div className="config-form-group">
-                <label>
-                  <span>🎯 入场模式与挂单分母 (Limit Divisor N)</span>
-                  <small>0 = 市价直开 (推荐)；&gt;0 = 溢价挂单接针</small>
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  max="500"
-                  step="10"
-                  value={limitDivisorInput}
-                  onChange={(e) => setLimitDivisorInput(Number(e.target.value))}
-                  required
-                />
+              {/* 3. 策略开关 */}
+              <div style={{ marginBottom: "16px", padding: "10px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
+                <div style={{ fontSize: "12px", fontWeight: "bold", color: "var(--text)", marginBottom: "8px" }}>🚦 策略独立运行开关</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", fontSize: "12px" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={enableStreakInput}
+                      onChange={(e) => setEnableStreakInput(e.target.checked)}
+                    />
+                    <span>新高顶背离闪击空</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={enableReboundInput}
+                      onChange={(e) => setEnableReboundInput(e.target.checked)}
+                    />
+                    <span>首次跌10%弱反弹空</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={enableDeepReboundInput}
+                      onChange={(e) => setEnableDeepReboundInput(e.target.checked)}
+                    />
+                    <span>跌20%+次级反弹空</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={enableHourlySuppressionInput}
+                      onChange={(e) => setEnableHourlySuppressionInput(e.target.checked)}
+                    />
+                    <span>小时线压制做空</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={enableLongsInput}
+                      onChange={(e) => setEnableLongsInput(e.target.checked)}
+                    />
+                    <span>做多总开关</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={enableWBottomDivergenceInput}
+                      onChange={(e) => setEnableWBottomDivergenceInput(e.target.checked)}
+                    />
+                    <span>左侧3W底背离做多</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={enableKlineStatsShortInput}
+                      onChange={(e) => setEnableKlineStatsShortInput(e.target.checked)}
+                    />
+                    <span style={{ color: "#f0ad4e", fontWeight: "bold" }}>量化特征做空 (策略7)</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={enableKlineStatsLongInput}
+                      onChange={(e) => setEnableKlineStatsLongInput(e.target.checked)}
+                    />
+                    <span style={{ color: "#5cb85c", fontWeight: "bold" }}>量化特征做多 (策略8)</span>
+                  </label>
+                </div>
               </div>
 
               <div className="config-modal-actions">
@@ -771,9 +1058,18 @@ export function PaperTradingPanel({
                   type="button"
                   className="btn-preset-reset"
                   onClick={handleResetOptimal}
-                  title="恢复默认推荐：新高背离10x、顺势衰竭3x、动态20%仓位、限5仓(每策略至多1仓)、市价直开"
+                  title="恢复默认推荐设置"
                 >
-                  恢复默认推荐
+                  恢复默认
+                </button>
+                <button
+                  type="button"
+                  className="btn-preset-reset"
+                  style={{ color: "#4d9dff", borderColor: "rgba(77, 157, 255, 0.4)" }}
+                  onClick={handleApplyMinedPreset}
+                  title="载入 Top 1 量化挖掘策略 (10x空 / 5x多 / 20%仓位)"
+                >
+                  🚀 载入 Top 1 挖掘参数
                 </button>
                 <button
                   type="submit"

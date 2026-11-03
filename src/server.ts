@@ -611,7 +611,17 @@ async function serveKlines(u: URL, res: http.ServerResponse): Promise<void> {
   }
   try {
     const { candles, source } = await getChartCandles(query.symbol, query.limit);
-    const payload = buildChartPayload(query.symbol, candles, source);
+    let dayChangePercent: number | null = null;
+    const gainer = lastKnownStatus?.gainers?.find((g) => g.symbol === query.symbol);
+    if (gainer && typeof gainer.priceChangePercent === "number") {
+      dayChangePercent = gainer.priceChangePercent;
+    } else {
+      const loser = lastKnownStatus?.losers?.find((l) => l.symbol === query.symbol);
+      if (loser && typeof loser.priceChangePercent === "number") {
+        dayChangePercent = loser.priceChangePercent;
+      }
+    }
+    const payload = buildChartPayload(query.symbol, candles, source, dayChangePercent);
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
     res.end(JSON.stringify(payload));
   } catch (e) {
