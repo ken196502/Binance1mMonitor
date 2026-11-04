@@ -17,8 +17,6 @@ interface KlineStatsPanelProps {
   onSelectTime: (timeMs: number) => void;
   windowMinutes: number;
   onWindowMinutesChange: (w: number) => void;
-  divisor: number;
-  onDivisorChange: (d: number) => void;
   mode: "surge" | "drop" | "both";
   onModeChange: (m: "surge" | "drop" | "both") => void;
   showMarkers: boolean;
@@ -27,15 +25,13 @@ interface KlineStatsPanelProps {
 }
 
 export function KlineStatsPanel({
-  symbol,
+  symbol: _symbol,
   bars,
   dayChangePercent,
   hoverIndex,
   onSelectTime,
   windowMinutes,
   onWindowMinutesChange,
-  divisor,
-  onDivisorChange,
   mode,
   onModeChange,
   showMarkers,
@@ -51,22 +47,9 @@ export function KlineStatsPanel({
       : bars.length - 1;
 
   const currentBar = bars[activeIdx];
-  const maAlignment = analyzeMaAlignment(bars, activeIdx);
-  const ohlc = analyzeOhlcComparison(bars, activeIdx);
-  const macd = analyzeMacdStats(bars, activeIdx);
-
-  // 计算当前聚焦 K 线的区间涨跌幅
-  const startIdx = Math.max(0, activeIdx - windowMinutes + 1);
-  let minLow = Infinity;
-  let maxHigh = -Infinity;
-  for (let k = startIdx; k <= activeIdx; k++) {
-    if (bars[k].low < minLow) minLow = bars[k].low;
-    if (bars[k].high > maxHigh) maxHigh = bars[k].high;
-  }
-  const curSurgePct =
-    minLow > 0 && currentBar ? ((currentBar.high - minLow) / minLow) * 100 : 0;
-  const curDropPct =
-    maxHigh > 0 && currentBar ? ((maxHigh - currentBar.low) / maxHigh) * 100 : 0;
+  const fallbackMa = analyzeMaAlignment(bars, activeIdx);
+  const fallbackOhlc = analyzeOhlcComparison(bars, activeIdx);
+  const fallbackMacd = analyzeMacdStats(bars, activeIdx);
 
   const effectiveDc =
     typeof dayChangePercent === "number" && Number.isFinite(dayChangePercent)
@@ -75,9 +58,24 @@ export function KlineStatsPanel({
       ? ((bars[bars.length - 1].close - bars[0].open) / bars[0].open) * 100
       : 0;
 
-  const curSurgeRatio = effectiveDc > 0 ? (curSurgePct / effectiveDc) * 100 : 0;
-  const targetThresholdPct = (1 / divisor) * 100;
-  const isSurgeQualified = curSurgeRatio >= targetThresholdPct;
+  // 匹配当前聚焦 K 线所在区间的最大振幅段信号
+  const activeBarTime = currentBar ? currentBar.time : 0;
+  const activeSignal =
+    signals.find((s) => {
+      if (s.intervalStartTime != null && s.intervalEndTime != null) {
+        return activeBarTime >= s.intervalStartTime && activeBarTime < s.intervalEndTime;
+      }
+      return false;
+    }) ??
+    signals.find((s) => Math.abs(s.time - activeBarTime) < windowMinutes * 60_000) ??
+    signals[0] ??
+    null;
+
+  // 提取该达标振幅段“启动前一段区间”的前兆特征
+  const pre = activeSignal?.precursor ?? null;
+  const dispMa = pre ? pre.maAlignment : fallbackMa;
+  const dispOhlc = pre ? pre.ohlc : fallbackOhlc;
+  const dispMacd = pre ? pre.macd : fallbackMacd;
 
   const formatPrice = (v: number | null | undefined) => {
     if (v == null || !Number.isFinite(v)) return "-";
@@ -85,6 +83,11 @@ export function KlineStatsPanel({
     if (abs >= 1000) return v.toFixed(2);
     if (abs >= 1) return v.toFixed(4);
     return v.toFixed(6);
+  };
+
+  const formatTime = (ts?: number | null) => {
+    if (!ts || !Number.isFinite(ts)) return "-";
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
   const getMaTagClass = (type: string) => {
@@ -121,31 +124,11 @@ export function KlineStatsPanel({
         </div>
 
         <div className="toolbar-group">
-          <span className="toolbar-label">24h 涨幅比例:</span>
-          {[
-            { d: 5, label: "24h/5 (20%)" },
-            { d: 8, label: "24h/8 (12.5%)" },
-            { d: 10, label: "24h/10 (10%)" },
-            { d: 12, label: "24h/12 (8.3%)" },
-            { d: 15, label: "24h/15 (6.7%)" },
-          ].map((item) => (
-            <button
-              key={item.d}
-              type="button"
-              className={`filter-btn ${divisor === item.d ? "active" : ""}`}
-              onClick={() => onDivisorChange(item.d)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="toolbar-group">
           <span className="toolbar-label">方向:</span>
           {[
+            { m: "both", label: "全部" },
             { m: "surge", label: "冲高 🚀" },
             { m: "drop", label: "回撤 🔻" },
-            { m: "both", label: "全部" },
           ].map((item) => (
             <button
               key={item.m}
@@ -159,7 +142,7 @@ export function KlineStatsPanel({
         </div>
 
         <div className="toolbar-group ml-auto">
-          <label className="toggle-label" title="在K线图表上用箭头与文字标记出所有达标区间">
+          <label className="toggle-label" title="在K线图表上用箭头与文字标记出所有区间的最大振幅段">
             <input
               type="checkbox"
               checked={showMarkers}
@@ -172,21 +155,47 @@ export function KlineStatsPanel({
 
       {/* 实时/光标所处 K 线量化特征四卡片 */}
       <div className="stats-cards-grid">
-        {/* 卡片 1: 均线排列 */}
+        {/* 卡片 1: 起爆前均线形态 (前一段区间，比对最近3根1mK线演变) */}
         <div className="stats-card">
           <div className="card-header">
-            <span className="card-title">📈 均线排列 (MA)</span>
-            <span className={`status-badge ${getMaTagClass(maAlignment.type)}`}>
-              {maAlignment.label}
-            </span>
+            <span className="card-title">📈 起爆前均线形态 (前一段)</span>
+            <div className="badge-group">
+              <span className={`status-badge ${getMaTagClass(dispMa.type)}`}>
+                {dispMa.label}
+              </span>
+              {dispMa.pattern3BarsLabel && (
+                <span
+                  className={`status-badge-sm ${
+                    dispMa.pattern3Bars?.includes("bull")
+                      ? "tag-bull-short"
+                      : dispMa.pattern3Bars?.includes("bear")
+                      ? "tag-bear-short"
+                      : "tag-tangled"
+                  }`}
+                  title="比对最近 3 根 1m K 线的均线动态演变"
+                >
+                  {dispMa.pattern3BarsLabel}
+                  {dispMa.streakBars != null && dispMa.streakBars > 1 ? ` · 连${dispMa.streakBars}根` : ""}
+                </span>
+              )}
+            </div>
           </div>
           <div className="card-body">
-            <div className="ma-sequence" title="各周期均线按数值从高到低排列">
-              {maAlignment.orderText || "-"}
+            {dispMa.transitionText && (
+              <div
+                className="ma-transition-path"
+                title="比对起爆前最近 3 根 1m K 线的均线排列演变过程 (T-2 ➔ T-1 ➔ T0)"
+              >
+                <span className="path-label">3根分时演变:</span>
+                <span className="path-val">{dispMa.transitionText}</span>
+              </div>
+            )}
+            <div className="ma-sequence" title="起爆点各周期均线按数值从高到低排列">
+              {dispMa.orderText || "-"}
             </div>
             <div className="ma-trend-list">
-              {maAlignment.order.map((p) => {
-                const item = maAlignment.mas[p];
+              {dispMa.order.map((p) => {
+                const item = dispMa.mas[p];
                 if (!item) return null;
                 const slopeIcon =
                   item.slope === "up" ? "↗" : item.slope === "down" ? "↘" : "➔";
@@ -201,7 +210,7 @@ export function KlineStatsPanel({
                     </span>
                     <span
                       className={`ma-bias ${item.biasPercent >= 0 ? "pos" : "neg"}`}
-                      title="收盘价与均线乖离率"
+                      title="起爆点收盘价与均线乖离率"
                     >
                       {item.biasPercent >= 0 ? "+" : ""}
                       {item.biasPercent.toFixed(1)}%
@@ -213,142 +222,161 @@ export function KlineStatsPanel({
           </div>
         </div>
 
-        {/* 卡片 2: K线 OHLC 与均线对比 */}
+        {/* 卡片 2: 起爆前形态 / MA支撑 (前一段区间) */}
         <div className="stats-card">
           <div className="card-header">
-            <span className="card-title">🕯️ K线(OHLC) vs 均线</span>
+            <span className="card-title">🕯️ 起爆前形态 / MA支撑</span>
             <span className="status-badge tag-highlight">
-              站上 {ohlc.aboveCount}/5 条均线
+              站上 {dispOhlc.aboveCount}/5 条均线
             </span>
           </div>
           <div className="card-body">
             <div className="ohlc-summary">
               <span className="ohlc-item">
                 实体:{" "}
-                <b className={ohlc.bodyPercent >= 0 ? "pos" : "neg"}>
-                  {ohlc.bodyPercent >= 0 ? "+" : ""}
-                  {ohlc.bodyPercent.toFixed(2)}%
+                <b className={dispOhlc.bodyPercent >= 0 ? "pos" : "neg"}>
+                  {dispOhlc.bodyPercent >= 0 ? "+" : ""}
+                  {dispOhlc.bodyPercent.toFixed(2)}%
                 </b>
               </span>
               <span className="ohlc-item">
-                上影: <b className="neg">{ohlc.upperWickPercent.toFixed(2)}%</b>
+                上影: <b className="neg">{dispOhlc.upperWickPercent.toFixed(2)}%</b>
               </span>
               <span className="ohlc-item">
-                下影: <b className="pos">{ohlc.lowerWickPercent.toFixed(2)}%</b>
+                下影: <b className="pos">{dispOhlc.lowerWickPercent.toFixed(2)}%</b>
               </span>
             </div>
             <div className="ma-interaction-tags">
-              {ohlc.supports.length > 0 && (
+              {dispOhlc.supports.length > 0 && (
                 <div className="tag-group">
-                  <span className="interaction-label pos-label">支撑生效:</span>
-                  {ohlc.supports.map((p) => (
-                    <span key={p} className="tag tag-support" title="探底回踩此均线并收回在上方">
+                  <span className="interaction-label pos-label">起爆前支撑:</span>
+                  {dispOhlc.supports.map((p) => (
+                    <span key={p} className="tag tag-support" title="起爆前探底回踩此均线并收回在上方">
                       MA{p} 支撑
                     </span>
                   ))}
                 </div>
               )}
-              {ohlc.resistances.length > 0 && (
+              {dispOhlc.resistances.length > 0 && (
                 <div className="tag-group">
-                  <span className="interaction-label neg-label">受阻压制:</span>
-                  {ohlc.resistances.map((p) => (
-                    <span key={p} className="tag tag-resist" title="冲高测试此均线但收在下方">
+                  <span className="interaction-label neg-label">起爆前压制:</span>
+                  {dispOhlc.resistances.map((p) => (
+                    <span key={p} className="tag tag-resist" title="冲高测试此均线受阻">
                       MA{p} 压制
                     </span>
                   ))}
                 </div>
               )}
-              {ohlc.supports.length === 0 && ohlc.resistances.length === 0 && (
+              {dispOhlc.supports.length === 0 && dispOhlc.resistances.length === 0 && (
                 <div className="muted interaction-none">
-                  {ohlc.aboveCount === 5
-                    ? "全线飘红运行在所有均线上方"
-                    : ohlc.aboveCount === 0
-                    ? "均线下行，受所有均线压制"
-                    : "在均线带区间运行"}
+                  {dispOhlc.aboveCount === 5
+                    ? "多头蓄势，运行在所有均线上方"
+                    : dispOhlc.aboveCount === 0
+                    ? "受所有均线压制"
+                    : "在均线密集带内整理蓄势"}
                 </div>
               )}
             </div>
+            {pre != null && (
+              <div className="metric-row" style={{ marginTop: "4px", borderTop: "1px dashed rgba(255,255,255,0.06)", paddingTop: "4px" }}>
+                <span className="metric-name">前区间蓄势振幅:</span>
+                <span className="metric-val muted">
+                  {pre.preAmpPercent.toFixed(2)}% (跨度 {pre.totalBars}m)
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* 卡片 3: MACD 绿柱比例 */}
+        {/* 卡片 3: 起爆前 MACD 绿柱比例 (前一段区间) */}
         <div className="stats-card">
           <div className="card-header">
-            <span className="card-title">📊 MACD 绿柱比例</span>
+            <span className="card-title">📊 起爆前 MACD 绿柱比例</span>
             <span
               className={`status-badge ${
-                macd.isBullishCross && macd.isAboveZero
+                dispMacd.isBullishCross && dispMacd.isAboveZero
                   ? "tag-bull-full"
-                  : macd.isBullishCross
+                  : dispMacd.isBullishCross
                   ? "tag-bull-short"
                   : "tag-bear-short"
               }`}
             >
-              {macd.isAboveZero ? "零上多头" : "零下"} · {macd.isBullishCross ? "金叉" : "死叉"}
+              起爆前: {dispMacd.isAboveZero ? "零上" : "零下"} · {dispMacd.isBullishCross ? "金叉" : "死叉"}
             </span>
           </div>
           <div className="card-body">
-            {/* 近 30 根绿柱进度条 */}
+            {/* 前一段区间绿柱进度条 (前兆特征) */}
             <div className="ratio-bar-wrap">
               <div className="ratio-bar-info">
-                <span>近 30 根 1m 绿柱:</span>
+                <span>前一段区间绿柱比例 (前兆):</span>
                 <b>
-                  {(macd.greenBarRatio30 * 100).toFixed(1)}% ({macd.greenCount30}/30)
+                  {pre != null
+                    ? `${(pre.greenRatio * 100).toFixed(1)}% (${pre.greenCount}/${pre.totalBars}根)`
+                    : "-"}
                 </b>
               </div>
               <div className="progress-track">
                 <div
                   className="progress-fill"
-                  style={{ width: `${Math.min(100, macd.greenBarRatio30 * 100)}%` }}
+                  style={{
+                    width: `${Math.min(100, (pre?.greenRatio ?? 0) * 100)}%`,
+                  }}
                 />
               </div>
             </div>
 
-            {/* 近 15 根绿柱进度条 */}
+            {/* 紧随爆发段内绿柱进度条 */}
             <div className="ratio-bar-wrap">
               <div className="ratio-bar-info">
-                <span>近 15 根 1m 绿柱:</span>
+                <span>紧随爆发段内绿柱:</span>
                 <b>
-                  {(macd.greenBarRatio15 * 100).toFixed(1)}% ({macd.greenCount15}/15)
+                  {activeSignal != null && activeSignal.segmentGreenRatio != null
+                    ? `${(activeSignal.segmentGreenRatio * 100).toFixed(1)}% (${activeSignal.segmentGreenCount}/${activeSignal.segmentBarsCount}根)`
+                    : "-"}
                 </b>
               </div>
               <div className="progress-track">
                 <div
                   className="progress-fill short-term"
-                  style={{ width: `${Math.min(100, macd.greenBarRatio15 * 100)}%` }}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      (activeSignal?.segmentGreenRatio ?? 0) * 100,
+                    )}%`,
+                  }}
                 />
               </div>
             </div>
 
             <div className="macd-streak-info">
-              {macd.greenStreak > 0 ? (
+              {dispMacd.greenStreak > 0 ? (
                 <span className="pos">
-                  🔥 连绿 <b>{macd.greenStreak}</b> 根
+                  🔥 起爆前连绿 <b>{dispMacd.greenStreak}</b> 根
                 </span>
-              ) : macd.redStreak > 0 ? (
+              ) : dispMacd.redStreak > 0 ? (
                 <span className="neg">
-                  ❄️ 连红 <b>{macd.redStreak}</b> 根
+                  ❄️ 起爆前连红 <b>{dispMacd.redStreak}</b> 根
                 </span>
               ) : (
                 <span className="muted">柱线平稳</span>
               )}
               <span className="muted ml-auto">
-                Hist: <b>{macd.hist.toFixed(4)}</b>
+                起爆 Hist: <b>{dispMacd.hist.toFixed(4)}</b>
               </span>
             </div>
           </div>
         </div>
 
-        {/* 卡片 4: 24h 涨幅与区间比率 */}
+        {/* 卡片 4: 紧随爆发段振幅与 24h 比例 */}
         <div className="stats-card">
           <div className="card-header">
-            <span className="card-title">🎯 24h 涨幅与区间比率</span>
+            <span className="card-title">🎯 紧随爆发振幅与 24h 比例</span>
             <span
               className={`status-badge ${
-                isSurgeQualified ? "tag-bull-full" : "tag-muted"
+                activeSignal?.type === "surge" ? "tag-bull-full" : "tag-bear-short"
               }`}
             >
-              {isSurgeQualified ? "已达标" : "未达标"}
+              {activeSignal ? (activeSignal.type === "surge" ? "冲高段 🚀" : "回撤段 🔻") : "-"}
             </span>
           </div>
           <div className="card-body">
@@ -360,23 +388,45 @@ export function KlineStatsPanel({
               </span>
             </div>
             <div className="metric-row">
-              <span className="metric-name">{windowMinutes}m 冲高涨幅:</span>
-              <span className="metric-val pos">+{curSurgePct.toFixed(2)}%</span>
-            </div>
-            <div className="metric-row">
-              <span className="metric-name">区间/24h 比例:</span>
+              <span className="metric-name">紧随爆发最大振幅:</span>
               <span
-                className={`metric-val ${isSurgeQualified ? "pos bold" : "muted"}`}
+                className={`metric-val ${
+                  activeSignal?.type === "surge" ? "pos" : "neg"
+                }`}
               >
-                {curSurgeRatio.toFixed(1)}%
-                <span className="sub-ratio">
-                  (阈值: {targetThresholdPct.toFixed(1)}%)
-                </span>
+                {activeSignal
+                  ? `${activeSignal.type === "surge" ? "+" : "-"}${activeSignal.intervalChangePercent.toFixed(2)}%`
+                  : "-"}
               </span>
             </div>
             <div className="metric-row">
-              <span className="metric-name">{windowMinutes}m 回撤跌幅:</span>
-              <span className="metric-val neg">-{curDropPct.toFixed(2)}%</span>
+              <span className="metric-name">该段振幅 / 24h:</span>
+              <span className="metric-val pos bold">
+                {activeSignal ? (
+                  <>
+                    {(activeSignal.ratioToDayChange * 100).toFixed(1)}%
+                    {activeSignal.divisor > 0 && (
+                      <span className="sub-ratio">
+                        (24h/{activeSignal.divisor.toFixed(1)})
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  "-"
+                )}
+              </span>
+            </div>
+            <div className="metric-row">
+              <span className="metric-name">爆发跨度 / 点位:</span>
+              <span className="metric-val muted" style={{ fontSize: "10px" }}>
+                {activeSignal ? (
+                  `${activeSignal.segmentBarsCount ?? 0}m · ${formatPrice(
+                    activeSignal.segmentStartPrice,
+                  )} → ${formatPrice(activeSignal.segmentEndPrice)}`
+                ) : (
+                  "-"
+                )}
+              </span>
             </div>
           </div>
         </div>
@@ -389,9 +439,9 @@ export function KlineStatsPanel({
           onClick={() => setTableCollapsed((prev) => !prev)}
         >
           <span className="table-title">
-            📋 检出达标区间 ({signals.length} 处)
+            📋 检出区间最大振幅段与起爆前特征 ({signals.length} 个区间)
             <span className="table-hint">
-              {windowMinutes}m 涨跌幅 / 24h 涨幅 ≥ {(100 / divisor).toFixed(1)}% (24h/{divisor})
+              按 {windowMinutes}m 划分 · 统计该达标振幅前一段区间的均线形态与 MACD 绿柱率
             </span>
           </span>
           <button type="button" className="collapse-btn">
@@ -403,33 +453,61 @@ export function KlineStatsPanel({
           <div className="table-responsive">
             {signals.length === 0 ? (
               <div className="empty-signals">
-                在当前 1m K 线数据中，未发现满足 {windowMinutes}m 涨跌幅 ≥ 24h/{divisor} 比例的区间。
-                可适当调小比例或切换窗口。
+                在当前 1m K 线数据中，暂无对应的 {windowMinutes}m 区间数据。
               </div>
             ) : (
               <table className="signals-table">
                 <thead>
                   <tr>
-                    <th>时间</th>
+                    <th>区间时间</th>
+                    <th>爆发振幅段 (耗时)</th>
                     <th>类型</th>
-                    <th>区间涨跌幅</th>
+                    <th>爆发振幅</th>
                     <th>占24h比例</th>
-                    <th>均线排列</th>
-                    <th>K线形态 / MA支撑</th>
-                    <th>MACD绿柱(30m)</th>
+                    <th>【起爆前】均线支撑/排列</th>
+                    <th>【起爆前】MACD绿柱率</th>
+                    <th>【起爆前】蓄势振幅</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   {signals.map((s, idx) => {
-                    const timeStr = new Date(s.time).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    });
                     const isSurge = s.type === "surge";
+                    const intervalStartStr = s.intervalStartTime
+                      ? new Date(s.intervalStartTime).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })
+                      : "-";
+                    const intervalEndStr = s.intervalEndTime
+                      ? new Date(s.intervalEndTime).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })
+                      : "-";
+                    const segStartStr = s.segmentStartTime
+                      ? new Date(s.segmentStartTime).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })
+                      : "-";
+                    const segEndStr = s.segmentEndTime
+                      ? new Date(s.segmentEndTime).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })
+                      : "-";
+
+                    const preItem = s.precursor;
+
                     return (
                       <tr key={`${s.time}-${idx}`}>
-                        <td className="time-col">{timeStr}</td>
+                        <td className="time-col" title={`区间: ${intervalStartStr} ~ ${intervalEndStr}`}>
+                          {intervalStartStr} - {intervalEndStr}
+                        </td>
+                        <td className="muted" style={{ fontSize: "11px", whiteSpace: "nowrap" }}>
+                          {segStartStr} ~ {segEndStr} ({s.segmentBarsCount ?? s.windowMinutes}m)
+                        </td>
                         <td>
                           <span
                             className={`badge ${
@@ -445,55 +523,67 @@ export function KlineStatsPanel({
                         </td>
                         <td className="bold highlight">
                           {(s.ratioToDayChange * 100).toFixed(1)}%
-                          <span className="sub-ratio">(24h/{s.divisor})</span>
+                          {s.divisor > 0 && (
+                            <span className="sub-ratio">(24h/{s.divisor})</span>
+                          )}
                         </td>
+                        {/* 【起爆前】均线排列与支撑 (比对最近3根1mK) */}
                         <td>
-                          <span
-                            className={`status-badge-sm ${getMaTagClass(
-                              s.maAlignment.type
-                            )}`}
-                          >
-                            {s.maAlignment.label}
-                          </span>
-                        </td>
-                        <td>
-                          <div className="table-support-tags">
-                            {s.ohlc.supports.length > 0 &&
-                              s.ohlc.supports.map((p) => (
+                          {preItem ? (
+                            <div className="table-support-tags">
+                              <span className={`status-badge-sm ${getMaTagClass(preItem.maAlignment.type)}`}>
+                                {preItem.maAlignment.label}
+                              </span>
+                              {preItem.maAlignment.pattern3BarsLabel && (
+                                <span
+                                  className={`status-badge-sm tag-highlight`}
+                                  title={`3根分时演变: ${preItem.maAlignment.transitionText ?? ""}`}
+                                >
+                                  {preItem.maAlignment.pattern3BarsLabel}
+                                </span>
+                              )}
+                              {preItem.ohlc.supports.map((p) => (
                                 <span key={p} className="tag tag-support-sm">
                                   MA{p}支撑
                                 </span>
                               ))}
-                            {s.ohlc.resistances.length > 0 &&
-                              s.ohlc.resistances.map((p) => (
+                              {preItem.ohlc.resistances.map((p) => (
                                 <span key={p} className="tag tag-resist-sm">
                                   MA{p}压制
                                 </span>
                               ))}
-                            {s.ohlc.supports.length === 0 &&
-                              s.ohlc.resistances.length === 0 && (
-                                <span className="muted">站上 {s.ohlc.aboveCount}/5 MA</span>
-                              )}
-                          </div>
+                            </div>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
                         </td>
+                        {/* 【起爆前】MACD 绿柱率 */}
                         <td>
-                          <span
-                            className={
-                              s.macd.greenBarRatio30 >= 0.7 ? "pos bold" : "muted"
-                            }
-                          >
-                            {(s.macd.greenBarRatio30 * 100).toFixed(0)}% (
-                            {s.macd.greenCount30}/30)
-                          </span>
+                          {preItem ? (
+                            <span
+                              className={
+                                preItem.greenRatio >= 0.7 ? "pos bold" : "muted"
+                              }
+                            >
+                              {(preItem.greenRatio * 100).toFixed(0)}% (
+                              {preItem.greenCount}/{preItem.totalBars})
+                            </span>
+                          ) : (
+                            <span className="muted">-</span>
+                          )}
+                        </td>
+                        {/* 【起爆前】蓄势振幅 */}
+                        <td className="muted" style={{ fontFamily: "monospace" }}>
+                          {preItem ? `${preItem.preAmpPercent.toFixed(2)}%` : "-"}
                         </td>
                         <td>
                           <button
                             type="button"
                             className="locate-btn"
-                            onClick={() => onSelectTime(s.time)}
-                            title="定位到该 K 线"
+                            onClick={() => onSelectTime(preItem?.endTime ?? s.segmentStartTime ?? s.time)}
+                            title="定位到起爆点 K 线"
                           >
-                            定位 🔍
+                            定位起爆点 🔍
                           </button>
                         </td>
                       </tr>

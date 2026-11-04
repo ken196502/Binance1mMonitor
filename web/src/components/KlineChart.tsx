@@ -96,9 +96,8 @@ export function ChartPanel({
   const [hoverTime, setHoverTime] = useState<number | null>(null);
 
   // K线量化统计参数控制
-  const [windowMinutes, setWindowMinutes] = useState(5);
-  const [divisor, setDivisor] = useState(10);
-  const [mode, setMode] = useState<"surge" | "drop" | "both">("surge");
+  const [windowMinutes, setWindowMinutes] = useState(15);
+  const [mode, setMode] = useState<"surge" | "drop" | "both">("both");
   const [showMarkers, setShowMarkers] = useState(true);
 
   const { data, error, loading } = useKlines(symbol);
@@ -358,10 +357,9 @@ export function ChartPanel({
     if (!data || !data.bars.length) return [];
     return detectIntervalSignals(data.bars, effectiveDayChange, {
       windowMinutes,
-      ampDivisor: divisor,
       mode,
     });
-  }, [data, effectiveDayChange, windowMinutes, divisor, mode]);
+  }, [data, effectiveDayChange, windowMinutes, mode]);
 
   useEffect(() => {
     const plugin = markersPluginRef.current;
@@ -372,14 +370,15 @@ export function ChartPanel({
     }
     const markers: SeriesMarker<Time>[] = signals.map((s) => {
       const isSurge = s.type === "surge";
+      const ratioStr = (s.ratioToDayChange * 100).toFixed(0);
       return {
         time: toTs(s.time),
         position: isSurge ? "belowBar" : "aboveBar",
         color: isSurge ? UP : DOWN,
         shape: isSurge ? "arrowUp" : "arrowDown",
         text: isSurge
-          ? `🎯${s.windowMinutes}m+${s.intervalChangePercent.toFixed(1)}%(24h/${s.divisor})`
-          : `🔻${s.windowMinutes}m-${s.intervalChangePercent.toFixed(1)}%(24h/${s.divisor})`,
+          ? `🎯${s.windowMinutes}m+${s.intervalChangePercent.toFixed(1)}%(占${ratioStr}%)`
+          : `🔻${s.windowMinutes}m-${s.intervalChangePercent.toFixed(1)}%(占${ratioStr}%)`,
         size: 1,
       };
     });
@@ -520,8 +519,6 @@ export function ChartPanel({
           onSelectTime={handleSelectTime}
           windowMinutes={windowMinutes}
           onWindowMinutesChange={setWindowMinutes}
-          divisor={divisor}
-          onDivisorChange={setDivisor}
           mode={mode}
           onModeChange={setMode}
           showMarkers={showMarkers}

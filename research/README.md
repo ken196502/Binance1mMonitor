@@ -192,17 +192,48 @@
 
 ---
 
-## 7. 目录核心文件索引
+## 7. 量化特征提取与再挖掘系统 V2.0 (Quantitative Feature Mining Engine)
 
+系统在 V2.0 中全面实现了从经验型指标规则向**高维连续特征提取与多阶段防过拟合检验**的量化体系进化。
+
+### 核心量化框架：
+1. **统一特征计算层 (`src/features.ts`)**：
+   - 提取 5 大维度连续特征（区间结构、24h 宏观与排名、均线形态与 3 根演化、MACD 动能/背离、多周期 5m/15m 聚合）。
+   - 统一 500 根 1m K 线历史预热，保障回测与实盘指标计算浮点误差 $< 10^{-9}$。
+2. **阶段 0 因果前驱挖掘 (`minePrecursorFeatureDistributions`)**：
+   - 历史回溯统计大幅冲高前与回撤前夕的客观规律（均线支撑比例、MACD 柱体衰竭 73.8%、均线多空动态拐点）。
+   - 建立非对称前驱因果关系：空头以大振幅冲高完成（$surgeRatio \ge 1/\text{divisor}$）为前驱；多头以低波收敛蓄势整理为前驱。
+3. **三段式时序隔离与滚动折叠验证**：
+   - 60% 训练集 (Train) / 20% 验证集 (Val) / 20% 留出集 (Holdout)；
+   - 4 阶段滚动 Walk-Forward 步进验证；
+   - 参数稳健性高原打分：$\text{CompositeScore} = 0.5 \times \text{自身得分} + 0.5 \times \text{邻域均值}$；
+   - 严格部署门槛：Wilson 胜率下界 $\ge 48\%$、盈亏比 $\text{PF} \ge 1.25$、期望收益 $> 2 \times \text{交易成本}$、Holdout 测试集非负。
+4. **保守撮合仿真 (D6)**：
+   - 同分钟 K 线同时触碰 TP 与 SL 时默认先判止损；
+   - 止损按最极端价成交，入场叠加 1 档滑点；
+   - 阶段一达成后止损自动上移至入场保本价（$\pm 0.2\%$ 覆盖手续费）。
+5. **策略远端自动部署与热更新 (`scripts/deploy-strategy.ts`)**：
+   - 强制校验特征版本（`v2.0.0`）与部署门槛标记；
+   - 通过 `POST /api/paper-trading/config` 无缝热更新至远端服务内存与持久化文件。
+
+---
+
+## 8. 目录核心文件索引
+
+- `src/features.ts`：核心统一特征提取层与规则评估器 (FeatureVector, 5大维度, 信号与数据落盘)
 - `src/unified-short-strategy.ts`：生产四大最高胜率信号做空统一调度引擎
 - `src/peak-rebound-strategy.ts`：榜一峰值反弹策略实时状态追踪器
-- `src/paper-trading.ts`：模拟交易执行引擎（支持动态保证金、多策略仓位配额、双速杠杆与状态持久化）
+- `src/paper-trading.ts`：模拟交易执行引擎（支持动态保证金、多策略仓位配额、双速杠杆、量化特征做多/做空与状态持久化）
 - `src/server.ts`：后台服务主进程（REST API 配置管理、实时 K 线推进、榜单同步与模拟交易撮合）
+- `src/kline-stats.ts`：均线动态 3 根演化模式识别与前兆特征提取
 - `research/surge-signal-group-types.ts`：冲高做空信号组参数类型定义
 - `research/surge-signal-group.ts`：冲高脉冲基底与多因子信号评估引擎
 - `research/surge-signal-group-backtest.ts`：信号组回测与协同评估引擎
+- `research/tests/features.test.ts`：统一特征提取与 500 根预热一致性测试套件
 - `research/tests/paper-trading-max-positions.test.ts`：动态保证金与多策略持仓配额自动化测试
 - `research/tests/paper-trading-config-api.test.ts`：模拟交易动态配置 API 与持久化测试
+- `scripts/mine-strategy.ts`：24h 涨幅榜量化统计与特征挖掘系统 V2.0
+- `scripts/deploy-strategy.ts`：策略参数远端自动部署与热更新脚本 (版本校验与部署门槛核验)
 - `scripts/research-portfolio-leverage.ts`：组合全量四大策略双速杠杆矩阵与动态保证金模拟回测
 - `scripts/research-newhigh-leverage.ts`：新高顶背离闪击杠杆矩阵与回撤敏感度扫描
 - `scripts/test-newhigh-leverage-matrix.ts`：新高顶背离杠杆矩阵对比与胜率验证

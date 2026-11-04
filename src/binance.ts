@@ -57,6 +57,9 @@ export interface Ticker24h {
   lastPrice: number;
   priceChangePercent: number;
   quoteVolume: number;
+  highPrice?: number;
+  lowPrice?: number;
+  openPrice?: number;
 }
 
 /**
@@ -520,6 +523,9 @@ export async function fetch24hTickers(): Promise<Ticker24h[]> {
       lastPrice: parseFloat(d.lastPrice),
       priceChangePercent: parseFloat(d.priceChangePercent),
       quoteVolume: parseFloat(d.quoteVolume),
+      highPrice: d.highPrice != null ? parseFloat(d.highPrice) : parseFloat(d.lastPrice),
+      lowPrice: d.lowPrice != null ? parseFloat(d.lowPrice) : parseFloat(d.lastPrice),
+      openPrice: d.openPrice != null ? parseFloat(d.openPrice) : parseFloat(d.lastPrice),
     }));
 }
 

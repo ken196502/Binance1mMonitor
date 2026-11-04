@@ -14,6 +14,13 @@ import {
   computeMacd,
   type Candle,
 } from "./macd.ts";
+import {
+  computeFeatureVector,
+  evaluateFeatureSpec,
+  appendSignalSnapshot,
+  FEATURE_VERSION,
+  type FeatureVector,
+} from "./features.ts";
 import { candlesToChartBars } from "./chart.ts";
 import {
   analyzeMaAlignment,
@@ -509,110 +516,49 @@ export class PaperTradingEngine {
 
     if (!config) return null;
 
-    // 1. 榜单排名与 24h 涨跌幅门槛
-    const maxRank = config.topN ?? 10;
-    if (rank > maxRank) return null;
-    const minDayChange = config.minDayChange ?? 10;
-    if (dayChangePercent < minDayChange) return null;
-
-    // 2. 冷却时间检查
+    // 1. 冷却时间检查
     const cdUntil = this.klineStatsCooldown.get(symbol) ?? 0;
     if (cdUntil > now) return null;
 
-    // 3. K 线数量充足性检查 (至少需 65 根计算 MA60 和 MACD)
-    // 最后一根 candles[candles.length - 1] 为当前正在走动的 forming bar，targetIdx 为最新收盘 bar
+    // 2. K 线数量充足性检查 (至少需 35 根)
     const targetIdx = candles.length - 2;
-    if (targetIdx < 60) return null;
+    if (targetIdx < 35) return null;
 
     const targetCandle = candles[targetIdx];
     if (!targetCandle || targetCandle.close <= 0) return null;
 
-    // 4. 计算指定 intervalWindow 内的冲高/振幅是否达标 (>= 24h涨幅 / ampDivisor)
-    const windowBars = config.intervalWindow ?? 5;
-    const wStart = Math.max(0, targetIdx - windowBars + 1);
-    let minLow = Infinity;
-    let maxHigh = -Infinity;
-    for (let k = wStart; k <= targetIdx; k++) {
-      if (candles[k].low < minLow) minLow = candles[k].low;
-      if (candles[k].high > maxHigh) maxHigh = candles[k].high;
+    // 3. 统一特征计算与规则评估
+    const dummyTicker: Ticker24h = {
+      symbol,
+      lastPrice: targetCandle.close,
+      priceChangePercent: dayChangePercent,
+      quoteVolume: 0,
+      highPrice: targetCandle.high,
+      lowPrice: targetCandle.low,
+    };
+
+    const fv = computeFeatureVector(candles, dummyTicker, targetIdx, { rank });
+    if (!fv) return null;
+
+    const evalResult = evaluateFeatureSpec(side, fv, config);
+
+    // 2.6 信号快照落盘 (包括触发以及差点触发的记录)
+    const isClose = !evalResult.pass && !evalResult.failedReason?.includes("rank");
+    if (evalResult.pass || isClose) {
+      void appendSignalSnapshot({
+        time: targetCandle.time,
+        symbol,
+        type: side === "SHORT" ? "kline_stats_short" : "kline_stats_long",
+        side,
+        triggered: evalResult.pass,
+        failedReason: evalResult.failedReason,
+        featureVector: fv,
+        ticker: dummyTicker,
+        configVersion: FEATURE_VERSION,
+      });
     }
-    if (minLow <= 0 || maxHigh <= 0) return null;
 
-    const risePercent = ((targetCandle.high - minLow) / minLow) * 100;
-    const divisor = config.ampDivisor ?? 8;
-    const requiredRise = dayChangePercent / divisor;
-    if (risePercent < requiredRise) return null;
-
-    // 5. 转换为 ChartBar 计算均线和 MACD
-    const bars = candlesToChartBars(candles);
-    const closedBar = bars[targetIdx];
-    if (!closedBar) return null;
-
-    // 6. 均线排列与支撑/压制条件判定
-    const maAlignment = analyzeMaAlignment(bars, targetIdx);
-    const ohlc = analyzeOhlcComparison(bars, targetIdx);
-
-    let maPass = true;
-    switch (config.maRequirement) {
-      case "MA10_SUPPORT":
-        maPass = ohlc.supports.includes(10);
-        break;
-      case "MA20_SUPPORT":
-        maPass = ohlc.supports.includes(20);
-        break;
-      case "MA60_SUPPORT":
-        maPass = ohlc.supports.includes(60);
-        break;
-      case "MA_BULLISH_STACK":
-        maPass =
-          maAlignment.type === "bullish_full" ||
-          maAlignment.type === "bullish_short";
-        break;
-      case "MA60_RESIST":
-        maPass = ohlc.resistances.includes(60);
-        break;
-      case "MA20_RESIST":
-        maPass = ohlc.resistances.includes(20);
-        break;
-      case "MA10_BREAKDOWN":
-        maPass =
-          closedBar.open >= (closedBar.ma["10"] ?? 0) &&
-          closedBar.close < (closedBar.ma["10"] ?? 0);
-        break;
-      case "NONE":
-      default:
-        maPass = true;
-        break;
-    }
-    if (!maPass) return null;
-
-    // 7. MACD 绿柱比例条件判定
-    const macd = analyzeMacdStats(bars, targetIdx);
-    let macdPass = true;
-    switch (config.macdRequirement) {
-      case "GREEN_RATIO_15_70":
-        macdPass = macd.greenBarRatio15 >= 0.7 && macd.isBullishCross;
-        break;
-      case "GREEN_RATIO_30_70":
-        macdPass = macd.greenBarRatio30 >= 0.7;
-        break;
-      case "GREEN_RATIO_30_80":
-        macdPass = macd.greenBarRatio30 >= 0.8;
-        break;
-      case "GREEN_STREAK_3":
-        macdPass = macd.greenStreak >= 3;
-        break;
-      case "HIST_WEAKENING": {
-        const prevHist = targetIdx > 0 ? bars[targetIdx - 1].hist : 0;
-        macdPass = prevHist > 0 && (closedBar.hist < prevHist || closedBar.hist <= 0);
-        break;
-      }
-      case "NONE":
-      default:
-        macdPass = true;
-        break;
-    }
-    if (!macdPass) return null;
+    if (!evalResult.pass) return null;
 
     const formingBar = candles[candles.length - 1];
     const entryPrice = formingBar && formingBar.close > 0 ? formingBar.close : targetCandle.close;
@@ -633,11 +579,11 @@ export class PaperTradingEngine {
       },
       signalDetails: {
         candle: targetCandle,
-        streakCount: macd.greenStreak,
-        amp30Percent: risePercent,
-        upperShadowRatio: ohlc.upperWickPercent,
-        greenRatio: macd.greenBarRatio30,
-        consecutiveGreenBars: macd.greenStreak,
+        streakCount: fv.greenStreak,
+        amp30Percent: fv.surge[config.intervalWindow ?? 5] ?? 0,
+        upperShadowRatio: fv.upperWick,
+        greenRatio: fv.greenRatio[30] ?? 0,
+        consecutiveGreenBars: fv.greenStreak,
       },
     };
   }
@@ -1025,6 +971,7 @@ export class PaperTradingEngine {
         rank,
         symCache.candles1m,
         now,
+        ticker,
       );
 
       let chosenSignal: {

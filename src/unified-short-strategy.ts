@@ -6,6 +6,7 @@
 // 4. 'Hourly Suppression Short' (小时线压制·深跌狂暴狙击 - Touch/test 1m MA60 ceiling + drop >= 20% + MA60>MA10>MA20 + 5m surge + 3 MACD green bars)
 
 import { Candle, computeMacd, consecutiveStreakAt, calculateSupportMaAt, calculateSma } from './macd.ts';
+import type { Ticker24h } from './binance.ts';
 import {
   PeakReboundLiveConfig,
   PEAK_REBOUND_LIVE_DEFAULT_CONFIG,
@@ -365,7 +366,8 @@ export class UnifiedShortStrategyTracker {
     dayChangePercent: number,
     rank: number,
     candles: Candle[],
-    now = Date.now()
+    now = Date.now(),
+    ticker?: Ticker24h | null
   ): UnifiedLiveSignal | null {
     if (dayChangePercent <= 0) return null;
 
@@ -413,7 +415,7 @@ export class UnifiedShortStrategyTracker {
 
     // 3. 信号三: 跌到 20%+ (Deep Rebound Short)
     if (this.config.enableDeepRebound) {
-      const deepSig = this.checkDeepReboundSignal(symbol, dayChangePercent, candles, now);
+      const deepSig = this.checkDeepReboundSignal(symbol, dayChangePercent, candles, now, ticker);
       if (deepSig) {
         const exitParams = {
           holdMinutes: this.config.deepReboundConfig.holdMinutes,
@@ -452,7 +454,7 @@ export class UnifiedShortStrategyTracker {
 
     // 3. 信号一: 新高顶背离 (Top N focus, 创24h新高+MACD双背离+悬空假突破收阴，10x 专属闪击战，优先于冲高乖离)
     if (this.config.enableStreak && rank <= this.config.streakConfig.topN) {
-      const streakSig = this.checkStreakSignal(symbol, dayChangePercent, candles);
+      const streakSig = this.checkStreakSignal(symbol, dayChangePercent, candles, ticker);
       if (streakSig) {
         const exitParams = {
           holdMinutes: this.config.streakConfig.holdMinutes,
@@ -491,7 +493,7 @@ export class UnifiedShortStrategyTracker {
 
     // 4. 信号四: 小时线压制 (Top N focus, 1m MA60 压制: high > ma60 && low < ma60, 近 N 根 MACD 绿柱)
     if (this.config.enableHourlySuppression && rank <= (this.config.hourlySuppressionConfig.topN ?? 10)) {
-      const hourlySig = this.checkHourlySuppressionSignal(symbol, dayChangePercent, rank, candles, now);
+      const hourlySig = this.checkHourlySuppressionSignal(symbol, dayChangePercent, rank, candles, now, ticker);
       if (hourlySig) {
         const exitParams = {
           holdMinutes: this.config.hourlySuppressionConfig.holdMinutes,
@@ -537,7 +539,8 @@ export class UnifiedShortStrategyTracker {
     symbol: string,
     dayChangePercent: number,
     candles: Candle[],
-    now = Date.now()
+    now = Date.now(),
+    ticker?: Ticker24h | null
   ): {
     dropFrom24h: number;
     reboundFrom10m: number;
@@ -555,11 +558,13 @@ export class UnifiedShortStrategyTracker {
     const candle = candles[targetIdx];
     if (!candle || candle.close <= 0 || candle.open <= 0) return null;
 
-    // 1. 24h rolling high (过去至多 1440 根 K 线)
-    const start24h = Math.max(0, targetIdx - 1439);
-    let high24h = 0;
-    for (let k = start24h; k <= targetIdx; k++) {
-      if (candles[k].high > high24h) high24h = candles[k].high;
+    // 1. 24h rolling high (优先使用 ticker 真实 24h 高点，无则回退 1440 根)
+    let high24h = (ticker?.highPrice && ticker.highPrice > 0) ? ticker.highPrice : 0;
+    if (high24h <= 0) {
+      const start24h = Math.max(0, targetIdx - 1439);
+      for (let k = start24h; k <= targetIdx; k++) {
+        if (candles[k].high > high24h) high24h = candles[k].high;
+      }
     }
     if (high24h <= 0) return null;
 
@@ -628,7 +633,8 @@ export class UnifiedShortStrategyTracker {
   private checkStreakSignal(
     symbol: string,
     dayChangePercent: number,
-    candles: Candle[]
+    candles: Candle[],
+    ticker?: Ticker24h | null
   ): {
     streakCount: number;
     amp30Percent: number;
@@ -656,14 +662,18 @@ export class UnifiedShortStrategyTracker {
     const candle = candles[targetIndex];
     if (!candle || candle.close <= 0 || candle.open <= 0) return null;
 
-    // 1. 创 24h 新高 (默认开启，要求当前 high 为过去 1440 根 K 线的最高点)
+    // 1. 创 24h 新高 (优先使用 ticker 真实 24h 高点，允许 0.1% 容差；若无 ticker 则回退 1440 根 K 线)
     if (cfg.require24hNewHigh ?? true) {
-      const lookback24hStart = Math.max(0, targetIndex - 1440);
-      let prev24hMax = 0;
-      for (let k = lookback24hStart; k < targetIndex; k++) {
-        if (candles[k].high > prev24hMax) prev24hMax = candles[k].high;
+      if (ticker?.highPrice && ticker.highPrice > 0) {
+        if (candle.high < ticker.highPrice * (1 - 0.001)) return null;
+      } else {
+        const lookback24hStart = Math.max(0, targetIndex - 1440);
+        let prev24hMax = 0;
+        for (let k = lookback24hStart; k < targetIndex; k++) {
+          if (candles[k].high > prev24hMax) prev24hMax = candles[k].high;
+        }
+        if (candle.high < prev24hMax) return null;
       }
-      if (candle.high < prev24hMax) return null;
     }
 
     // 2. X 分钟内冲高涨幅达到 24h 涨幅 / N (默认 X=5m, N=10)
@@ -821,7 +831,8 @@ export class UnifiedShortStrategyTracker {
     dayChangePercent: number,
     rank: number,
     candles: Candle[],
-    now = Date.now()
+    now = Date.now(),
+    ticker?: Ticker24h | null
   ): {
     ma60: number;
     high: number;
@@ -859,13 +870,15 @@ export class UnifiedShortStrategyTracker {
       if (xRisePercent < requiredRise) return null;
     }
 
-    // 1b. 离 24h 最高价跌幅过滤 (距离 24h 最高价至少跌了 x%)
+    // 1b. 离 24h 最高价跌幅过滤 (优先使用 ticker 真实 24h 高点，无则回退 1440 根)
     let dropFrom24h: number | undefined;
     if (cfg.minDropFrom24h !== undefined && cfg.minDropFrom24h > 0) {
-      const start24h = Math.max(0, targetIdx - 1439);
-      let high24h = 0;
-      for (let k = start24h; k <= targetIdx; k++) {
-        if (candles[k].high > high24h) high24h = candles[k].high;
+      let high24h = (ticker?.highPrice && ticker.highPrice > 0) ? ticker.highPrice : 0;
+      if (high24h <= 0) {
+        const start24h = Math.max(0, targetIdx - 1439);
+        for (let k = start24h; k <= targetIdx; k++) {
+          if (candles[k].high > high24h) high24h = candles[k].high;
+        }
       }
       if (high24h <= 0) return null;
       dropFrom24h = ((high24h - candle.close) / high24h) * 100;

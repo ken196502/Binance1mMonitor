@@ -115,6 +115,12 @@ export function StatusRow({ row, changeLabel, isPercentage = true, onSelect, sel
       ) : (
         <td className="pink">无</td>
       )}
+      <td className="muted" title={row.surgeRatio5 != null ? `5m冲高占24h涨幅 ${(row.surgeRatio5 * 100).toFixed(1)}%` : undefined}>
+        {row.surgeRatio5 != null ? (row.surgeRatio5 > 0 ? `1/${(1 / row.surgeRatio5).toFixed(1)}` : "0") : "-"}
+      </td>
+      <td className="muted" title={row.posIn24hRange != null ? `距离24h高点回撤: ${((1 - row.posIn24hRange) * 100).toFixed(1)}%` : undefined}>
+        {row.posIn24hRange != null ? `${(row.posIn24hRange * 100).toFixed(0)}%` : "-"}
+      </td>
     </tr>
   );
 }

@@ -29,6 +29,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PaperStrategyConfig } from "../src/paper-trading.ts";
+import { FEATURE_VERSION } from "../src/features.ts";
 
 export interface DeployOptions {
   url?: string;
@@ -357,16 +358,36 @@ export async function main() {
     try {
       const content = fs.readFileSync(defaultMinedFile, "utf8");
       const parsed = JSON.parse(content);
+
+      // 3.6 校验特征版本与部署门槛
+      if (parsed.featureVersion && parsed.featureVersion !== FEATURE_VERSION) {
+        console.error(`❌ 特征版本不匹配: mined-strategy.json 为 v${parsed.featureVersion}，但当前系统特征版本为 v${FEATURE_VERSION}`);
+        if (!args.includes("--force")) {
+          console.error("💡 请重新运行挖掘脚本 (npm run mine:strategy) 生成新版配置，或添加 --force 强制部署。");
+          process.exit(1);
+        }
+      }
+
+      if (parsed.meetsDeploymentThreshold === false) {
+        console.error("❌ 策略未满足严格部署门槛 (Wilson下界 >= 50%, PF >= 1.3, 期望收益 > 2*成本)");
+        if (!args.includes("--force")) {
+          console.error("💡 建议补充历史样本或调整特征阈值重新挖掘，或添加 --force 强制覆盖。");
+          process.exit(1);
+        }
+      }
+
       payload = parsed.strategyConfig ?? parsed;
       console.log(`📦 已自动载入最新量化统计挖掘成果 (${defaultMinedFile}):`);
       if (parsed.updatedAt) console.log(`   • 挖掘完成时间: ${parsed.updatedAt}`);
+      if (parsed.featureVersion) console.log(`   • 特征版本: v${parsed.featureVersion}`);
+      if (parsed.datasetHash) console.log(`   • 数据集哈希: ${parsed.datasetHash}`);
       if (parsed.summary?.bestShort) {
         const bs = parsed.summary.bestShort;
-        console.log(`   • 最优空头策略: ${bs.name} (胜率 ${bs.winRate.toFixed(1)}%, PF ${bs.pf.toFixed(2)}, 回撤 ${bs.maxDrawdown.toFixed(1)}%)`);
+        console.log(`   • 最优空头策略: ${bs.name} (验证胜率 ${(bs.valWinRate ?? bs.winRate)?.toFixed(1)}%, 验证PF ${(bs.valPf ?? bs.pf)?.toFixed(2)})`);
       }
       if (parsed.summary?.bestLong) {
         const bl = parsed.summary.bestLong;
-        console.log(`   • 最优多头策略: ${bl.name} (胜率 ${bl.winRate.toFixed(1)}%, PF ${bl.pf.toFixed(2)}, 回撤 ${bl.maxDrawdown.toFixed(1)}%)`);
+        console.log(`   • 最优多头策略: ${bl.name} (验证胜率 ${(bl.valWinRate ?? bl.winRate)?.toFixed(1)}%, 验证PF ${(bl.valPf ?? bl.pf)?.toFixed(2)})`);
       }
     } catch (e: any) {
       console.warn(`⚠️ 解析 ${defaultMinedFile} 失败，将回退至默认 [balanced] 组合: ${e.message}`);

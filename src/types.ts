@@ -37,6 +37,10 @@ export interface Row extends Ticker24h {
   maxHour?: number | null;
   hourFirstClose?: number | null;
   hourFirstLow?: number | null;
+  surgeRatio5?: number | null;
+  posIn24hRange?: number | null;
+  biasRatio30?: number | null;
+  goldenCrossAgo?: number | null;
 }
 
 export interface AlertSymbolItem {
@@ -369,6 +373,25 @@ export type MaAlignmentType =
   | "bearish_short"     // 短期空头 (MA5 < MA10 < MA20)
   | "tangled";          // 均线缠绕震荡
 
+export type Ma3BarPattern =
+  | "sustained_bull"    // 持续多头 (近3根连续保持多头排列，稳固发散)
+  | "fresh_bull"        // 刚成多头 (前两根非多头，最新1~2根刚交叉形成多头，起爆拐点)
+  | "sustained_bear"    // 持续空头 (近3根连续保持空头排列，弱势受阻)
+  | "fresh_bear"        // 刚成空头 (前两根非空头，最新1~2根刚死叉形成空头，破位拐点)
+  | "bull_converging"   // 多头收敛 (多头排列但均线间距收窄走平，动能减弱)
+  | "bear_converging"   // 空头收敛 (空头排列但均线间距收窄走平，跌势减缓)
+  | "tangled";          // 交织缠绕震荡
+
+export interface Ma3BarStep {
+  barIndex: number;
+  time: number;
+  type: MaAlignmentType;
+  label: string;
+  orderText: string;
+  spreadMa5Ma10: number; // (MA5 - MA10) / MA10 * 100%
+  spreadMa5Ma20: number; // (MA5 - MA20) / MA20 * 100%
+}
+
 export interface MaItem {
   period: number;
   value: number;
@@ -387,6 +410,14 @@ export interface MaAlignmentInfo {
   order: number[];               // e.g. [5, 10, 20, 30, 60] 从大到小排列
   orderText: string;             // e.g. "MA5 > MA10 > MA20 > MA30 > MA60"
   mas: Record<number, MaItem>;
+
+  // 比对最近 3 根 1m K 线的均线动态演化分析
+  pattern3Bars?: Ma3BarPattern;  // 3根综合模式
+  pattern3BarsLabel?: string;    // e.g. "刚成多头 (起爆交叉)" / "持续3根完全多头"
+  history3Bars?: Ma3BarStep[];   // 最近3根各自的排列明细 [T-2, T-1, T]
+  transitionText?: string;       // 演化路径文本: e.g. "交织 ➔ 短多 ➔ 完全多头 (加速发散)"
+  streakBars?: number;           // 连续保持当前排列状态的根数
+  isDiverging?: boolean;         // 均线间距是否在逐根扩大发散
 }
 
 export interface OhlcComparisonInfo {
@@ -418,16 +449,45 @@ export interface MacdStatsInfo {
 }
 
 export interface IntervalSignal {
-  time: number;                  // 发生时间 (epoch ms)
+  time: number;                  // 发生时间 / 段终点极值时间 (epoch ms)
   barIndex: number;              // 在当前 bars 中的索引
   type: "surge" | "drop";        // 冲高 / 回撤
   windowMinutes: number;         // 区间长度 (如 5m, 15m)
-  intervalChangePercent: number; // 区间实际涨跌幅% (冲高为从低点到高点涨幅，回撤为从高点到低点跌幅)
+  intervalChangePercent: number; // 区间实际涨跌幅% / 该段最大振幅%
   dayChangePercent: number;      // 24h 涨幅%
-  ratioToDayChange: number;      // 区间涨跌幅 / 24h涨幅 比例 (如 0.125 即 12.5% 或 1/8)
-  divisor: number;               // 对应的 1/ratio (如 8.0)
-  price: number;                 // 当时价格
+  ratioToDayChange: number;      // 该段振幅 / 24h涨幅 比例 (如 0.125 即 12.5%)
+  divisor: number;               // 对应的 1/ratio (如 8.0，即 24h/8)
+  price: number;                 // 当时价格 / 极值价格
   maAlignment: MaAlignmentInfo;  // 当时均线排列
   ohlc: OhlcComparisonInfo;      // 当时K线OHLC与均线对比
   macd: MacdStatsInfo;           // 当时MACD绿柱比例
+
+  // 振幅段扩展详细字段
+  intervalStartTime?: number;    // 所在区间开始时间
+  intervalEndTime?: number;      // 所在区间结束时间
+  segmentStartTime?: number;     // 该段起点时间
+  segmentEndTime?: number;       // 该段终点时间
+  segmentStartPrice?: number;    // 该段起点价格
+  segmentEndPrice?: number;      // 该段终点价格
+  segmentBarsCount?: number;     // 该段K线根数
+  segmentGreenCount?: number;    // 该段内MACD绿柱根数 (hist > 0)
+  segmentGreenRatio?: number;    // 该段内绿柱比例 (segmentGreenCount / segmentBarsCount)
+
+  // 【核心因果特性】：达标振幅前一段区间的特征统计 (起爆前兆特征)
+  precursor?: PrecursorFeatures;
+}
+
+export interface PrecursorFeatures {
+  windowMinutes: number;         // 前一段区间考察窗口大小
+  startTime: number;             // 前一段区间开始时间
+  endTime: number;               // 前一段区间结束时间 (起爆点)
+  startBarIndex: number;         // 前一段区间起始 bar 索引
+  endBarIndex: number;           // 前一段区间结束 bar 索引 (起爆点 bar)
+  greenRatio: number;            // 前一段区间 MACD 绿柱比例
+  greenCount: number;            // 前一段区间 MACD 绿柱根数
+  totalBars: number;             // 前一段区间 K 线总数
+  maAlignment: MaAlignmentInfo;  // 起爆点均线排列状态
+  ohlc: OhlcComparisonInfo;      // 起爆点 K 线形态与支撑/阻力
+  macd: MacdStatsInfo;           // 起爆点 MACD 状态
+  preAmpPercent: number;         // 前一段区间自身振幅% (判断是否窄幅蓄势整理)
 }

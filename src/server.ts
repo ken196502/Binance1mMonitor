@@ -25,6 +25,7 @@ import {
   calculateMacdGreenBarRatio,
   type Candle,
 } from "./macd.ts";
+import { computeFeatureVector, persistClosedCandleToDisk } from "./features.ts";
 import { TelegramAlerter, isAlertMatch } from "./alert.ts";
 import { telegramConfigured } from "./telegram.ts";
 import { enrichRankChanges, type BoardSnapshot } from "./rank.ts";
@@ -63,8 +64,8 @@ export function getNextMinuteDelay(now = Date.now(), offsetMs = ALIGN_OFFSET_MS)
   return Math.max(50, target - now);
 }
 const KLINE_LIMIT = Number(process.env.KLINE_LIMIT ?? 100);
-const KLINE_INIT_LIMIT = Number(process.env.KLINE_INIT_LIMIT ?? 200); // 冷启动拉取 200 根 (用于 MA120 及 30 根绿柱与 MACD 计算)
-const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? 200); // 滚动存储 200 根 1m K 线
+const KLINE_INIT_LIMIT = Number(process.env.KLINE_INIT_LIMIT ?? 500); // 冷启动拉取 500 根 (用于 15m MA20, MA60, 30 根绿柱与 MACD 预热)
+const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? 500); // 滚动存储 500 根 1m K 线
 // "High position" = current DEA/DIFF is at/near the highest value in the window.
 const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
 const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in bars
@@ -214,6 +215,15 @@ async function fetchRowData(t: Ticker24h, options: FetchRowOptions = {}): Promis
             ? "mid"
             : "low";
 
+    // 2.1 & 2.6 计算统一 FeatureVector 并提取看板连续值特征
+    const fv = computeFeatureVector(candles, t, candles.length - 2);
+
+    // 2.6 实盘收盘 1m K 线落盘积累
+    if (candles.length >= 2) {
+      const closedCandle = candles[candles.length - 2];
+      void persistClosedCandleToDisk(t.symbol, closedCandle);
+    }
+
     return {
       row: {
         ...t,
@@ -231,6 +241,10 @@ async function fetchRowData(t: Ticker24h, options: FetchRowOptions = {}): Promis
         streakGainPercent,
         greenBarRatio30: macdGreen?.ratio ?? null,
         greenBarCount30: macdGreen?.greenCount ?? null,
+        surgeRatio5: fv ? (fv.surgeRatio[5] ?? null) : null,
+        posIn24hRange: fv ? (fv.posIn24hRange ?? null) : null,
+        biasRatio30: fv ? (fv.ma[30]?.biasRatio ?? null) : null,
+        goldenCrossAgo: fv ? (fv.goldenCrossAgo !== 999 ? fv.goldenCrossAgo : null) : null,
       },
       didRest,
     };

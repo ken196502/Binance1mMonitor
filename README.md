@@ -116,13 +116,98 @@
 
 ---
 
-## 三、Telegram 实时推送
+## 三、量化特征提取与再挖掘策略系统 (V2.0)
+
+系统在 V2.0 中全面升级了量化研究底座，实现**特征工程统一化 (`src/features.ts`)**、**因果前驱客观规律挖掘 (`minePrecursorFeatureDistributions`)**、**多阶段严格防过拟合验证 (`scripts/mine-strategy.ts`)** 与**标准化策略部署闭环 (`scripts/deploy-strategy.ts`)**。
+
+```
+ ┌─────────────────────────────────────────────────────────────────────────────┐
+ │                         1. 统一量化特征提取层 (src/features.ts)               │
+ │ • 统一 500 根已收盘 1m K 线预热 (浮点误差 < 1e-9)                              │
+ │ • 5 大维度连续特征向量 (FeatureVector): 区间结构 / 24h宏观 / 均线演化 / MACD / 多周期 │
+ └──────────────────────────────────────┬──────────────────────────────────────┘
+                                        │
+ ┌──────────────────────────────────────▼──────────────────────────────────────┐
+ │                     2. 策略再挖掘与防过拟合系统 (mine-strategy.ts)              │
+ │ • 阶段 0: 前兆特征客观分布挖掘 (前驱因果提取，无未来函数)                     │
+ │ • 严格样本划分: 60% 训练集 (Train) / 20% 验证集 (Val) / 20% 留出集 (Holdout) │
+ │ • 4 折叠 Walk-Forward 滚动步进验证                                           │
+ │ • 参数稳健性高原打分 (Neighbor Robustness Score: 50% 本身 + 50% 邻域均值)    │
+ │ • 保守撮合仿真: 极端价止损优先判定、保本 0.2%、次根开盘滑点撮合              │
+ │ • 严格部署门槛: Wilson 下界 ≥ 48%, PF ≥ 1.25, 期望收益 > 2*成本, Holdout 非负│
+ │ • 组合模式回测: 全局 5 仓、单策略 1 仓、20% 保证金并发资金曲线与回撤模拟    │
+ └──────────────────────────────────────┬──────────────────────────────────────┘
+                                        │ 导出 data/mined-strategy.json
+ ┌──────────────────────────────────────▼──────────────────────────────────────┐
+ │                    3. 策略远端安全热部署引擎 (deploy-strategy.ts)            │
+ │ • 特征版本校验 (v2.0.0 强制对齐) 与部署门槛合规性自动核验                   │
+ │ • 热更新生产环境 POST /api/paper-trading/config 并自动持久化落盘            │
+ │ • 具备预设模式 (top_short / top_long / balanced / aggressive) 与安全基准回退│
+ └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1. 统一特征向量结构 (`FeatureVector`)
+系统将 1m 高频量价与指标解构为 5 大标准化维度：
+- **维度 A（区间涨跌幅与实体结构）**：
+  - 多周期振幅：`surge[W]`（$W \in [3, 5, 10, 15, 30, 60]$ 分钟冲高）、`drop[W]`（区间回撤）、`closeChange[W]`。
+  - K 线形态：`body`（实体%）、`upperWick`（上影线%）、`lowerWick`（下影线%）。
+- **维度 B（24h 宏观与榜单上下文）**：
+  - 榜单状态：`dayChange`（24h 涨跌幅）、`rank`（全市场涨幅榜实时排名）。
+  - 宏观位置：`posIn24hRange`（价格在 24h 最高/最低区间的百分比位置 $0\sim 1$）、`dropFrom24hHigh`（距 24h 滚动峰值回撤%）。
+  - 归一化冲高比率：$surgeRatio[W] = surge[W] / |dayChange|$（区间振幅占 24h 涨幅的比例）。
+- **维度 C（均线排列与演化动态）**：
+  - 5 大周期均线：`MA 5 / 10 / 20 / 30 / 60`（SMA + EMA、斜率 `slope3`、偏离率 `biasPct` 与偏离比率 `biasRatio`）。
+  - 触碰与支撑阻力：`support`（下探获支撑）、`resist`（冲高遇阻）、`breakout`（向上突破）、`breakdown`（向下破位）。
+  - 排列演化模式（比对近 3 根 1m K 线）：
+    - `fresh_bull`（刚成多头起爆拐点）/ `sustained_bull`（持续稳固发散多头）；
+    - `fresh_bear`（刚成空头破位拐点）/ `sustained_bear`（持续弱势空头）；
+    - `maStreak`（保持当前排列连续根数）、`aboveCount`（价格站上的均线数）。
+- **维度 D（MACD 动能与多重背离）**：
+  - 动能指标：`dif`、`dea`、`hist`、`histSlope`（柱体斜率）、`difPct`、`deaPct`。
+  - 绿柱占比：`greenRatio[N]`（最近 10/15/20/30 根 K 线的绿柱比例）、`greenStreak` / `redStreak`（连绿/连红根数）。
+  - 交叉事件时序：`goldenCrossAgo`（金叉距今根数）、`deathCrossAgo`（死叉距今根数）。
+  - 背离判定：`topDivergence`（价格新高但 DEA 或柱体未创新高的顶背离）、`bottomDivergence`（底背离）。
+- **维度 TF（多周期聚合）**：
+  - 由 1m 自动聚合生成的 5m / 15m 多周期状态（`tf5m.stack`、`tf5m.macdHist`、`tf15m.stack` 等）。
+
+### 2. 阶段 0：前兆特征分布统计与客观规律挖掘
+在执行网格回测前，系统首先对全量样本回溯统计“大幅冲高段前”与“冲高见顶回撤前”的前驱客观规律：
+- **空头策略前置因果**：以【前一段大振幅冲高完成】（$surgeRatio \ge 1/\text{divisor}$）作为前驱，后续在柱体衰竭（实测 $73.8\%$ 样本出现 $histSlope < 0$）或均线受阻/破位时阻击做空；
+- **多头策略前置因果**：以【启动前低波收敛蓄势】作为前驱，在均线支撑稳固与 MACD 健康扩张点起爆入场，严防过度追高。
+
+### 3. 量化策略挖掘与部署常用命令
+
+```bash
+# 1. 运行快速量化特征挖掘 (精选网格，秒级完成)
+npm run mine:strategy -- --quick
+
+# 2. 运行全量 168h 网格扫描与三段式检验
+npm run mine:strategy
+
+# 3. 运行组合模式资金曲线与并发回测
+npm run mine:strategy -- --portfolio
+
+# 4. 查看目标服务器当前策略运行快照 (只读)
+npm run deploy:strategy -- --url http://127.0.0.1:4111 --get
+
+# 5. 将挖掘出的最优配置 (data/mined-strategy.json) 自动部署至本地或远端服务器
+npm run deploy:strategy -- --url http://127.0.0.1:4111
+
+# 6. 一键部署预设模式 (balanced | top_short | top_long | aggressive)
+npm run deploy:strategy -- --preset balanced
+```
+
+> **系统优化方案提示**：针对当前挖掘产出的多头因果解耦、实盘 24h Ticker 口径对准与成交量/ATR 维度升级，详见项目根目录 [优化方案.md](file:///Users/FrankLin/Documents/Crypto/Binance1mMonitor/优化方案.md)。
+
+---
+
+## 四、Telegram 实时推送
 
 系统支持 Telegram 自动化播报，全流程通知均经由代理通道安全出站：
 
 1. **模拟实盘交易通知**：
    - 挂单提交、市价开仓/接针成交、阶段一达成（止盈/减仓/保本）、整单最终结清。
-   - 均明确标记方向与信号类别标签（`【左侧3W底背离】`、`【首次跌10%】`、`【新高顶背离】`、`【跌到20%+】`、`【小时线压制】`）。
+   - 均明确标记方向与信号类别标签（`【左侧3W底背离】`、`【首次跌10%】`、`【新高顶背离】`、`【跌到20%+】`、`【小时线压制】`、`【量化特征做空】`、`【量化特征做多】`）。
 2. **涨幅榜动量异动告警**：
    - 仅监控 24h 涨幅榜，当满足条件的币种数 $\ge \text{TG\_ALERT\_MIN}$ 时播报。
    - 严格防骚扰：币种列表未变化时绝不重复推送；榜单归零自动重置。
@@ -131,7 +216,7 @@
 
 ---
 
-## 四、快速开始与运行
+## 五、快速开始与运行
 
 ### 1. 开发调试（热更新）
 
@@ -154,13 +239,13 @@ npm start                  # 启动后端生产服务（托管 web/dist + /api/*
 ### 3. 测试与验证
 
 ```bash
-npm test                   # 运行全套单元测试与自动化验证 (77 项全部通过)
+npm test                   # 运行全套单元测试与自动化验证 (105 项全部通过)
 npm run typecheck          # 全代码库 TypeScript 静态类型检查
 ```
 
 ---
 
-## 五、1m K 线图表与指标体系
+## 六、1m K 线图表与指标体系
 
 右侧面板常驻 TradingView Lightweight Charts 图表：
 - 主图叠加 **MA 5 / 10 / 20 / 30 / 60**。
@@ -173,7 +258,7 @@ npm run typecheck          # 全代码库 TypeScript 静态类型检查
 
 ---
 
-## 六、Docker 容器化部署（内置 mihomo 代理）
+## 七、Docker 容器化部署（内置 mihomo 代理）
 
 生产镜像内置 **mihomo（Clash.Meta）** 内核：
 - 容器启动时自动启动 mihomo 并将出站请求路由至健康代理节点，规避 Binance HTTP 451 机房屏蔽。
@@ -188,7 +273,7 @@ npm run typecheck          # 全代码库 TypeScript 静态类型检查
 
 ---
 
-## 七、配置说明（环境变量）
+## 八、配置说明（环境变量）
 
 | 环境变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
@@ -205,40 +290,45 @@ npm run typecheck          # 全代码库 TypeScript 静态类型检查
 
 ---
 
-## 八、代码目录结构
+## 九、代码目录结构
 
 ```
+优化方案.md                   # V2.1 量化特征再挖掘系统深度缺陷排查与优化方案
 src/
-  types.ts                    # 共享类型定义（Row / Status / PaperTrading / Signals）
-  server.ts                   # Web 与 API 服务入口（行情刷新、WS 订阅同步、模拟交易入口）
-  unified-short-strategy.ts   # 四大最高胜率做空信号统一调度引擎（冲高信号组、参数隔离、防冲突锁）
-  peak-rebound-strategy.ts    # 首次跌10%（榜一峰值反弹）实时追踪器
-  paper-trading.ts            # 模拟交易撮合执行引擎（挂单接针、两段式平仓、状态持久化）
+  features.ts                 # 核心统一特征提取层 (FeatureVector, 5大维度, 规则评估器, 数据落盘)
+  types.ts                    # 共享类型定义 (Row / Status / PaperTrading / Signals / PrecursorFeatures)
+  server.ts                   # Web 与 API 服务入口 (行情刷新、WS 同步、模拟交易、静态托管)
+  unified-short-strategy.ts   # 冲高做空信号统一调度引擎 (参数隔离、防冲突锁)
+  peak-rebound-strategy.ts    # 首次跌10% (榜一峰值反弹) 实时追踪器
+  paper-trading.ts            # 模拟交易撮合执行引擎 (特征信号接入、挂单接针、两段式平仓、动态保证金)
+  kline-stats.ts              # 均线3根演化模式 (fresh/sustained)、MACD统计与前兆特征提取
   alert.ts                    # Telegram 异动告警状态机
-  binance.ts                  # Binance 24h Tickers 与 K 线 REST 客户端
+  binance.ts                  # Binance 24h Tickers 与 K 线 REST 客户端 (24h highPrice/lowPrice 支持)
   ws.ts                       # Binance 实时交易 Tick 与 K 线 WebSocket 客户端
   chart.ts                    # 1m Lightweight Charts K 线与均线/MACD 计算
-  macd.ts                     # EMA / MACD / SMA 计算与连阳连阴形态识别
+  macd.ts                     # EMA / MACD / SMA 计算、多周期聚合 (5m/15m) 与形态识别
   proxyNode.ts                # 代理节点健康检测与自动切换
 research/
   README.md                   # 深度研究报告与参数挖掘完整档案
-  surge-signal-group-types.ts # 冲高做空信号组参数定义（参数组解耦设计）
+  surge-signal-group-types.ts # 冲高做空信号组参数定义
   surge-signal-group.ts       # 冲高基底评估与多因子子策略
   surge-signal-group-backtest.ts # 信号组回测与组合绩效引擎
   cli.ts                      # 研究模块 CLI 入口
   data.ts                     # 全市场小时数据归档下载器
   backtest.ts                 # 历史快照与框架回测工具
   peak-rebound-*.ts           # 首次跌10%策略回测与动态退出挖掘
-  tests/                      # 自动化测试套件 (包含动态保证金、仓位配额、配置持久化等 77 项用例)
+  tests/                      # 自动化测试套件 (包含特征向量预热一致性等 105 项用例)
 scripts/
-  research-portfolio-leverage.ts # 组合全量四大策略双速杠杆矩阵与动态保证金模拟回测
+  mine-strategy.ts            # 24h 涨幅榜 K 线量化统计与特征挖掘系统 V2.0 (前兆特征, 60/20/20切分, WF)
+  deploy-strategy.ts          # 策略参数远端自动部署与热更新脚本 (版本校验, 门槛校验, 预设模式)
+  research-portfolio-leverage.ts # 组合全量策略双速杠杆矩阵与动态保证金模拟回测
   research-newhigh-leverage.ts   # 新高顶背离闪击杠杆矩阵与回撤敏感度扫描
-  test-newhigh-leverage-matrix.ts# 新高背离闪击策略杠杆回测验证
-web/                          # React 前端（Vite + TypeScript + Lightweight Charts）
+web/                          # React 前端 (Vite + TypeScript + Lightweight Charts)
   src/
     App.tsx                   # 监控大盘主框架
     components/
-      PaperTradingPanel.tsx   # 模拟交易控制台（活跃持仓、挂单接针、历史成交、一键重置）
+      PaperTradingPanel.tsx   # 模拟交易控制台 (活跃持仓、挂单接针、历史成交、一键重置)
+      KlineStatsPanel.tsx     # K 线量化统计与前兆特征面板 (3根均线演化、MACD 统计、起爆前兆)
       KlineChart.tsx          # 1m 实时交互 K 线图
       GroupSection.tsx        # 涨幅榜列表
       Countdown.tsx           # 刷新倒计时

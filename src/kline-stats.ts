@@ -8,30 +8,42 @@ import type {
   IntervalSignal,
   MaAlignmentInfo,
   MaAlignmentType,
+  Ma3BarPattern,
+  Ma3BarStep,
   MaItem,
   MacdStatsInfo,
   OhlcComparisonInfo,
+  PrecursorFeatures,
 } from "./types.ts";
 
 export const STATS_MA_PERIODS = [5, 10, 20, 30, 60] as const;
 
 /**
- * 分析指定 K 线处的均线排列状态与各周期均线特征
+ * 辅助计算单根 K 线的均线排列状态与间距
  */
-export function analyzeMaAlignment(
+function classifySingleBarMa(
   bars: readonly ChartBar[],
-  targetIndex = bars.length - 1,
-  periods: readonly number[] = STATS_MA_PERIODS,
-): MaAlignmentInfo {
-  const bar = bars[targetIndex];
+  idx: number,
+  periods: readonly number[],
+): {
+  type: MaAlignmentType;
+  label: string;
+  orderText: string;
+  sortedPeriods: number[];
+  spreadMa5Ma10: number;
+  spreadMa5Ma20: number;
+  mas: Record<number, MaItem>;
+} {
   const mas: Record<number, MaItem> = {};
-
+  const bar = bars[idx];
   if (!bar) {
     return {
       type: "tangled",
       label: "暂无数据",
-      order: [...periods],
       orderText: "-",
+      sortedPeriods: [...periods],
+      spreadMa5Ma10: 0,
+      spreadMa5Ma20: 0,
       mas,
     };
   }
@@ -44,7 +56,7 @@ export function analyzeMaAlignment(
       validPeriods.push(p);
 
       // 计算斜率（回溯最多 3 根 K 线）
-      const prevBar = targetIndex >= 3 ? bars[targetIndex - 3] : bars[0];
+      const prevBar = idx >= 3 ? bars[idx - 3] : bars[0];
       const prevVal = prevBar?.ma[String(p)];
       let slope: "up" | "down" | "flat" = "flat";
       if (prevVal != null && Number.isFinite(prevVal) && prevVal > 0) {
@@ -53,7 +65,7 @@ export function analyzeMaAlignment(
         else if (changePct < -0.05) slope = "down";
       }
 
-      const biasPercent = ((bar.close - val) / val) * 100;
+      const biasPercent = val > 0 ? ((bar.close - val) / val) * 100 : 0;
       const support = bar.low <= val && bar.close > val;
       const resistance = bar.high >= val && bar.close < val;
       const isAbove = bar.close > val;
@@ -74,7 +86,6 @@ export function analyzeMaAlignment(
     }
   }
 
-  // 均线按数值从高到低排序
   const sortedPeriods = [...validPeriods].sort((a, b) => {
     const va = mas[a]?.value ?? 0;
     const vb = mas[b]?.value ?? 0;
@@ -83,36 +94,22 @@ export function analyzeMaAlignment(
 
   const orderText = sortedPeriods.map((p) => `MA${p}`).join(" > ");
 
-  // 判断多头/空头排列
-  let type: MaAlignmentType = "tangled";
-  let label = "交织震荡";
-
   const hasAll5 = validPeriods.length >= 5 && [5, 10, 20, 30, 60].every((p) => validPeriods.includes(p));
   const hasShort3 = [5, 10, 20].every((p) => validPeriods.includes(p));
 
-  const isFullBull =
-    hasAll5 &&
-    (mas[5]?.value ?? 0) > (mas[10]?.value ?? 0) &&
-    (mas[10]?.value ?? 0) > (mas[20]?.value ?? 0) &&
-    (mas[20]?.value ?? 0) > (mas[30]?.value ?? 0) &&
-    (mas[30]?.value ?? 0) > (mas[60]?.value ?? 0);
+  const ma5 = mas[5]?.value ?? 0;
+  const ma10 = mas[10]?.value ?? 0;
+  const ma20 = mas[20]?.value ?? 0;
+  const ma30 = mas[30]?.value ?? 0;
+  const ma60 = mas[60]?.value ?? 0;
 
-  const isFullBear =
-    hasAll5 &&
-    (mas[5]?.value ?? 0) < (mas[10]?.value ?? 0) &&
-    (mas[10]?.value ?? 0) < (mas[20]?.value ?? 0) &&
-    (mas[20]?.value ?? 0) < (mas[30]?.value ?? 0) &&
-    (mas[30]?.value ?? 0) < (mas[60]?.value ?? 0);
+  const isFullBull = hasAll5 && ma5 > ma10 && ma10 > ma20 && ma20 > ma30 && ma30 > ma60;
+  const isFullBear = hasAll5 && ma5 < ma10 && ma10 < ma20 && ma20 < ma30 && ma30 < ma60;
+  const isShortBull = hasShort3 && ma5 > ma10 && ma10 > ma20;
+  const isShortBear = hasShort3 && ma5 < ma10 && ma10 < ma20;
 
-  const isShortBull =
-    hasShort3 &&
-    (mas[5]?.value ?? 0) > (mas[10]?.value ?? 0) &&
-    (mas[10]?.value ?? 0) > (mas[20]?.value ?? 0);
-
-  const isShortBear =
-    hasShort3 &&
-    (mas[5]?.value ?? 0) < (mas[10]?.value ?? 0) &&
-    (mas[10]?.value ?? 0) < (mas[20]?.value ?? 0);
+  let type: MaAlignmentType = "tangled";
+  let label = "交织震荡";
 
   if (isFullBull) {
     type = "bullish_full";
@@ -128,12 +125,165 @@ export function analyzeMaAlignment(
     label = "短均线空头";
   }
 
+  const spreadMa5Ma10 = ma10 > 0 ? ((ma5 - ma10) / ma10) * 100 : 0;
+  const spreadMa5Ma20 = ma20 > 0 ? ((ma5 - ma20) / ma20) * 100 : 0;
+
   return {
     type,
     label,
-    order: sortedPeriods,
     orderText,
+    sortedPeriods,
+    spreadMa5Ma10,
+    spreadMa5Ma20,
     mas,
+  };
+}
+
+/**
+ * 分析指定 K 线处的均线排列状态与各周期均线特征
+ * 【升级】：比对最近 3 根 1m K 线的均线动态演化过程 (T-2, T-1, T)，
+ * 准确识别“刚成多头起爆”、“持续3根稳定多头”、“多头拐头收敛”及连续根数。
+ */
+export function analyzeMaAlignment(
+  bars: readonly ChartBar[],
+  targetIndex = bars.length - 1,
+  periods: readonly number[] = STATS_MA_PERIODS,
+): MaAlignmentInfo {
+  const bar = bars[targetIndex];
+  if (!bar) {
+    return {
+      type: "tangled",
+      label: "暂无数据",
+      order: [...periods],
+      orderText: "-",
+      mas: {},
+    };
+  }
+
+  // 1. 获取当前根 (T0) 及前两根 (T-1, T-2) 的均线状态
+  const t0Idx = targetIndex;
+  const t1Idx = Math.max(0, targetIndex - 1);
+  const t2Idx = Math.max(0, targetIndex - 2);
+
+  const step0 = classifySingleBarMa(bars, t2Idx, periods);
+  const step1 = classifySingleBarMa(bars, t1Idx, periods);
+  const step2 = classifySingleBarMa(bars, t0Idx, periods);
+
+  const history3Bars: Ma3BarStep[] = [
+    {
+      barIndex: t2Idx,
+      time: bars[t2Idx]?.time ?? 0,
+      type: step0.type,
+      label: step0.label,
+      orderText: step0.orderText,
+      spreadMa5Ma10: step0.spreadMa5Ma10,
+      spreadMa5Ma20: step0.spreadMa5Ma20,
+    },
+    {
+      barIndex: t1Idx,
+      time: bars[t1Idx]?.time ?? 0,
+      type: step1.type,
+      label: step1.label,
+      orderText: step1.orderText,
+      spreadMa5Ma10: step1.spreadMa5Ma10,
+      spreadMa5Ma20: step1.spreadMa5Ma20,
+    },
+    {
+      barIndex: t0Idx,
+      time: bars[t0Idx]?.time ?? 0,
+      type: step2.type,
+      label: step2.label,
+      orderText: step2.orderText,
+      spreadMa5Ma10: step2.spreadMa5Ma10,
+      spreadMa5Ma20: step2.spreadMa5Ma20,
+    },
+  ];
+
+  // 2. 比对最近 3 根 1m K 线排列模式
+  const isBull = (t: MaAlignmentType) => t === "bullish_full" || t === "bullish_short";
+  const isBear = (t: MaAlignmentType) => t === "bearish_full" || t === "bearish_short";
+
+  let pattern3Bars: Ma3BarPattern = "tangled";
+  let pattern3BarsLabel = "交织震荡";
+  let isDiverging = false;
+
+  if (isBull(step2.type)) {
+    const all3Bull = isBull(step0.type) && isBull(step1.type) && isBull(step2.type);
+    if (all3Bull) {
+      if (step2.spreadMa5Ma10 > step1.spreadMa5Ma10) {
+        pattern3Bars = "sustained_bull";
+        pattern3BarsLabel = "持续多头 (加速发散)";
+        isDiverging = true;
+      } else if (step2.spreadMa5Ma10 < step1.spreadMa5Ma10 * 0.9) {
+        pattern3Bars = "bull_converging";
+        pattern3BarsLabel = "多头收敛 (动能减弱)";
+        isDiverging = false;
+      } else {
+        pattern3Bars = "sustained_bull";
+        pattern3BarsLabel = "持续3根多头 (趋势稳固)";
+        isDiverging = true;
+      }
+    } else {
+      // 前 2 根至少有 1 根不是多头，最新刚走出多头
+      pattern3Bars = "fresh_bull";
+      pattern3BarsLabel = "刚成多头 (起爆交叉)";
+      isDiverging = true;
+    }
+  } else if (isBear(step2.type)) {
+    const all3Bear = isBear(step0.type) && isBear(step1.type) && isBear(step2.type);
+    if (all3Bear) {
+      if (step2.spreadMa5Ma10 < step1.spreadMa5Ma10) {
+        pattern3Bars = "sustained_bear";
+        pattern3BarsLabel = "持续空头 (加速下行)";
+        isDiverging = true;
+      } else if (step2.spreadMa5Ma10 > step1.spreadMa5Ma10 * 0.9) {
+        pattern3Bars = "bear_converging";
+        pattern3BarsLabel = "空头收敛 (跌势放缓)";
+        isDiverging = false;
+      } else {
+        pattern3Bars = "sustained_bear";
+        pattern3BarsLabel = "持续3根空头 (空头压制)";
+        isDiverging = true;
+      }
+    } else {
+      pattern3Bars = "fresh_bear";
+      pattern3BarsLabel = "刚成空头 (破位死叉)";
+      isDiverging = true;
+    }
+  } else {
+    pattern3Bars = "tangled";
+    pattern3BarsLabel = "交织缠绕震荡";
+    isDiverging = false;
+  }
+
+  // 3. 计算连续保持当前排列状态的根数 (Streak)
+  let streakBars = 1;
+  for (let i = targetIndex - 1; i >= 0; i--) {
+    const prev = classifySingleBarMa(bars, i, periods);
+    if (prev.type === step2.type) {
+      streakBars++;
+    } else {
+      break;
+    }
+  }
+
+  // 4. 演变轨迹路径文本
+  const toShort = (l: string) =>
+    l.replace("排列", "").replace("震荡", "").replace("短均线", "短").replace("完全", "");
+  const transitionText = `${toShort(step0.label)} ➔ ${toShort(step1.label)} ➔ ${toShort(step2.label)}`;
+
+  return {
+    type: step2.type,
+    label: step2.label,
+    order: step2.sortedPeriods,
+    orderText: step2.orderText,
+    mas: step2.mas,
+    pattern3Bars,
+    pattern3BarsLabel,
+    history3Bars,
+    transitionText,
+    streakBars,
+    isDiverging,
   };
 }
 
@@ -272,16 +422,16 @@ export function analyzeMacdStats(
 }
 
 export interface DetectIntervalOptions {
-  windowMinutes?: number;      // 考察区间窗口 (默认 5 根 1m)
-  ampDivisor?: number;         // 比例除数，即 24h涨幅 / ampDivisor (默认 10，即 10%)
-  minRatio?: number;           // 或显式比例阈值 (如 0.10)，优先级高于 ampDivisor
-  mode?: "surge" | "drop" | "both"; // 冲高 / 回撤 / 两者皆可 (默认 "surge")
-  minDayChange?: number;       // 最小 24h 涨幅过滤，如 5.0 (%)
+  windowMinutes?: number;           // 区间窗口大小 (如 3, 5, 10, 15, 30 分钟，默认 15)
+  mode?: "surge" | "drop" | "both"; // 冲高 / 回撤 / 全部 (默认 "both")
+  minDayChange?: number;            // 最小 24h 涨幅过滤，默认 0 (不过滤)
+  ampDivisor?: number;              // 可选过滤除数：若传入则过滤该段振幅/24h < 1/ampDivisor
+  minRatio?: number;                // 可选显式最小比例过滤
 }
 
 /**
- * 遍历 1m K 线序列，找出所有“区间涨跌幅 / 24h 涨幅达到指定比例”的区间信号点，
- * 并携带当时的均线排列、OHLC对比及 MACD 绿柱比例。
+ * 将 1m K 线按指定区间窗口 (windowMinutes) 划分，并在每个区间内提取“最大振幅段”，
+ * 计算该段实际振幅、该段振幅占 24h 涨幅比例、以及该段严格范围内的 MACD 绿柱比例。
  */
 export function detectIntervalSignals(
   bars: readonly ChartBar[],
@@ -301,85 +451,215 @@ export function detectIntervalSignals(
     ? ((bars[bars.length - 1].close - bars[0].open) / bars[0].open) * 100
     : 0;
 
-  const minDayChange = options.minDayChange ?? 5.0;
+  const minDayChange = options.minDayChange ?? 0;
   if (effectiveDayChange < minDayChange) return [];
 
-  const windowMinutes = Math.max(2, options.windowMinutes ?? 5);
-  const targetRatio = options.minRatio ?? (1 / (options.ampDivisor ?? 10));
-  const divisor = 1 / targetRatio;
-  const mode = options.mode ?? "surge";
+  const windowMinutes = Math.max(1, options.windowMinutes ?? 15);
+  const mode = options.mode ?? "both";
+  const targetRatio = options.minRatio ?? (options.ampDivisor != null ? 1 / options.ampDivisor : null);
+
+  // 1. 按 windowMinutes 划分区间 (时间桶对齐: floor(time / (W * 60_000)))
+  const bucketMs = windowMinutes * 60_000;
+  const buckets = new Map<number, { startIdx: number; endIdx: number }>();
+  const hasValidTimes = bars.length >= 2 && bars[1].time > bars[0].time;
+
+  for (let i = 0; i < bars.length; i++) {
+    const key = hasValidTimes
+      ? Math.floor(bars[i].time / bucketMs) * bucketMs
+      : Math.floor(i / windowMinutes);
+    const existing = buckets.get(key);
+    if (!existing) {
+      buckets.set(key, { startIdx: i, endIdx: i });
+    } else {
+      existing.endIdx = i;
+    }
+  }
 
   const signals: IntervalSignal[] = [];
 
-  for (let i = windowMinutes - 1; i < bars.length; i++) {
-    const startIdx = i - windowMinutes + 1;
-    const curBar = bars[i];
+  for (const [bucketTime, { startIdx, endIdx }] of buckets.entries()) {
+    // 寻找区间内最大冲高段: i <= j 使得 (high[j] - low[i]) / low[i] 最大
+    let minLowIdx = startIdx;
+    let minLowVal = bars[startIdx].low;
+    let maxSurgeAmp = 0;
+    let bestSurge = {
+      startIdx,
+      endIdx: startIdx,
+      amp: 0,
+      startPrice: bars[startIdx].low,
+      endPrice: bars[startIdx].high,
+    };
 
-    // 计算 windowMinutes 内的最低价与最高价
-    let minLow = Infinity;
-    let maxHigh = -Infinity;
-    for (let k = startIdx; k <= i; k++) {
-      if (bars[k].low < minLow) minLow = bars[k].low;
-      if (bars[k].high > maxHigh) maxHigh = bars[k].high;
-    }
-
-    // 1. 冲高涨幅计算：以区间内最低价到当前最高价（或收盘价）的涨幅
-    if (mode === "surge" || mode === "both") {
-      if (minLow > 0) {
-        const surgePercent = ((curBar.high - minLow) / minLow) * 100;
-        const ratio = surgePercent / effectiveDayChange;
-        if (ratio >= targetRatio) {
-          const maAlignment = analyzeMaAlignment(bars, i);
-          const ohlc = analyzeOhlcComparison(bars, i);
-          const macd = analyzeMacdStats(bars, i);
-
-          signals.push({
-            time: curBar.time,
-            barIndex: i,
-            type: "surge",
-            windowMinutes,
-            intervalChangePercent: surgePercent,
-            dayChangePercent: effectiveDayChange,
-            ratioToDayChange: ratio,
-            divisor: Number(divisor.toFixed(1)),
-            price: curBar.close,
-            maAlignment,
-            ohlc,
-            macd,
-          });
-          continue; // 同一根 bar 优先记为冲高
+    for (let k = startIdx; k <= endIdx; k++) {
+      if (bars[k].low < minLowVal) {
+        minLowVal = bars[k].low;
+        minLowIdx = k;
+      }
+      if (minLowVal > 0) {
+        const amp = ((bars[k].high - minLowVal) / minLowVal) * 100;
+        if (amp >= maxSurgeAmp) {
+          maxSurgeAmp = amp;
+          bestSurge = {
+            startIdx: minLowIdx,
+            endIdx: k,
+            amp,
+            startPrice: minLowVal,
+            endPrice: bars[k].high,
+          };
         }
       }
     }
 
-    // 2. 回撤跌幅计算：以区间内最高价到当前最低价的跌幅
-    if (mode === "drop" || mode === "both") {
-      if (maxHigh > 0) {
-        const dropPercent = ((maxHigh - curBar.low) / maxHigh) * 100;
-        const ratio = dropPercent / effectiveDayChange;
-        if (ratio >= targetRatio) {
-          const maAlignment = analyzeMaAlignment(bars, i);
-          const ohlc = analyzeOhlcComparison(bars, i);
-          const macd = analyzeMacdStats(bars, i);
+    // 寻找区间内最大回撤段: i <= j 使得 (high[i] - low[j]) / high[i] 最大
+    let maxHighIdx = startIdx;
+    let maxHighVal = bars[startIdx].high;
+    let maxDropAmp = 0;
+    let bestDrop = {
+      startIdx,
+      endIdx: startIdx,
+      amp: 0,
+      startPrice: bars[startIdx].high,
+      endPrice: bars[startIdx].low,
+    };
 
-          signals.push({
-            time: curBar.time,
-            barIndex: i,
-            type: "drop",
-            windowMinutes,
-            intervalChangePercent: dropPercent,
-            dayChangePercent: effectiveDayChange,
-            ratioToDayChange: ratio,
-            divisor: Number(divisor.toFixed(1)),
-            price: curBar.close,
-            maAlignment,
-            ohlc,
-            macd,
-          });
+    for (let k = startIdx; k <= endIdx; k++) {
+      if (bars[k].high > maxHighVal) {
+        maxHighVal = bars[k].high;
+        maxHighIdx = k;
+      }
+      if (maxHighVal > 0) {
+        const amp = ((maxHighVal - bars[k].low) / maxHighVal) * 100;
+        if (amp >= maxDropAmp) {
+          maxDropAmp = amp;
+          bestDrop = {
+            startIdx: maxHighIdx,
+            endIdx: k,
+            amp,
+            startPrice: maxHighVal,
+            endPrice: bars[k].low,
+          };
         }
       }
     }
+
+    // 根据模式确定代表段
+    type ChosenType = "surge" | "drop";
+    let chosenType: ChosenType;
+    let seg: typeof bestSurge;
+
+    if (mode === "surge") {
+      chosenType = "surge";
+      seg = bestSurge;
+    } else if (mode === "drop") {
+      chosenType = "drop";
+      seg = bestDrop;
+    } else {
+      // mode === "both": 选择振幅更大的一段
+      if (bestSurge.amp >= bestDrop.amp) {
+        chosenType = "surge";
+        seg = bestSurge;
+      } else {
+        chosenType = "drop";
+        seg = bestDrop;
+      }
+    }
+
+    // 计算该段振幅 / 24h 涨幅比例
+    const ratioToDayChange =
+      effectiveDayChange > 0 ? seg.amp / effectiveDayChange : 0;
+    const divisor = ratioToDayChange > 0 ? 1 / ratioToDayChange : 0;
+
+    // 若调用方传入了硬性阈值过滤 (兼容旧逻辑)，则校验
+    if (targetRatio != null && ratioToDayChange < targetRatio) {
+      continue;
+    }
+
+    // 计算该段严格范围内的 MACD 绿柱比例
+    const segStart = Math.min(seg.startIdx, seg.endIdx);
+    const segEnd = Math.max(seg.startIdx, seg.endIdx);
+    const segBarsCount = segEnd - segStart + 1;
+    let greenCount = 0;
+    for (let k = segStart; k <= segEnd; k++) {
+      if (bars[k].hist > 0) greenCount++;
+    }
+    const segmentGreenRatio = segBarsCount > 0 ? greenCount / segBarsCount : 0;
+
+    // 【核心因果特性】：提取该达标振幅段“启动前一段区间”的特征统计 (起爆前兆特征)
+    const burstStartIdx = seg.startIdx; // 冲高/回撤实际爆发启动点
+    const preEndIdx = Math.max(0, burstStartIdx - 1);
+    const preStartIdx = Math.max(0, burstStartIdx - windowMinutes);
+    const preBars = bars.slice(preStartIdx, preEndIdx + 1);
+
+    let preGreenCount = 0;
+    let preMinLow = Infinity;
+    let preMaxHigh = -Infinity;
+    for (const b of preBars) {
+      if (b.hist > 0) preGreenCount++;
+      if (b.low < preMinLow) preMinLow = b.low;
+      if (b.high > preMaxHigh) preMaxHigh = b.high;
+    }
+    const preGreenRatio = preBars.length > 0 ? preGreenCount / preBars.length : 0;
+    const preAmpPercent = preMinLow > 0 && preMaxHigh > 0
+      ? ((preMaxHigh - preMinLow) / preMinLow) * 100
+      : 0;
+
+    // 起爆点前夕 (preEndIdx) 的均线排列与支撑阻力
+    const preMaAlignment = analyzeMaAlignment(bars, preEndIdx);
+    const preOhlc = analyzeOhlcComparison(bars, preEndIdx);
+    const preMacd = analyzeMacdStats(bars, preEndIdx);
+
+    const precursor: PrecursorFeatures = {
+      windowMinutes,
+      startTime: preBars[0]?.time ?? bars[preStartIdx].time,
+      endTime: preBars[preBars.length - 1]?.time ?? bars[preEndIdx].time,
+      startBarIndex: preStartIdx,
+      endBarIndex: preEndIdx,
+      greenRatio: preGreenRatio,
+      greenCount: preGreenCount,
+      totalBars: preBars.length,
+      maAlignment: preMaAlignment,
+      ohlc: preOhlc,
+      macd: preMacd,
+      preAmpPercent,
+    };
+
+    // 当时均线排列、OHLC 对比与 MACD 状态 (在段终点处取值)
+    const maAlignment = analyzeMaAlignment(bars, seg.endIdx);
+    const ohlc = analyzeOhlcComparison(bars, seg.endIdx);
+    const macd = analyzeMacdStats(bars, seg.endIdx);
+
+    const intervalStartMs = hasValidTimes ? bucketTime : bars[startIdx].time;
+    const intervalEndMs = hasValidTimes ? bucketTime + bucketMs : bars[endIdx].time;
+
+    signals.push({
+      time: bars[seg.endIdx].time,
+      barIndex: seg.endIdx,
+      type: chosenType,
+      windowMinutes,
+      intervalChangePercent: seg.amp,
+      dayChangePercent: effectiveDayChange,
+      ratioToDayChange,
+      divisor: divisor > 0 ? Number(divisor.toFixed(1)) : 0,
+      price: bars[seg.endIdx].close,
+      maAlignment,
+      ohlc,
+      macd,
+
+      intervalStartTime: intervalStartMs,
+      intervalEndTime: intervalEndMs,
+      segmentStartTime: bars[seg.startIdx].time,
+      segmentEndTime: bars[seg.endIdx].time,
+      segmentStartPrice: seg.startPrice,
+      segmentEndPrice: seg.endPrice,
+      segmentBarsCount: segBarsCount,
+      segmentGreenCount: greenCount,
+      segmentGreenRatio,
+      precursor,
+    });
   }
+
+  // 按时间倒序排序 (最新区间排在最前)
+  signals.sort((a, b) => b.time - a.time);
 
   return signals;
 }

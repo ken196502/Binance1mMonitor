@@ -384,6 +384,7 @@ export function analyzeDiff(
 }
 
 export const FIVE_MIN_MS = 5 * 60 * 1000;
+export const FIFTEEN_MIN_MS = 15 * 60 * 1000;
 
 /**
  * 将 1m K 线聚合为 5m K 线。
@@ -391,34 +392,66 @@ export const FIVE_MIN_MS = 5 * 60 * 1000;
  */
 export function aggregate1mTo5m(candles1m: Candle[]): Candle[] {
   if (candles1m.length === 0) return [];
-  const groups = new Map<number, Candle[]>();
-  for (const c of candles1m) {
-    const bucketTime = Math.floor(c.time / FIVE_MIN_MS) * FIVE_MIN_MS;
-    let list = groups.get(bucketTime);
-    if (!list) {
-      list = [];
-      groups.set(bucketTime, list);
-    }
-    list.push(c);
-  }
-
   const result: Candle[] = [];
-  for (const [time, bars] of groups.entries()) {
-    bars.sort((a, b) => a.time - b.time);
-    const open = bars[0].open;
-    const close = bars[bars.length - 1].close;
-    let high = -Infinity;
-    let low = Infinity;
-    let volume = 0;
-    for (const b of bars) {
-      if (b.high > high) high = b.high;
-      if (b.low < low) low = b.low;
-      volume += b.volume;
-    }
-    result.push({ time, open, high, low, close, volume });
-  }
+  let curBucketTime = -1;
+  let curCandle: Candle | null = null;
 
-  result.sort((a, b) => a.time - b.time);
+  for (let i = 0; i < candles1m.length; i++) {
+    const c = candles1m[i];
+    const bucketTime = Math.floor(c.time / FIVE_MIN_MS) * FIVE_MIN_MS;
+    if (bucketTime !== curBucketTime) {
+      if (curCandle) result.push(curCandle);
+      curBucketTime = bucketTime;
+      curCandle = {
+        time: bucketTime,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      };
+    } else if (curCandle) {
+      if (c.high > curCandle.high) curCandle.high = c.high;
+      if (c.low < curCandle.low) curCandle.low = c.low;
+      curCandle.close = c.close;
+      curCandle.volume += c.volume;
+    }
+  }
+  if (curCandle) result.push(curCandle);
+  return result;
+}
+
+/**
+ * 将 1m K 线聚合为 15m K 线。
+ */
+export function aggregate1mTo15m(candles1m: Candle[]): Candle[] {
+  if (candles1m.length === 0) return [];
+  const result: Candle[] = [];
+  let curBucketTime = -1;
+  let curCandle: Candle | null = null;
+
+  for (let i = 0; i < candles1m.length; i++) {
+    const c = candles1m[i];
+    const bucketTime = Math.floor(c.time / FIFTEEN_MIN_MS) * FIFTEEN_MIN_MS;
+    if (bucketTime !== curBucketTime) {
+      if (curCandle) result.push(curCandle);
+      curBucketTime = bucketTime;
+      curCandle = {
+        time: bucketTime,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      };
+    } else if (curCandle) {
+      if (c.high > curCandle.high) curCandle.high = c.high;
+      if (c.low < curCandle.low) curCandle.low = c.low;
+      curCandle.close = c.close;
+      curCandle.volume += c.volume;
+    }
+  }
+  if (curCandle) result.push(curCandle);
   return result;
 }
 
