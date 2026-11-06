@@ -119,7 +119,7 @@ export function PaperTradingPanel({
 
   // 策略配置模态框状态 (API 设置)
   const [showConfigModal, setShowConfigModal] = useState(false);
-  const [streakLevInput, setStreakLevInput] = useState<number>(10);
+  const [streakLevInput, setStreakLevInput] = useState<number>(3);
   const [trendLevInput, setTrendLevInput] = useState<number>(3);
   const [longLevInput, setLongLevInput] = useState<number>(3);
   const [marginPercentInput, setMarginPercentInput] = useState<number>(20);
@@ -137,6 +137,7 @@ export function PaperTradingPanel({
   const [enableKlineStatsLongInput, setEnableKlineStatsLongInput] = useState<boolean>(true);
   const [shortSpec, setShortSpec] = useState<Partial<KlineStatsStrategyLiveConfig>>({});
   const [longSpec, setLongSpec] = useState<Partial<KlineStatsStrategyLiveConfig>>({});
+  const [factorMiningInput, setFactorMiningInput] = useState({ enabled: true, refreshMinutes: 60, validForMinutes: 720 });
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
   // 自主同步与高频轮询 /api/paper-trading，彻底摆脱主状态依赖与轮询迟滞
@@ -164,7 +165,7 @@ export function PaperTradingPanel({
           stats24h: data.stats24h,
           config: {
             leverage: data.config?.leverage ?? 3,
-            streakLeverage: data.config?.streakLeverage ?? 10,
+            streakLeverage: data.config?.streakLeverage ?? 3,
             trendLeverage: data.config?.trendLeverage ?? 3,
             marginUsdt: data.config?.marginUsdt ?? 20,
             marginRate: data.config?.marginRate ?? 0.2,
@@ -216,9 +217,10 @@ export function PaperTradingPanel({
 
   useEffect(() => {
     if (summary?.config && !showConfigModal) {
+      setFactorMiningInput(summary.config.factorMining ?? { enabled: true, refreshMinutes: 60, validForMinutes: 720 });
       setShortSpec(summary.config.klineStatsShortConfig ?? {});
       setLongSpec(summary.config.klineStatsLongConfig ?? {});
-      setStreakLevInput(summary.config.streakLeverage ?? 10);
+      setStreakLevInput(summary.config.streakLeverage ?? 3);
       setTrendLevInput(summary.config.trendLeverage ?? summary.config.leverage ?? 3);
       setLongLevInput(summary.config.longLeverage ?? 3);
       setMarginPercentInput(summary.config.marginPercent ?? 20);
@@ -245,6 +247,7 @@ export function PaperTradingPanel({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          factorMining: factorMiningInput,
           klineStatsShortConfig: shortSpec,
           klineStatsLongConfig: longSpec,
           streakLeverage: Number(streakLevInput),
@@ -361,9 +364,9 @@ export function PaperTradingPanel({
   const pendingOrders = summary?.pendingOrders ?? [];
 
   const config = summary?.config;
-  const streakLev = config?.streakLeverage ?? 10;
+  const streakLev = config?.streakLeverage ?? 3;
   const trendLev = config?.trendLeverage ?? (config?.leverage ?? 3);
-  const klineStatsLev = config?.klineStatsShortConfig?.leverage ?? config?.klineStatsLeverage ?? 10;
+  const klineStatsLev = config?.klineStatsShortConfig?.leverage ?? config?.klineStatsLeverage ?? 3;
   const longLev = config?.longLeverage ?? 3;
   const marginPercent = config?.marginPercent ?? 20;
   const marginUsdt = config?.marginUsdt ?? (activePositions[0]?.marginUsdt ?? 20);
@@ -384,6 +387,25 @@ export function PaperTradingPanel({
               量化形态挖掘 · 多空二阶段交易
             </span>
           </h2>
+          {summary?.factorMining && <div className="paper-factor-status" aria-live="polite">
+            <strong>{config?.factorMining?.enabled ? (summary.factorMining.running ? "正在挖掘新因子" : "持续挖掘已启用") : "因子自动更新已关闭"}</strong>
+            {config?.factorMining?.enabled && <>
+              <span>每 {config.factorMining.refreshMinutes} 分钟更新 · 有效期 {config.factorMining.validForMinutes / 60} 小时 · 持仓期间持续运行</span>
+              {(["LONG", "SHORT"] as const).map(side => {
+                const status = summary.factorMining!.sides[side];
+                const active = status.active;
+                const enabled = side === "LONG" ? config.enableLongs && config.enableKlineStatsLong : config.enableKlineStatsShort;
+                const allowed = summary.factorMining!.entryAllowed[side];
+                return <span key={side}>
+                  {side === "LONG" ? "量化做多" : "量化做空"}：{!enabled ? "策略已关闭" : allowed ? "验证通过，可开仓" : "暂停新开仓"}
+                  {active && <> · 留出胜率 {active.holdout.winRate.toFixed(1)}% / {active.holdout.trades} 笔 · 到期 {new Date(active.expiresAt).toLocaleString("zh-CN")}</>}
+                  {!active && enabled && <> · {status.reason}</>}
+                </span>;
+              })}
+              {summary.factorMining.nextRunAt && <span>下轮：{new Date(summary.factorMining.nextRunAt).toLocaleString("zh-CN")}</span>}
+              {summary.factorMining.lastError && <span>最近一轮：{summary.factorMining.lastError}</span>}
+            </>}
+          </div>}
           <div className="paper-stats-chips">
             <span className={`chip ${account.totalPnlUsdt >= 0 ? "chip-pos" : "chip-neg"}`}>
               账户净值: <b>{account.equityUsdt.toFixed(2)} USDT</b>
@@ -965,6 +987,18 @@ export function PaperTradingPanel({
                 </div>
               </div>
 
+              <fieldset className="kline-strategy-settings">
+                <legend>持续因子挖掘</legend>
+                <label><input type="checkbox" checked={factorMiningInput.enabled}
+                  onChange={e => setFactorMiningInput({ ...factorMiningInput, enabled: e.target.checked })} /> 建仓后继续挖掘，通过近期验证后自动更新量化多空参数</label>
+                <div className="kline-strategy-fields">
+                  <label>刷新间隔（分钟）<input type="number" min={15} max={factorMiningInput.validForMinutes - 1} step={1} required
+                    value={factorMiningInput.refreshMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, refreshMinutes: Number(e.target.value) })} /></label>
+                  <label>有效期（分钟，最长半天）<input type="number" min={Math.max(30, factorMiningInput.refreshMinutes + 1)} max={720} step={1} required
+                    value={factorMiningInput.validForMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, validForMinutes: Number(e.target.value) })} /></label>
+                </div>
+                <p>自动模式使用 3x。手动修改量化参数后须重新验证；因子过期时暂停新开仓，已有持仓按建仓规则退出。策略开关仍由你控制。</p>
+              </fieldset>
               <KlineStrategySettings title="量化做空形态与二阶段退出" value={shortSpec} onChange={setShortSpec} />
               <KlineStrategySettings title="量化做多形态与二阶段退出" value={longSpec} onChange={setLongSpec} />
               {/* 3. 策略开关 */}

@@ -92,7 +92,7 @@ test("paper summaries split complete trades by side, refresh 24h and survive rel
   const dir = mkdtempSync(path.join(tmpdir(), "core-paper-"));
   try {
     const file = path.join(dir, "state.json");
-    const engine = new PaperTradingEngine({ storageFile: file, takerFeeBps: 0, slippageBps: 0, stopAtHigh: false, stopAtLow: false });
+    const engine = new PaperTradingEngine({ storageFile: file, factorMining: { enabled: false, refreshMinutes: 60, validForMinutes: 720 }, takerFeeBps: 0, slippageBps: 0, stopAtHigh: false, stopAtLow: false });
     for (const side of ["LONG", "SHORT"] as const) {
       const symbol = side;
       engine.openPosition({ symbol, side, signalType: side === "LONG" ? "kline_stats_long" : "kline_stats_short", signal,

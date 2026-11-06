@@ -25,13 +25,15 @@ import {
   calculateMacdGreenBarRatio,
   type Candle,
 } from "./macd.ts";
-import { computeFeatureVector, persistClosedCandleToDisk } from "./features.ts";
+import { computeFeatureVector, persistClosedCandlesToDisk } from "./features.ts";
 import { TelegramAlerter, isAlertMatch } from "./alert.ts";
 import { telegramConfigured } from "./telegram.ts";
 import { enrichRankChanges, type BoardSnapshot } from "./rank.ts";
 import { wsManager, applyTradeToCandles, sanitizeCandles } from "./ws.ts";
 import { buildChartPayload, parseChartQuery } from "./chart.ts";
 import { paperTrading } from "./paper-trading.ts";
+import { FactorMiningService } from "./factor-mining-service.ts";
+import { persistFactorBoard } from "./factor-data.ts";
 import type { Row, Status } from "./types.ts";
 
 // Directory the built React frontend is emitted to (web/dist). In dev you run
@@ -81,6 +83,7 @@ export interface SymbolCandleCache {
 }
 
 const candleCache = new Map<string, SymbolCandleCache>();
+const factorMiningService = new FactorMiningService(paperTrading);
 
 // 从 418/451 异常恢复后，对缺乏有效 K 线（<35 根）或因封禁断流数据已过期的标的标记重置冷启动
 onAnomalyRecovered(() => {
@@ -220,8 +223,7 @@ async function fetchRowData(t: Ticker24h, options: FetchRowOptions = {}): Promis
 
     // 2.6 实盘收盘 1m K 线落盘积累
     if (candles.length >= 2) {
-      const closedCandle = candles[candles.length - 2];
-      void persistClosedCandleToDisk(t.symbol, closedCandle);
+      void persistClosedCandlesToDisk(t.symbol, candles.slice(0, -1));
     }
 
     return {
@@ -444,6 +446,7 @@ export async function buildBoards(
 async function refresh(): Promise<Status> {
   const base = process.env.BINANCE_BASE ?? "https://fapi.binance.com";
   const tickers = await fetch24hTickers();
+  const boardObservedAt = Date.now();
   const tickerMap = new Map(tickers.map((t) => [t.symbol, t]));
   const pinnedTickers = PINNED_SYMBOLS
     .map((sym) => tickerMap.get(sym))
@@ -452,6 +455,10 @@ async function refresh(): Promise<Status> {
   // 榜单选取 TOP_N（排除置顶的 BTC 和 SOL，避免列表重复）
   const unpinnedTickers = tickers.filter((t) => !PINNED_SYMBOLS.includes(t.symbol));
   const tops: TickerTops = pickTops(unpinnedTickers, TOP_N);
+  // Persist independently of entry capacity, including while all slots are occupied.
+  void persistFactorBoard(tops.gainers, boardObservedAt).catch(error => {
+    console.warn("[factor-mining] 榜单归档失败:", error.message);
+  });
 
   // 若尚未初始化 lastKnownStatus，立即基于 24h tickers 预填充基础榜单数据
   // 确保冷启动时外部并发请求 /api/status 无需等待整轮 K 线拉取即可立即拿到完整涨幅榜
@@ -993,7 +1000,16 @@ const isMainModule =
   !process.env.NODE_TEST_CONTEXT;
 
 if (isMainModule) {
+  server.once("close", () => factorMiningService.stop());
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      factorMiningService.stop();
+      paperTrading.saveState();
+      process.exit(0);
+    });
+  }
   server.listen(PORT, () => {
+    factorMiningService.start();
     const proxy = process.env.PROXY ?? process.env.BINANCE_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? "(direct)";
     console.log(`Binance 1m MACD monitor (u本位合约) → http://localhost:${PORT}`);
     console.log(

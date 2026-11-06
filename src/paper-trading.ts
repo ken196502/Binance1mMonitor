@@ -2,6 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { validateStrategySpec } from "./strategy-spec.ts";
 import {
+  DEFAULT_FACTOR_MINING, FACTOR_POLICY_VERSION, FACTOR_MAX_DATA_AGE_MS, MINUTE_MS,
+  emptyFactorState, factorConfigKey, passesFactorCandidate, validateFactorMiningConfig,
+  type FactorMiningConfig, type FactorMiningState, type FactorMiningResult, type FactorSide,
+} from "./factor-policy.ts";
+import {
   consecutiveStreakAt,
   calculateSupportMaAt,
   calculateSma,
@@ -68,10 +73,10 @@ export interface PaperStrategyConfig {
   firstCloseFraction: number;
   initialBalanceUsdt: number; // 启动资金 100 USDT
   leverage: number;           // 通用/顺势波段杠杆 (默认 3x)
-  streakLeverage?: number;    // 新高顶背离闪击专属杠杆 (回测最优 10x)
+  streakLeverage?: number;    // 新高顶背离闪击专属杠杆 (默认 3x)
   trendLeverage?: number;     // 顺势衰竭专属杠杆 (默认 3x)
   longLeverage?: number;      // 做多专属杠杆 (默认 3x)
-  klineStatsLeverage?: number;// 量化特征专属杠杆 (默认 10x)
+  klineStatsLeverage?: number;// 量化特征专属杠杆 (默认 3x)
   marginUsdt: number;         // 单笔保证金金额基准 (默认 20 USDT 参考值)
   marginRate?: number;        // 单笔保证金占总资产比例 (默认 0.20 即 20% 资产量)
   marginPercent?: number;     // 百分比格式 (默认 20)
@@ -99,12 +104,14 @@ export interface PaperStrategyConfig {
   wBottomDivergenceConfig?: Partial<WBottomDivergenceLiveConfig>;
   klineStatsShortConfig?: Partial<KlineStatsStrategyLiveConfig>;
   klineStatsLongConfig?: Partial<KlineStatsStrategyLiveConfig>;
+  factorMining?: FactorMiningConfig;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const STATE_FILE = path.join(DATA_DIR, "paper-trading.json");
 
 export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
+  factorMining: { ...DEFAULT_FACTOR_MINING },
   topN: 10,
   supportMaPeriods: [3, 7, 15],
   ampDivisor: 10, // 5 分钟冲高涨幅 >= 24h 涨幅 / 10
@@ -122,9 +129,9 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   initialBalanceUsdt: 100, // 初始模拟资金 100 USDT
   leverage: 3,             // 默认通用杠杆 3x
   trendLeverage: 3,        // 顺势衰竭长波段杠杆 3x
-  streakLeverage: 10,      // 新高顶背离闪击战杠杆 10x
+  streakLeverage: 3,      // 新高顶背离闪击战杠杆 3x
   longLeverage: 3,         // 做多专属杠杆 3x (回测黄金参数)
-  klineStatsLeverage: 10,  // 量化特征做空专属杠杆 10x
+  klineStatsLeverage: 3,  // 量化特征做空专属杠杆 3x
   marginUsdt: 20,          // 单笔保证金基准 20 USDT (100U 初本时对应 20%)
   marginRate: 0.20,        // 单笔保证金占当前总资产 20%
   marginPercent: 20,       // 20%
@@ -136,7 +143,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   limitExpireMinutes: 3,   // 默认 3 分钟
   stopAtHigh: true,        // 开启做空极端最高点止损模式
   stopAtLow: true,         // 开启做多极端最低点止损模式
-  enableStreak: true,      // 策略 4: 开启新高顶背离 10x 闪击做空 (15m 持仓)
+  enableStreak: true,      // 策略 4: 开启新高顶背离 3x 闪击做空 (15m 持仓)
   enableRebound: true,     // 策略 2: 开启首次跌10%弱反弹做空 (最大 30m 持仓)
   enableDeepRebound: true, // 策略 5: 开启跌到20%+次级反弹做空 (最大 30m 持仓)
   enableHourlySuppression: true, // 策略 6: 开启小时线压制做空 (最大 30m 持仓)
@@ -196,7 +203,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     stopLossPercent: 5.0,
     moveSlToEntryAfterTp1: true,
     cooldownMinutes: 20,
-    leverage: 10,
+    leverage: 3,
   },
   klineStatsLongConfig: {
     topN: 10,
@@ -211,7 +218,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     stopLossPercent: 3.5,
     moveSlToEntryAfterTp1: true,
     cooldownMinutes: 20,
-    leverage: 5,
+    leverage: 3,
   },
 };
 
@@ -331,9 +338,12 @@ export class PaperTradingEngine {
   private unifiedTracker: UnifiedShortStrategyTracker;
   private longTracker: UnifiedLongStrategyTracker;
   private klineStatsCooldown = new Map<string, number>();
+  private factorMiningState: FactorMiningState = emptyFactorState();
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
     this.config = { ...PAPER_DEFAULT_CONFIG, ...config, firstCloseFraction: FIRST_CLOSE_FRACTION };
+    this.config.factorMining = { ...DEFAULT_FACTOR_MINING, ...config.factorMining };
+    validateFactorMiningConfig(this.config.factorMining);
     if (config.marginUsdt !== undefined && config.marginRate === undefined && config.marginPercent === undefined) {
       const initBal = this.config.initialBalanceUsdt || 100;
       this.config.marginRate = config.marginUsdt / initBal;
@@ -371,7 +381,7 @@ export class PaperTradingEngine {
       deepReboundConfig: this.config.deepReboundConfig,
       hourlySuppressionConfig: this.config.hourlySuppressionConfig,
       preventConflict: true,
-      enableStreak: this.config.enableStreak ?? true, // 开启新高顶背离 10x 闪击
+      enableStreak: this.config.enableStreak ?? true, // 开启新高顶背离 3x 闪击
       enableRebound: this.config.enableRebound ?? true,
       enableDeepRebound: this.config.enableDeepRebound ?? true,
       enableHourlySuppression: this.config.enableHourlySuppression ?? true,
@@ -407,18 +417,86 @@ export class PaperTradingEngine {
     return { ...this.config };
   }
 
+  public getFactorMiningState(): FactorMiningState {
+    return structuredClone(this.factorMiningState);
+  }
+
+  public setFactorMiningState(state: FactorMiningState): void {
+    this.factorMiningState = structuredClone(state);
+    this.scheduleSave();
+  }
+
+  public factorEntryAllowed(side: FactorSide, now = Date.now()): boolean {
+    if (!this.config.factorMining?.enabled) return true;
+    const active = this.factorMiningState.sides[side].active;
+    const config = side === "LONG" ? this.config.klineStatsLongConfig : this.config.klineStatsShortConfig;
+    return !!active && active.featureVersion === FEATURE_VERSION && active.policyVersion === FACTOR_POLICY_VERSION &&
+      active.dataAsOf <= now && now < Math.min(active.expiresAt, active.dataAsOf + this.config.factorMining.validForMinutes * MINUTE_MS) &&
+      active.costs.takerFeeBps === this.config.takerFeeBps && active.costs.slippageBps === this.config.slippageBps &&
+      factorConfigKey(active.config) === factorConfigKey(config ?? {});
+  }
+
+  public applyMinedFactors(result: FactorMiningResult, now = Date.now()): void {
+    if (!this.config.factorMining?.enabled) return;
+    if (result.featureVersion !== FEATURE_VERSION || result.policyVersion !== FACTOR_POLICY_VERSION ||
+      !Number.isFinite(result.dataAsOf) || result.dataAsOf > now || now - result.dataAsOf > FACTOR_MAX_DATA_AGE_MS ||
+      result.costs.takerFeeBps !== this.config.takerFeeBps || result.costs.slippageBps !== this.config.slippageBps) {
+      throw new Error("因子结果版本、费用或数据时效不匹配");
+    }
+    // Validate both sides before atomically replacing any parameters/approvals.
+    for (const side of ["LONG", "SHORT"] as const) {
+      const candidate = result.sides[side].candidate;
+      if (candidate) {
+        validateStrategySpec(candidate.config);
+        if (!passesFactorCandidate(candidate)) throw new Error(`${side} 因子未达到验证门槛`);
+      }
+    }
+    for (const side of ["LONG", "SHORT"] as const) {
+      const { candidate, reason } = result.sides[side];
+      this.factorMiningState.sides[side] = { reason };
+      if (candidate) {
+        const config = structuredClone(candidate.config);
+        // Replace, rather than merge, so obsolete optional rules cannot survive validation.
+        if (side === "LONG") this.config.klineStatsLongConfig = config;
+        else this.config.klineStatsShortConfig = config;
+        this.factorMiningState.sides[side].active = {
+          ...structuredClone(candidate), revision: `${result.datasetHash}:${candidate.id}:${result.dataAsOf}`,
+          dataAsOf: result.dataAsOf, expiresAt: result.dataAsOf + this.config.factorMining.validForMinutes * MINUTE_MS,
+          featureVersion: result.featureVersion, policyVersion: result.policyVersion, costs: { ...result.costs },
+        };
+      }
+    }
+    this.factorMiningState.datasetHash = result.datasetHash;
+    // A limit order belongs to its original factor; never fill it after that factor is retired.
+    this.cancelRetiredFactorOrders(now);
+    this.scheduleSave();
+  }
+
+  private factorOrderAllowed(order: PaperPendingOrder, now: number): boolean {
+    if (!this.config.factorMining?.enabled || !order.signalType?.startsWith("kline_stats_")) return true;
+    const side = order.signalType === "kline_stats_long" ? "LONG" : "SHORT";
+    return this.factorEntryAllowed(side, now) &&
+      order.exitParams?.factorRevision === this.factorMiningState.sides[side].active?.revision;
+  }
+
+  private cancelRetiredFactorOrders(now: number): void {
+    for (const order of this.pendingOrders.values()) {
+      if (!this.factorOrderAllowed(order, now)) this.cancelPendingOrder(order.symbol, "因子过期或已更新");
+    }
+  }
+
   public getLeverageForSignal(signalType?: PaperSignalType): number {
     if (signalType === "streak") {
-      return this.config.streakLeverage ?? 10;
+      return this.config.streakLeverage ?? 3;
     }
     if (signalType === "w_bottom_divergence") {
       return this.config.longLeverage ?? 3;
     }
     if (signalType === "kline_stats_long") {
-      return this.config.klineStatsLongConfig?.leverage ?? this.config.longLeverage ?? 5;
+      return this.config.klineStatsLongConfig?.leverage ?? this.config.longLeverage ?? 3;
     }
     if (signalType === "kline_stats_short") {
-      return this.config.klineStatsShortConfig?.leverage ?? this.config.klineStatsLeverage ?? 10;
+      return this.config.klineStatsShortConfig?.leverage ?? this.config.klineStatsLeverage ?? 3;
     }
     return this.config.trendLeverage ?? this.config.leverage;
   }
@@ -446,7 +524,10 @@ export class PaperTradingEngine {
     return orderMargin(this.account.equityUsdt, rate);
   }
 
-  private assertCapacity(symbol: string, signalType: PaperSignalType): void {
+  private assertCapacity(symbol: string, signalType: PaperSignalType, now = Date.now()): void {
+    if (signalType.startsWith("kline_stats_") && !this.factorEntryAllowed(signalType === "kline_stats_long" ? "LONG" : "SHORT", now)) {
+      throw new Error("量化因子尚未通过近期验证或已过期，暂停新开仓");
+    }
     if (this.activePositions.has(symbol) || this.pendingOrders.has(symbol)) throw new Error(`${symbol} 已有持仓或挂单`);
     if (this.activePositions.size + this.pendingOrders.size >= (this.config.maxPositions ?? 5)) throw new Error("已达全局持仓上限");
     if (this.countPositionsByStrategy(signalType) >= (this.config.maxPositionsPerStrategy ?? 1)) throw new Error("已达单策略持仓上限");
@@ -478,6 +559,7 @@ export class PaperTradingEngine {
     exitParams: PaperExitParams;
     signalDetails: SignalMatchDetails;
   } | null {
+    if (!this.factorEntryAllowed(side, now)) return null;
     const config =
       side === "SHORT"
         ? this.config.klineStatsShortConfig
@@ -539,6 +621,7 @@ export class PaperTradingEngine {
       label: signalLabel,
       entryPrice,
       exitParams: {
+        factorRevision: this.config.factorMining?.enabled ? this.factorMiningState.sides[side].active?.revision : undefined,
         holdMinutes: config.holdMinutes ?? (side === "SHORT" ? 45 : 30),
         tp1Percent: config.tp1Percent ?? (side === "SHORT" ? 3.0 : 2.5),
         tp2Percent: config.tp2Percent ?? (side === "SHORT" ? 7.0 : 5.5),
@@ -558,6 +641,7 @@ export class PaperTradingEngine {
 
   public updateConfig(updates: Partial<PaperStrategyConfig>): PaperStrategyConfig {
     if (!updates || typeof updates !== "object" || Array.isArray(updates)) throw new Error("配置必须是对象");
+    if (updates.factorMining !== undefined) validateFactorMiningConfig(updates.factorMining);
     for (const [key, max] of [["marginRate", 0.2], ["marginPercent", 20], ["maxPositions", 5], ["maxPositionsPerStrategy", 1]] as const) {
       const value = updates[key];
       if (value !== undefined && (!Number.isFinite(value) || value <= 0 || value > max || (key.startsWith("maxPositions") && !Number.isInteger(value)))) {
@@ -581,6 +665,7 @@ export class PaperTradingEngine {
       const value = updates[key];
       if (value !== undefined && (!Number.isFinite(value) || value < 0 || value >= 1000)) throw new Error(`${key} 必须在 0 ~ 1000 bps 之间`);
     }
+    if (updates.factorMining !== undefined) this.config.factorMining = { ...updates.factorMining };
     if (typeof updates.leverage === "number" && Number.isFinite(updates.leverage) && updates.leverage >= 1 && updates.leverage <= 100) {
       this.config.leverage = updates.leverage;
     }
@@ -754,7 +839,7 @@ export class PaperTradingEngine {
 
     const currentMargin = this.calculateOrderMargin();
     console.log(
-      `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高闪击杠杆 ${this.config.streakLeverage ?? 10}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 量化特征杠杆 ${this.config.klineStatsLeverage ?? 10}x, 做多杠杆 ${this.config.longLeverage ?? 3}x, 仓位比例 ${((this.config.marginRate ?? 0.2) * 100).toFixed(0)}% (约 ${currentMargin.toFixed(1)}U), 最大持仓 ${this.config.maxPositions ?? 5} 笔 (每策略 ${this.config.maxPositionsPerStrategy ?? 1} 笔), ampDivisor=${this.config.ampDivisor ?? 10}`,
+      `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高闪击杠杆 ${this.config.streakLeverage ?? 3}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 量化特征杠杆 ${this.config.klineStatsLeverage ?? 3}x, 做多杠杆 ${this.config.longLeverage ?? 3}x, 仓位比例 ${((this.config.marginRate ?? 0.2) * 100).toFixed(0)}% (约 ${currentMargin.toFixed(1)}U), 最大持仓 ${this.config.maxPositions ?? 5} 笔 (每策略 ${this.config.maxPositionsPerStrategy ?? 1} 笔), ampDivisor=${this.config.ampDivisor ?? 10}`,
     );
 
     this.scheduleSave();
@@ -806,8 +891,8 @@ export class PaperTradingEngine {
     now?: number;
   }): PaperPendingOrder {
     const { symbol, dayChangePercent, rank, basePrice, signal, exitParams } = params;
-    this.assertCapacity(symbol, params.signalType ?? "streak");
     const now = params.now ?? Date.now();
+    this.assertCapacity(symbol, params.signalType ?? "streak", now);
     const divisor = this.config.limitDivisor > 0 ? this.config.limitDivisor : 100;
     const limitOffsetPercent = dayChangePercent / divisor;
     const limitPrice = basePrice * (1 + limitOffsetPercent / 100);
@@ -834,11 +919,15 @@ export class PaperTradingEngine {
       notionalUsdt,
       signalType,
       signalLabel,
-      exitParams: exitParams ?? {
-        holdMinutes: this.config.holdMinutes,
-        exitX: this.config.exitX,
-        exitN: this.config.exitN,
-        exitM: this.config.exitM,
+      exitParams: {
+        ...(exitParams ?? {
+          holdMinutes: this.config.holdMinutes,
+          exitX: this.config.exitX,
+          exitN: this.config.exitN,
+          exitM: this.config.exitM,
+        }),
+        factorRevision: exitParams?.factorRevision ?? (this.config.factorMining?.enabled && signalType === "kline_stats_short"
+          ? this.factorMiningState.sides.SHORT.active?.revision : undefined),
       },
       basePrice,
       limitPrice,
@@ -1188,7 +1277,7 @@ export class PaperTradingEngine {
 
     const signalType = params.signalType ?? "streak";
     const isLong = (params.side ?? (signalType === "w_bottom_divergence" || signalType === "kline_stats_long" ? "LONG" : "SHORT")) === "LONG";
-    this.assertCapacity(symbol, signalType);
+    this.assertCapacity(symbol, signalType, entryTime);
     const side: "SHORT" | "LONG" = isLong ? "LONG" : "SHORT";
 
     const exitX = exitParams?.exitX ?? this.config.exitX;
@@ -1243,6 +1332,8 @@ export class PaperTradingEngine {
       signalLabel,
       exitParams: {
         holdMinutes,
+        factorRevision: exitParams?.factorRevision ?? (this.config.factorMining?.enabled && signalType.startsWith("kline_stats_")
+          ? this.factorMiningState.sides[side].active?.revision : undefined),
         exitX,
         exitN,
         exitM,
@@ -1331,7 +1422,9 @@ export class PaperTradingEngine {
     if (pending) {
       pending.currentPrice = tick.price;
       // 挂单超时
-      if (tick.time >= pending.expireAt) {
+      if (!this.factorOrderAllowed(pending, Math.max(Date.now(), tick.time))) {
+        this.cancelPendingOrder(pending.symbol, "因子过期或已更新");
+      } else if (tick.time >= pending.expireAt) {
         this.cancelPendingOrder(pending.symbol, "超时未触碰撤销");
       }
       // 价格直接下杀跌破预估TP1（做空行情已走完，撤单）
@@ -1489,6 +1582,7 @@ export class PaperTradingEngine {
    * Sweeps all pending orders and active positions for timeout.
    */
   public checkTimeouts(now = Date.now()): void {
+    this.cancelRetiredFactorOrders(now);
     // 检查挂单超时
     for (const [sym, order] of this.pendingOrders) {
       if (now >= order.expireAt) {
@@ -1919,6 +2013,7 @@ export class PaperTradingEngine {
 
   // --- Persistence ---
   private scheduleSave(): void {
+    if (!this.config.storageFile) return;
     if (this.saveTimeout) clearTimeout(this.saveTimeout);
     this.saveTimeout = setTimeout(() => {
       this.saveState();
@@ -1932,7 +2027,9 @@ export class PaperTradingEngine {
       if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
       }
-      const data: PaperTradingState & { configOverrides?: Partial<PaperStrategyConfig> } = {
+      const data: PaperTradingState & { configOverrides?: Partial<PaperStrategyConfig>; leverageDefaultsVersion: number } = {
+        leverageDefaultsVersion: 1,
+        factorMining: this.getFactorMiningState(),
         account: this.account,
         pendingOrders: Array.from(this.pendingOrders.values()),
         activePositions: Array.from(this.activePositions.values()),
@@ -2031,9 +2128,21 @@ export class PaperTradingEngine {
         this.recalculateStats();
         if ((data as any).configOverrides) {
           const saved = (data as any).configOverrides as Partial<PaperStrategyConfig>;
+          // One-time migration: old persisted 5x/10x defaults must not override the new 3x policy.
+          // Existing position/order notionals remain the historical execution snapshot.
+          if ((data as any).leverageDefaultsVersion !== 1) {
+            Object.assign(saved, { leverage: 3, streakLeverage: 3, trendLeverage: 3, longLeverage: 3, klineStatsLeverage: 3 });
+            for (const key of ["klineStatsLongConfig", "klineStatsShortConfig", "hourlySuppressionConfig", "wBottomDivergenceConfig"] as const) {
+              saved[key] = { ...saved[key], leverage: 3 };
+            }
+          }
           const rate = Math.min(0.2, saved.marginPercent != null ? saved.marginPercent / 100 : saved.marginRate ?? 0.2);
           this.updateConfig({ ...saved, marginRate: rate, marginPercent: rate * 100,
             maxPositions: Math.min(5, saved.maxPositions ?? 5), maxPositionsPerStrategy: 1, firstCloseFraction: FIRST_CLOSE_FRACTION });
+        }
+        if (data.factorMining?.sides?.LONG && data.factorMining?.sides?.SHORT) {
+          this.factorMiningState = { ...data.factorMining, running: false,
+            nextRunAt: data.factorMining.running ? 0 : data.factorMining.nextRunAt };
         }
         console.log(
           `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
@@ -2095,6 +2204,10 @@ export class PaperTradingEngine {
   public getSummary(): PaperTradingSummary {
     this.getStats24h();
     return {
+      factorMining: { ...this.getFactorMiningState(), entryAllowed: {
+        LONG: !!this.config.enableLongs && !!this.config.enableKlineStatsLong && this.factorEntryAllowed("LONG"),
+        SHORT: !!this.config.enableKlineStatsShort && this.factorEntryAllowed("SHORT"),
+      } },
       bySide: this.stats.bySide,
       account: this.account,
       pendingOrders: Array.from(this.pendingOrders.values()),
@@ -2109,11 +2222,12 @@ export class PaperTradingEngine {
       activePositions: Array.from(this.activePositions.values()),
       stats24h: this.stats24h,
       config: {
+        factorMining: this.config.factorMining,
         leverage: this.config.leverage,
-        streakLeverage: this.config.streakLeverage ?? 10,
+        streakLeverage: this.config.streakLeverage ?? 3,
         trendLeverage: this.config.trendLeverage ?? this.config.leverage,
         longLeverage: this.config.longLeverage ?? 3,
-        klineStatsLeverage: this.config.klineStatsLeverage ?? 10,
+        klineStatsLeverage: this.config.klineStatsLeverage ?? 3,
         marginUsdt: this.calculateOrderMargin(),
         marginRate: this.config.marginRate ?? 0.20,
         marginPercent: this.config.marginPercent ?? (this.config.marginRate ? Math.round(this.config.marginRate * 100) : 20),
@@ -2147,6 +2261,7 @@ export class PaperTradingEngine {
   public getState(): PaperTradingState & { config: PaperStrategyConfig; summary: PaperTradingSummary } {
     this.getStats24h();
     return {
+      factorMining: this.getFactorMiningState(),
       account: this.account,
       pendingOrders: Array.from(this.pendingOrders.values()),
       activePositions: Array.from(this.activePositions.values()),

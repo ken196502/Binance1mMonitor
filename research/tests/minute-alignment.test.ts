@@ -49,6 +49,7 @@ test('getMinuteCycle: groups timestamps into discrete 1-minute cycle blocks', ()
 
 test('PaperTradingEngine: clamps tick time to entryTime preventing negative duration', () => {
   const engine = new PaperTradingEngine({
+    storageFile: null,
     initialBalanceUsdt: 100,
     enableStreak: true,
   });

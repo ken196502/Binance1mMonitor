@@ -741,7 +741,7 @@ export async function main() {
               id: `LONG_W${window}_D${div}_${maReq}_${macdReq}_H${hold}`,
               name: `多头起爆: ${window}m蓄势(<24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + 持仓${hold}m`,
               side: "LONG",
-              leverage: 5,
+              leverage: 3,
               intervalWindow: window,
               ampDivisor: div,
               maRequirement: maReq,
@@ -779,7 +779,7 @@ export async function main() {
               id: `SHORT_W${window}_D${div}_${maReq}_${macdReq}_H${hold}`,
               name: `空头摸顶: ${window}m冲高(>=24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + 持仓${hold}m`,
               side: "SHORT",
-              leverage: 10,
+              leverage: 3,
               intervalWindow: window,
               ampDivisor: div,
               maRequirement: maReq,
@@ -997,7 +997,7 @@ export async function main() {
     framesMap,
     topStrats,
     { start: minTime, end: maxTime },
-    { maxPositions: 5, marginPercent: 20, leverage: 10 }
+    { maxPositions: 5, marginPercent: 20, leverage: 3 }
   );
 
   console.log(`✅ 组合回放完成: 初始 100 USDT → 终值 ${portfolioResult.finalBalance.toFixed(2)} USDT (净收益 +${portfolioResult.roiPct.toFixed(1)}%) | 交易 ${portfolioResult.totalTrades} 笔 (胜率 ${portfolioResult.winRate.toFixed(1)}%) | 最大回撤 ${portfolioResult.maxDrawdownPct.toFixed(1)}%`);
@@ -1115,7 +1115,7 @@ ${shortRanked
       stopLossPercent: bs.stopLossPercent,
       moveSlToEntryAfterTp1: true,
       cooldownMinutes: bs.cooldownMinutes ?? 20,
-      leverage: 10,
+      leverage: 3,
     };
   }
 
@@ -1134,7 +1134,7 @@ ${shortRanked
       stopLossPercent: bl.stopLossPercent,
       moveSlToEntryAfterTp1: true,
       cooldownMinutes: bl.cooldownMinutes ?? 20,
-      leverage: 5,
+      leverage: 3,
     };
   }
 

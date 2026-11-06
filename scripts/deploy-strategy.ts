@@ -56,7 +56,7 @@ export const PRESET_CONFIGS: Record<string, Partial<PaperStrategyConfig>> = {
   // 1. Top 1 空头量化特征挖掘策略 (168h 回测胜率 85.0%, PF 3.33)
   top_short: {
     enableKlineStatsShort: true,
-    klineStatsLeverage: 10,
+    klineStatsLeverage: 3,
     klineStatsShortConfig: {
       topN: 10,
       minDayChange: 10,
@@ -70,7 +70,7 @@ export const PRESET_CONFIGS: Record<string, Partial<PaperStrategyConfig>> = {
       stopLossPercent: 5.0,
       moveSlToEntryAfterTp1: true,
       cooldownMinutes: 20,
-      leverage: 10,
+      leverage: 3,
     },
   },
 
@@ -91,7 +91,7 @@ export const PRESET_CONFIGS: Record<string, Partial<PaperStrategyConfig>> = {
       stopLossPercent: 3.5,
       moveSlToEntryAfterTp1: true,
       cooldownMinutes: 20,
-      leverage: 5,
+      leverage: 3,
     },
   },
 
@@ -108,10 +108,10 @@ export const PRESET_CONFIGS: Record<string, Partial<PaperStrategyConfig>> = {
     enableWBottomDivergence: true,
     enableKlineStatsShort: true,
     enableKlineStatsLong: false, // 审计报告核实：线上 67 笔量化做多净亏 -15.9U，样本外及回测均为负期望，未达标前默认禁用
-    klineStatsLeverage: 10,
-    streakLeverage: 10,
+    klineStatsLeverage: 3,
+    streakLeverage: 3,
     trendLeverage: 3,
-    longLeverage: 5,
+    longLeverage: 3,
     klineStatsShortConfig: {
       topN: 10,
       minDayChange: 10,
@@ -125,7 +125,7 @@ export const PRESET_CONFIGS: Record<string, Partial<PaperStrategyConfig>> = {
       stopLossPercent: 5.0,
       moveSlToEntryAfterTp1: true,
       cooldownMinutes: 20,
-      leverage: 10,
+      leverage: 3,
     },
     klineStatsLongConfig: {
       topN: 10,
@@ -140,7 +140,7 @@ export const PRESET_CONFIGS: Record<string, Partial<PaperStrategyConfig>> = {
       stopLossPercent: 3.5,
       moveSlToEntryAfterTp1: true,
       cooldownMinutes: 20,
-      leverage: 5,
+      leverage: 3,
     },
   },
 

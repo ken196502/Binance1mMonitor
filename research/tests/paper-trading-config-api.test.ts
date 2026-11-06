@@ -80,7 +80,7 @@ test("PaperTradingEngine: differential dual-speed leverage (10x streak vs 3x tre
 test("PAPER_DEFAULT_CONFIG: has zero dependency on process.env for strategy & trading params", () => {
   assert.equal(PAPER_DEFAULT_CONFIG.leverage, 3);
   assert.equal(PAPER_DEFAULT_CONFIG.trendLeverage, 3);
-  assert.equal(PAPER_DEFAULT_CONFIG.streakLeverage, 10);
+  assert.equal(PAPER_DEFAULT_CONFIG.streakLeverage, 3);
   assert.equal(PAPER_DEFAULT_CONFIG.marginUsdt, 20);
   assert.equal(PAPER_DEFAULT_CONFIG.initialBalanceUsdt, 100);
   assert.equal(PAPER_DEFAULT_CONFIG.limitDivisor, 0);
@@ -146,6 +146,7 @@ test("PaperTradingEngine: updateConfig updates klineStats strategy parameters an
 
 test("PaperTradingEngine: checkKlineStatsSignal correctly evaluates 1m candles for short signal", () => {
   const engine = new PaperTradingEngine({
+    factorMining: { enabled: false, refreshMinutes: 60, validForMinutes: 720 },
     storageFile: null,
     enableKlineStatsShort: true,
     klineStatsShortConfig: {
@@ -240,14 +241,14 @@ test("deploy-strategy: deployConfig and fetchCurrentConfig work seamlessly over 
     // 1. Deploy preset 'top_short'
     const deployRes = await deployConfig(PRESET_CONFIGS.top_short, { port: testPort });
     assert.equal(deployRes.ok, true);
-    assert.equal(deployRes.config?.klineStatsLeverage, 10);
+    assert.equal(deployRes.config?.klineStatsLeverage, 3);
     assert.equal(deployRes.config?.klineStatsShortConfig?.maRequirement, "MA10_BREAKDOWN");
     assert.equal(deployRes.config?.klineStatsShortConfig?.tp1Percent, 3.0);
 
     // 2. Fetch current config via GET
     const fetchRes = await fetchCurrentConfig({ port: testPort });
     assert.equal(fetchRes.ok, true);
-    assert.equal(fetchRes.config?.klineStatsLeverage, 10);
+    assert.equal(fetchRes.config?.klineStatsLeverage, 3);
     assert.equal(fetchRes.config?.klineStatsShortConfig?.macdRequirement, "GREEN_RATIO_30_80");
 
     // 3. Deploy balanced combination

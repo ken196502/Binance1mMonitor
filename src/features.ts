@@ -794,12 +794,38 @@ export async function appendSignalSnapshot(record: {
  * 实盘把涨幅榜币种的已收盘 1m K 线按天写入 data/research/live-1m/
  */
 export async function persistClosedCandleToDisk(symbol: string, candle: Candle): Promise<void> {
-  try {
+  return persistClosedCandlesToDisk(symbol, [candle]);
+}
+
+const archiveSeen = new Map<string, Map<number, string>>();
+const archiveQueues = new Map<string, Promise<void>>();
+/** Include warmup and REST gap repairs, not only the latest minute of each scan. */
+export function persistClosedCandlesToDisk(symbol: string, candles: Candle[]): Promise<void> {
+  const work = (archiveQueues.get(symbol) ?? Promise.resolve()).then(async () => {
+    const seen = archiveSeen.get(symbol) ?? new Map<number, string>();
+    const days = new Map<string, Array<{ time: number; line: string }>>();
+    const now = Date.now();
+    for (const candle of candles) {
+      if (candle.time + 60_000 > now) continue;
+      const line = JSON.stringify(candle);
+      if (seen.get(candle.time) === line) continue;
+      const day = new Date(candle.time).toISOString().slice(0, 10).replaceAll("-", "");
+      const entries = days.get(day) ?? [];
+      entries.push({ time: candle.time, line });
+      days.set(day, entries);
+    }
+    if (!days.size) return;
     const dir = path.resolve("data/research/live-1m");
     await mkdir(dir, { recursive: true });
-    const dateStr = new Date(candle.time).toISOString().slice(0, 10).replace(/-/g, "");
-    const file = path.join(dir, `${symbol}-${dateStr}.jsonl`);
-    await appendFile(file, JSON.stringify(candle) + "\n", "utf8");
-  } catch {}
+    for (const [day, entries] of days) {
+      await appendFile(path.join(dir, `${symbol}-${day}.jsonl`), entries.map(e => e.line + "\n").join(""), "utf8");
+      for (const entry of entries) seen.set(entry.time, entry.line);
+    }
+    const newest = Math.max(...seen.keys());
+    for (const time of seen.keys()) if (time < newest - 500 * 60_000) seen.delete(time);
+    archiveSeen.set(symbol, seen);
+  }).catch(error => console.warn(`[factor-mining] ${symbol} 行情归档失败:`, error.message));
+  archiveQueues.set(symbol, work);
+  return work;
 }
 

@@ -118,6 +118,7 @@ export interface KlineStatsStrategyLiveConfig {
 }
 
 export interface PaperExitParams {
+  factorRevision?: string;
   holdMinutes: number;
   exitX?: number;
   exitN?: number;
@@ -256,6 +257,7 @@ export interface PaperTradingStats {
 }
 
 export interface PaperTradingState {
+  factorMining?: import("./factor-policy.ts").FactorMiningState;
   account: PaperAccount;
   pendingOrders: PaperPendingOrder[];
   activePositions: PaperPosition[];
@@ -268,6 +270,7 @@ export interface PaperTradingState {
 }
 
 export interface PaperTradingSummaryConfig {
+  factorMining?: import("./factor-policy.ts").FactorMiningConfig;
   leverage: number;
   streakLeverage?: number;
   trendLeverage?: number;
@@ -302,6 +305,7 @@ export interface PaperTradingSummaryConfig {
 }
 
 export interface PaperTradingSummary {
+  factorMining?: import("./factor-policy.ts").FactorMiningState & { entryAllowed: Record<"LONG" | "SHORT", boolean> };
   bySide?: Record<"LONG" | "SHORT", PaperDirectionStats>;
   account: PaperAccount;
   pendingOrders: PaperPendingOrder[];
