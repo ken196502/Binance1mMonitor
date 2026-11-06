@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Monitor 1m MACD high-position death cross on Binance 24h top gainers / losers / volume",
+  "description": "Binance market monitoring, precursor feature mining, two-stage backtesting and paper trading",
   "scripts": {
     "start": "tsx --env-file-if-exists=.env src/server.ts",
     "dev": "concurrently -k -n server,web -c green,cyan \"tsx watch --env-file-if-exists=.env src/server.ts\" \"npm --prefix web run dev\"",

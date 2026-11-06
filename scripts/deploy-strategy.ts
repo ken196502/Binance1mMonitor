@@ -23,7 +23,7 @@
  *   npx tsx scripts/deploy-strategy.ts --url http://47.100.20.30:4111 --preset balanced
  *
  *   # 5. 自定义 JSON 参数部署：
- *   npx tsx scripts/deploy-strategy.ts --url http://47.100.20.30:4111 --json '{"marginPercent": 25, "klineStatsLeverage": 10}'
+ *   npx tsx scripts/deploy-strategy.ts --url http://47.100.20.30:4111 --json '{"marginPercent": 20, "klineStatsLeverage": 10}'
  */
 
 import fs from "node:fs";
@@ -107,7 +107,7 @@ export const PRESET_CONFIGS: Record<string, Partial<PaperStrategyConfig>> = {
     enableLongs: true,
     enableWBottomDivergence: true,
     enableKlineStatsShort: true,
-    enableKlineStatsLong: true,
+    enableKlineStatsLong: false, // 审计报告核实：线上 67 笔量化做多净亏 -15.9U，样本外及回测均为负期望，未达标前默认禁用
     klineStatsLeverage: 10,
     streakLeverage: 10,
     trendLeverage: 3,
@@ -144,10 +144,10 @@ export const PRESET_CONFIGS: Record<string, Partial<PaperStrategyConfig>> = {
     },
   },
 
-  // 4. 激进高收益模式 (做空 10x, 做多 5x, 单笔仓位 25%)
+  // 4. 激进高收益模式 (做空 10x, 做多 5x, 单笔仓位 20%)
   aggressive: {
-    marginPercent: 25,
-    maxPositions: 6,
+    marginPercent: 20,
+    maxPositions: 5,
     klineStatsLeverage: 10,
     streakLeverage: 10,
     enableKlineStatsShort: true,

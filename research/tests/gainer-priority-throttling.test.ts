@@ -62,13 +62,13 @@ test('涨幅榜完全同步：置顶标的与涨幅榜完成冷启动同步，�
 
     const boards = await buildBoards(tops, pinned);
 
-    // 验证涨幅榜和置顶标的获得了完整同步（冷启动拉取 200 或 500 根）
+    // 验证涨幅榜和置顶标的获得了完整同步（冷启动拉取 200、500 或 501 根）
     const btcIdx = klinesRequested.findIndex((k) => k.symbol === 'BTCUSDT');
     const g1Idx = klinesRequested.findIndex((k) => k.symbol === 'G1USDT');
     assert.ok(btcIdx !== -1, 'BTCUSDT 必须成功发起 K 线请求');
-    assert.ok(['200', '500'].includes(klinesRequested[btcIdx].limit ?? ''), '涨幅榜置顶标的冷启动拉取 K 线');
+    assert.ok(['200', '500', '501'].includes(klinesRequested[btcIdx].limit ?? ''), '涨幅榜置顶标的冷启动拉取 K 线');
     assert.ok(g1Idx !== -1, 'G1USDT 必须成功发起 K 线请求');
-    assert.ok(['200', '500'].includes(klinesRequested[g1Idx].limit ?? ''), '涨幅榜标的冷启动拉取 K 线');
+    assert.ok(['200', '500', '501'].includes(klinesRequested[g1Idx].limit ?? ''), '涨幅榜标的冷启动拉取 K 线');
 
     // 验证跌幅榜标的被彻底忽略，不发起任何 K 线请求
     const l1Idx = klinesRequested.findIndex((k) => k.symbol === 'L1USDT');

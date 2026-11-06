@@ -7,6 +7,7 @@ import type { MinuteDataset } from '../research/gainers-types.ts';
 import { HOUR } from '../research/types.ts';
 import { computeMacd, calculateSupportMaAt } from '../src/macd.ts';
 import { calcReturn } from '../research/peak-rebound-backtest.ts';
+import { breakevenPrice } from '../src/trading-core.ts';
 
 // 1. 数据装载器
 async function loadAllMinutes(): Promise<MinuteDataset> {
@@ -276,6 +277,7 @@ export interface PortfolioSimOptions {
   fixedMarginUsdt?: number;        // 固定保证金模式金额 (默认 20 USDT)
   maxPositions?: number;           // 最大同时持仓数 (默认 5)
   maxPositionsPerStrategy?: number;// 每个策略最大同时持仓数 (默认 1，保证四大策略至少各持仓 1 笔)
+  intrabarMode?: 'conservative' | 'optimistic'; // 撮合模式：conservative (先止损) 或 optimistic (先止盈)
 }
 
 // 模拟组合执行
@@ -291,11 +293,14 @@ export function runPortfolioSimulation(
   const fixedMarginUsdt = options.fixedMarginUsdt ?? 20.0;
   const maxPositions = options.maxPositions ?? 5;
   const maxPositionsPerStrategy = options.maxPositionsPerStrategy ?? 1;
+  const intrabarMode = options.intrabarMode ?? 'conservative';
 
   const occupiedUntil = new Map<string, number>();
   let balance = 100.0;
   let peak = 100.0;
   let maxDd = 0;
+  let peakEquity = 100.0;
+  let maxEquityDd = 0;
   const trades: any[] = [];
   const feeRate = 0.0014; // 14 bps 双边
 
@@ -309,20 +314,22 @@ export function runPortfolioSimulation(
   }> = [];
 
   for (const sig of signals) {
-    // 1. 释放已在 sig.entryTime 前结清的活跃持仓，并结算盈亏
-    for (let i = activePositions.length - 1; i >= 0; i--) {
-      if (activePositions[i].exitTime <= sig.entryTime) {
-        const closed = activePositions[i];
-        const pnlUsdt = closed.marginUsdt * (closed.pnlPct / 100);
-        balance += pnlUsdt;
-        if (balance > peak) peak = balance;
-        const curDd = ((peak - balance) / peak) * 100;
-        if (curDd > maxDd) maxDd = curDd;
-        closed.tradeObj.pnlUsdt = pnlUsdt;
-        closed.tradeObj.isWin = pnlUsdt > 0.001;
-        trades.push(closed.tradeObj);
-        activePositions.splice(i, 1);
-      }
+    // 1. 释放已在 sig.entryTime 前结清的活跃持仓，按 exitTime 升序依次回退结算
+    const toClose = activePositions
+      .filter((p) => p.exitTime <= sig.entryTime)
+      .sort((a, b) => a.exitTime - b.exitTime);
+
+    for (const closed of toClose) {
+      const pnlUsdt = closed.marginUsdt * (closed.pnlPct / 100);
+      balance += pnlUsdt;
+      if (balance > peak) peak = balance;
+      const curDd = ((peak - balance) / peak) * 100;
+      if (curDd > maxDd) maxDd = curDd;
+      closed.tradeObj.pnlUsdt = pnlUsdt;
+      closed.tradeObj.isWin = pnlUsdt > 0.001;
+      trades.push(closed.tradeObj);
+      const idx = activePositions.indexOf(closed);
+      if (idx >= 0) activePositions.splice(idx, 1);
     }
 
     // 2. 检查同币互斥 (同一币种同时只持有一笔仓位)
@@ -394,37 +401,75 @@ export function runPortfolioSimulation(
         break;
       }
 
-      if (!stage1Done) {
-        if (low <= tp1Price) {
-          stage1Done = true;
-          remainingFraction = 0.5;
-          stage1Return = (tp1Pct / 100 - feeRate) * 0.5;
-          if (sig.moveSlToEntryAfterTp1) {
-            sl2Price = entry * 1.002;
-            sl2Pct = 0.2;
+      if (intrabarMode === 'conservative') {
+        // 保守模式：先止损，防同根 K 线乐观止盈偏差
+        if (!stage1Done) {
+          if (high >= sl1Price) {
+            stage1Done = true;
+            remainingFraction = 0.5;
+            const gross = -((high - entry) / entry);
+            stage1Return = (gross - feeRate) * 0.5;
+          } else if (low <= tp1Price) {
+            stage1Done = true;
+            remainingFraction = 0.5;
+            stage1Return = (tp1Pct / 100 - feeRate) * 0.5;
+            if (sig.moveSlToEntryAfterTp1) {
+              sl2Price = breakevenPrice('SHORT', entry, { takerFeeBps: 5, slippageBps: 2 });
+              sl2Pct = Math.abs(sl2Price / entry - 1) * 100;
+            }
           }
-        } else if (high >= sl1Price) {
-          stage1Done = true;
-          remainingFraction = 0.5;
-          const gross = -((high - entry) / entry);
-          stage1Return = (gross - feeRate) * 0.5;
         }
-      }
 
-      if (stage1Done && remainingFraction > 0) {
-        if (low <= tp2Price) {
-          stage2Return = (tp2Pct / 100 - feeRate) * 0.5;
-          remainingFraction = 0;
-          exitReason = 'target';
-          exitTime = curTime;
-          break;
-        } else if (high >= sl2Price) {
-          const gross = -((high - entry) / entry);
-          stage2Return = (gross - feeRate) * 0.5;
-          remainingFraction = 0;
-          exitReason = 'stop';
-          exitTime = curTime;
-          break;
+        if (stage1Done && remainingFraction > 0) {
+          if (high >= sl2Price) {
+            const gross = -((high - entry) / entry);
+            stage2Return = (gross - feeRate) * 0.5;
+            remainingFraction = 0;
+            exitReason = 'stop';
+            exitTime = curTime;
+            break;
+          } else if (low <= tp2Price) {
+            stage2Return = (tp2Pct / 100 - feeRate) * 0.5;
+            remainingFraction = 0;
+            exitReason = 'target';
+            exitTime = curTime;
+            break;
+          }
+        }
+      } else {
+        // 乐观模式 (旧行为，用于对照复现)
+        if (!stage1Done) {
+          if (low <= tp1Price) {
+            stage1Done = true;
+            remainingFraction = 0.5;
+            stage1Return = (tp1Pct / 100 - feeRate) * 0.5;
+            if (sig.moveSlToEntryAfterTp1) {
+              sl2Price = breakevenPrice('SHORT', entry, { takerFeeBps: 5, slippageBps: 2 });
+              sl2Pct = Math.abs(sl2Price / entry - 1) * 100;
+            }
+          } else if (high >= sl1Price) {
+            stage1Done = true;
+            remainingFraction = 0.5;
+            const gross = -((high - entry) / entry);
+            stage1Return = (gross - feeRate) * 0.5;
+          }
+        }
+
+        if (stage1Done && remainingFraction > 0) {
+          if (low <= tp2Price) {
+            stage2Return = (tp2Pct / 100 - feeRate) * 0.5;
+            remainingFraction = 0;
+            exitReason = 'target';
+            exitTime = curTime;
+            break;
+          } else if (high >= sl2Price) {
+            const gross = -((high - entry) / entry);
+            stage2Return = (gross - feeRate) * 0.5;
+            remainingFraction = 0;
+            exitReason = 'stop';
+            exitTime = curTime;
+            break;
+          }
         }
       }
 
@@ -445,15 +490,32 @@ export function runPortfolioSimulation(
     const unleveragedPct = netFraction * 100;
     const leveragedPct = unleveragedPct * leverage;
 
-    // 单笔保证金：支持动态资产量 20% 或固定金额
+    // 评估浮动净值（考虑已有持仓浮盈浮亏）
+    let curEquity = balance;
+    for (const p of activePositions) {
+      const barsP = minuteData.candles.get(p.symbol);
+      if (barsP) {
+        const b = barsP.find((x) => x[0] === sig.entryTime);
+        if (b) {
+          const ret = -((b[4] - p.tradeObj.entryPrice) / p.tradeObj.entryPrice) - feeRate;
+          curEquity += p.marginUsdt * ret * p.tradeObj.leverage;
+        }
+      }
+    }
+    if (curEquity > peakEquity) peakEquity = curEquity;
+    const curEquityDd = peakEquity > 0 ? ((peakEquity - curEquity) / peakEquity) * 100 : 0;
+    if (curEquityDd > maxEquityDd) maxEquityDd = curEquityDd;
+
+    // 单笔保证金：支持动态资产量 20% (基于当前实时净值) 或固定金额
     const marginUsdt = useDynamicMargin
-      ? Math.max(5.0, balance * marginRate)
+      ? Math.max(5.0, Math.max(0, curEquity) * marginRate)
       : fixedMarginUsdt;
 
     const tradeObj = {
       symbol: sig.symbol,
       type: sig.type,
       name: sig.name,
+      entryPrice: sig.entryPrice,
       leverage,
       unleveragedPct,
       leveragedPct,
@@ -469,6 +531,7 @@ export function runPortfolioSimulation(
     activePositions.push({
       symbol: sig.symbol,
       type: sig.type,
+      entryPrice: sig.entryPrice,
       exitTime,
       marginUsdt,
       pnlPct: leveragedPct,
@@ -476,8 +539,9 @@ export function runPortfolioSimulation(
     });
   }
 
-  // 释放剩余未结清仓位
-  for (const closed of activePositions) {
+  // 释放剩余未结清仓位 (按 exitTime 升序结算)
+  const remainingClosed = [...activePositions].sort((a, b) => a.exitTime - b.exitTime);
+  for (const closed of remainingClosed) {
     const pnlUsdt = closed.marginUsdt * (closed.pnlPct / 100);
     balance += pnlUsdt;
     if (balance > peak) peak = balance;
@@ -520,6 +584,7 @@ export function runPortfolioSimulation(
   }
 
   return {
+    intrabarMode,
     streakLeverage: `${streakLeverage}x`,
     trendLeverage: `${trendLeverage}x`,
     trades: trades.length,
@@ -528,7 +593,8 @@ export function runPortfolioSimulation(
     totalPnlUsdt: `${balance >= 100 ? '+' : ''}${(balance - 100).toFixed(2)}U`,
     totalReturn: `${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(1)}%`,
     maxDd: `${maxDd.toFixed(1)}%`,
-    calmar: calmar.toFixed(2),
+    maxEquityDd: `${maxEquityDd.toFixed(1)}%`,
+    calmar: maxDd > 0 ? calmar.toFixed(2) : '0',
     liqs,
     subStats,
   };
@@ -555,6 +621,7 @@ async function main() {
   console.log(`   - 冲高极度乖离 (90m 波段): ${signals.filter(s => s.type === 'extreme_dev').length} 笔\n`);
 
   // 1. 运行皇冠推荐：动态 20% 资产量 + 全局限仓 5 笔 (严格每策略至多 1 仓，四大策略均衡各持仓 1 笔)
+  // 【审计修复】：默认采用 conservative 保守撮合 (先判 SL，保本费率覆盖)，同时计算盘中净值回撤
   const dynamicResults: any[] = [];
   const testLeverages = [1, 2, 3, 5, 8, 10, 12, 15];
 
@@ -564,13 +631,30 @@ async function main() {
       marginRate: 0.20,
       maxPositions: 5,
       maxPositionsPerStrategy: 1,
+      intrabarMode: 'conservative',
     }));
   }
 
   console.log('========================================================================================');
-  console.log('👑【皇冠最优推荐：动态 20% 资产量保证金】(初本 100 USDT · 单笔 20% 资产 · 全局限 5 仓 · 严格每策略 1 仓)');
+  console.log('👑【真实严谨·保守撮合：动态 20% 资产量保证金】(先止损判定 · 正确保本价 · 计入实时净值浮亏)');
   console.log('========================================================================================');
   console.table(dynamicResults);
+
+  // 1b. 对比旧版乐观撮合 (同根 K 线优先止盈，用于复现 audit-report 对比)
+  const optimisticResults: any[] = [];
+  for (const lev of testLeverages) {
+    optimisticResults.push(runPortfolioSimulation(signals, minuteData, lev, 3, {
+      useDynamicMargin: true,
+      marginRate: 0.20,
+      maxPositions: 5,
+      maxPositionsPerStrategy: 1,
+      intrabarMode: 'optimistic',
+    }));
+  }
+  console.log('\n========================================================================================');
+  console.log('⚠️【对照组·旧版乐观撮合模式】(同根 K 线优先止盈 · 用于复现旧回测对比偏差)');
+  console.log('========================================================================================');
+  console.table(optimisticResults);
 
   // 2. 对比固定 20U 保证金模式 (严格每策略至多 1 仓)
   const fixedResults: any[] = [];
@@ -580,17 +664,18 @@ async function main() {
       fixedMarginUsdt: 20.0,
       maxPositions: 5,
       maxPositionsPerStrategy: 1,
+      intrabarMode: 'conservative',
     }));
   }
 
   console.log('\n========================================================================================');
-  console.log('📊【固定 20U 保证金模式对比】(单笔固定 20 USDT · 全局限 5 仓 · 严格每策略 1 仓)');
+  console.log('📊【固定 20U 保证金模式对比】(单笔固定 20 USDT · 保守撮合 · 全局限 5 仓 · 严格每策略 1 仓)');
   console.log('========================================================================================');
   console.table(fixedResults);
 
   // 打印四大子策略在 10x vs 3x 下的细分贡献 (严格每策略至多 1 仓)
   console.log('\n========================================================================================');
-  console.log('🔍【四大子策略分项贡献拆解 (动态 20% 仓位 · 新高顶背离 10x vs 3x · 严格每策略 1 仓)】');
+  console.log('🔍【四大子策略分项贡献拆解 (保守撮合 · 动态 20% 仓位 · 新高顶背离 10x vs 3x · 严格每策略 1 仓)】');
   console.log('========================================================================================');
   for (const lev of [3, 5, 10]) {
     const res = runPortfolioSimulation(signals, minuteData, lev, 3, {
@@ -598,6 +683,7 @@ async function main() {
       marginRate: 0.20,
       maxPositions: 5,
       maxPositionsPerStrategy: 1,
+      intrabarMode: 'conservative',
     });
     console.log(`\n▶️ 当【新高顶背离】采用 ${lev}x 杠杆 (顺势衰竭保持 3x) 时各子策略明细:`);
     console.table(Object.values(res.subStats));

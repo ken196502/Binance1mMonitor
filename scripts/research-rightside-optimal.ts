@@ -3,6 +3,7 @@ import { loadDataset } from '../research/data.ts';
 import { buildFrames } from '../research/backtest.ts';
 import type { MinuteDataset } from '../research/gainers-types.ts';
 import { MINUTE } from '../research/gainers-types.ts';
+import { breakevenPrice } from '../src/trading-core.ts';
 import { loadAllMinutes, extractAllSignals, type RawSignal } from './research-low-leverage-long-hold.ts';
 
 interface ComboConfig {
@@ -104,7 +105,7 @@ function runSim(
         tp1Hits++;
 
         if (cfg.moveSlToEntryAfterTp1) {
-          currentStop = entry * 1.002;
+          currentStop = breakevenPrice('SHORT', entry, { takerFeeBps: 5, slippageBps: 2 });
         }
 
         if (low <= tp2Price) {

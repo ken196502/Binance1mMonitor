@@ -434,6 +434,7 @@ test("PaperTradingEngine: reset restores account balance and clears all orders/p
   // 2. Open an active position
   engine.openPosition({
     symbol: "ACTIVE1",
+    signalType: "rebound",
     dayChangePercent: 30,
     entryPrice: 20,
     entryTime: now,
@@ -738,9 +739,9 @@ test("PaperTradingEngine: LONG position executes 2-stage TP and locks breakeven 
   assert.equal(pos.exits[0].reason, "target");
   // Stage 1 notional = 60 * 0.5 = 30 USDT. Gain = 30 * +3% = +0.9 USDT
   assert.ok(Math.abs(pos.realizedNetPnlUsdt - 0.9) < 1e-4);
-  // Breakeven armed: SL2 moved up to entryPrice * 0.998 = 99.80
+  // With zero costs, breakeven is exactly the entry price.
   assert.equal(pos.isBreakevenArmed, true);
-  assert.equal(pos.sl2Price, 99.80);
+  assert.equal(pos.sl2Price, 100);
 
   // 2. Tick reaches 108.0 -> triggers Stage 2 TP (+8.0%)
   engine.onTick({

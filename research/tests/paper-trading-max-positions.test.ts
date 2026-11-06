@@ -52,10 +52,10 @@ test('PaperTradingEngine: dynamic 20% margin scales with account equity', () => 
   (engine as any).account.equityUsdt = 60;
   assert.equal(engine.calculateOrderMargin(), 12, '20% of 60U equity should be 12U');
 
-  // If equity drops severely to 15 USDT, margin should be minimum 5 USDT
+  // If equity drops severely to 15 USDT, margin remains 20% instead of exceeding the risk budget
   (engine as any).account.balanceUsdt = 15;
   (engine as any).account.equityUsdt = 15;
-  assert.equal(engine.calculateOrderMargin(), 5, 'Minimum margin floor is 5U');
+  assert.equal(engine.calculateOrderMargin(), 3, '20% of 15U is 3U');
 });
 
 test('PaperTradingEngine: enforces maxPositions and maxPositionsPerStrategy (at least 1 per strategy)', async () => {

@@ -1,24 +1,7 @@
 #!/usr/bin/env tsx
 /**
- * 24h 涨幅榜 K 线量化统计与特征挖掘策略系统 (V2.0 优化版)
- *
- * 实施《优化计划.md》全部规范：
- * 1. P0 正确性：
- *    - D5 修正数据加载：多目录对比，智能挑选 K 线最多、缺口最少的数据；切分时间戳缺口；
- *    - D6 撮合保守化：同一根 K 线 TP/SL 同时触碰时默认先判 SL；按极端价止损；入场滑点与入场当根撮合；保本止损对齐实盘 (0.2%)；
- *    - D7 参数透传：候选策略的 topN、minDayChange 完整参与回测；
- *    - D8 统计指标修正：修复 tp1Hits 统计口径；无亏损时 PF 显示 ∞ 并标注；
- * 2. P1 统一特征层：
- *    - 核心依赖 src/features.ts (FeatureVector)，删除重复 switch，保证预热一致 (< 1e-9)；
- * 3. P2 挖掘框架与防过拟合：
- *    - 60/20/20 训练集 / 验证集 / 留出测试集严格划分；
- *    - Walk-Forward 滚动验证 (Train 3d / Test 1d)；
- *    - 样本量门槛 (训练 >= 30, 验证 >= 10)；
- *    - 参数稳健性高原打分 (Neighbor Robustness Score: 0.5 * 本身 + 0.5 * 邻域平均)；
- *    - 严格部署门槛 (Wilson下界 >= 50%, PF >= 1.3, 期望收益 > 2*成本)；
- * 4. P3 闭环与组合模式：
- *    - 组合模式 (--portfolio)：模拟全局 5 仓、单策略 1 仓、20% 保证金与多策略并发资金曲线；
- *    - 输出标准化包含 featureVersion, datasetHash, 各阶段指标及 Top 3 策略。
+ * 行情归档 → 前置特征统计 → 多空形态参数挖掘 → 共用二阶段组合回测。
+ * 输出带特征版本、数据内容哈希及验证/留出结果的可远程应用参数。
  */
 
 import path from "node:path";
@@ -37,120 +20,71 @@ import {
   type FeatureVector,
   type KlineStatsStrategySpec,
 } from "../src/features.ts";
-import { computeMacd, type Candle } from "../src/macd.ts";
+import { type Candle } from "../src/macd.ts";
 import type { Ticker24h } from "../src/binance.ts";
+import type { KlineStatsStrategyLiveConfig } from "../src/types.ts";
 import type { PaperStrategyConfig } from "../src/paper-trading.ts";
+
+import { replayStrategies } from "../research/strategy-replay.ts";
+export { calcTradeReturn } from "../src/trading-core.ts";
 
 const MINUTE = 60_000;
 
-export interface CandleCandidateStats {
-  dir: string;
-  count: number;
-  gaps: number;
-  score: number;
-  bars: any[];
-}
-
-/**
- * 修正数据加载 (D5)：
- * 多目录扫描，对于同一币种评估数据量与缺口，挑选最优连续数据
- */
-export async function loadAllMinutes(): Promise<{ dataset: MinuteDataset; datasetHash: string }> {
-  const dirs = [
-    path.resolve("data/research/peak-rebound-1m-168h"),
-    path.resolve("data/research/staged-1m-20261020-20261023"),
-    path.resolve("data/research/live-1m"),
-  ];
-
-  const symbolMap = new Map<string, CandleCandidateStats[]>();
-
+/** Merge archived arrays and live JSONL by symbol/time; later sources override overlaps. */
+export async function loadAllMinutes(dirs = [
+  path.resolve("data/research/peak-rebound-1m-168h"),
+  path.resolve("data/research/staged-1m-20261020-20261023"),
+  path.resolve("data/research/live-1m"),
+]): Promise<{ dataset: MinuteDataset; datasetHash: string }> {
+  const merged = new Map<string, Map<number, Candle>>();
   for (const dir of dirs) {
-    try {
-      const files = await readdir(dir);
-      for (const f of files) {
-        if (f.endsWith(".json.gz") || f.endsWith(".json")) {
-          const sym = f.replace(/\.json(\.gz)?$/, "").split("-")[0];
-          try {
-            const rawBytes = await readFile(path.join(dir, f));
-            let parsed: any[];
-            if (f.endsWith(".gz")) {
-              parsed = JSON.parse(gunzipSync(rawBytes).toString("utf8"));
-            } else {
-              parsed = JSON.parse(rawBytes.toString("utf8"));
-            }
-            if (!Array.isArray(parsed) || parsed.length === 0) continue;
-
-            // 统计缺口 (时间间隔 > 3 分钟)
-            let gaps = 0;
-            for (let i = 1; i < parsed.length; i++) {
-              const t0 = Array.isArray(parsed[i - 1]) ? parsed[i - 1][0] : parsed[i - 1].time;
-              const t1 = Array.isArray(parsed[i]) ? parsed[i][0] : parsed[i].time;
-              if (t1 - t0 > 3 * MINUTE) gaps++;
-            }
-
-            const score = parsed.length - gaps * 200;
-            const entry: CandleCandidateStats = {
-              dir,
-              count: parsed.length,
-              gaps,
-              score,
-              bars: parsed,
-            };
-
-            const list = symbolMap.get(sym) ?? [];
-            list.push(entry);
-            symbolMap.set(sym, list);
-          } catch {}
+    let files: string[];
+    try { files = (await readdir(dir)).sort(); } catch (error: any) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const file of files) {
+      if (!/\.json(?:l|\.gz)?$/.test(file)) continue;
+      const symbol = file.replace(/\.json(?:l|\.gz)?$/, "").split("-")[0];
+      if (!/^[A-Z0-9]+$/.test(symbol)) continue;
+      const bytes = await readFile(path.join(dir, file));
+      const contents = file.endsWith(".gz") ? gunzipSync(bytes).toString("utf8") : bytes.toString("utf8");
+      let raw: any[];
+      if (file.endsWith(".jsonl")) {
+        const lines = contents.split("\n");
+        raw = [];
+        for (let i = 0; i < lines.length; i++) {
+          if (!lines[i].trim()) continue;
+          try { raw.push(JSON.parse(lines[i])); } catch (error) {
+            // The live writer may be appending the final line as we read it.
+            if (i !== lines.length - 1) throw new Error(`损坏的行情文件 ${file}:${i + 1}`);
+          }
         }
+      } else {
+        raw = JSON.parse(contents);
       }
-    } catch {}
+      if (!Array.isArray(raw)) continue;
+      const byTime = merged.get(symbol) ?? new Map<number, Candle>();
+      for (const bar of normalizeToCandles(raw)) {
+        if (![bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume].every(Number.isFinite)) continue;
+        if (bar.time <= 0 || Math.min(bar.open, bar.low, bar.close) <= 0 || bar.high < Math.max(bar.open, bar.close) || bar.low > Math.min(bar.open, bar.close)) continue;
+        byTime.set(bar.time, bar);
+      }
+      if (byTime.size) merged.set(symbol, byTime);
+    }
   }
-
-  const selectedCandles = new Map<string, any[]>();
-  const hashObj = createHash("sha256");
-
-  for (const [sym, candidates] of symbolMap.entries()) {
-    // 挑选得分最高者 (K线最多、缺口最少)
-    candidates.sort((a, b) => b.score - a.score);
-    const best = candidates[0];
-    selectedCandles.set(sym, best.bars);
-    hashObj.update(`${sym}:${best.count}:${best.bars[0]?.[0] ?? best.bars[0]?.time}:`);
+  const candles: MinuteDataset["candles"] = new Map();
+  const hash = createHash("sha256");
+  for (const symbol of [...merged.keys()].sort()) {
+    const list = [...merged.get(symbol)!.values()].sort((a, b) => a.time - b.time);
+    const rows: import("../research/types.ts").Bar[] = list.map(b => [b.time, b.open, b.high, b.low, b.close, b.volume, 0]);
+    candles.set(symbol, rows);
+    hash.update(symbol + JSON.stringify(rows));
   }
-
-  const datasetHash = hashObj.digest("hex").slice(0, 16);
-
   return {
-    dataset: {
-      manifest: {
-        version: 1,
-        interval: "1m",
-        source: "Binance",
-        fetchedAt: new Date().toISOString(),
-        plan: {} as any,
-        files: {},
-      },
-      candles: selectedCandles,
-    },
-    datasetHash,
+    dataset: { manifest: { version: 1, interval: "1m", source: "Binance", fetchedAt: new Date().toISOString(), plan: {} as any, files: {} }, candles },
+    datasetHash: hash.digest("hex").slice(0, 16),
   };
-}
-
-export function calcTradeReturn(
-  side: "LONG" | "SHORT",
-  entryPrice: number,
-  exitPrice: number,
-  costs = { takerFeeBps: 5, slippageBps: 2 }
-) {
-  const grossPercent =
-    side === "LONG"
-      ? ((exitPrice - entryPrice) / entryPrice) * 100
-      : ((entryPrice - exitPrice) / entryPrice) * 100;
-
-  const entryFeePercent = costs.takerFeeBps / 100;
-  const exitFeePercent = (costs.takerFeeBps / 100) * (exitPrice / entryPrice);
-  const slippagePercent = (costs.slippageBps / 100) * (1 + exitPrice / entryPrice);
-  const netPercent = grossPercent - entryFeePercent - exitFeePercent - slippagePercent;
-  return { grossPercent, netPercent };
 }
 
 export interface MiningStrategyCandidate extends KlineStatsStrategySpec {
@@ -218,18 +152,9 @@ export interface ComprehensiveStrategyResult {
  * 将原始 K 线数组规范化转换为 Candle[]
  */
 function normalizeToCandles(rawBars: any[]): Candle[] {
-  return rawBars.map((b) => {
-    if (Array.isArray(b)) {
-      return {
-        time: b[0],
-        open: b[1],
-        high: b[2],
-        low: b[3],
-        close: b[4],
-        volume: b[5] ?? 0,
-      };
-    }
-    return b;
+  return rawBars.filter(b => b && typeof b === "object").map(b => {
+    const values = Array.isArray(b) ? b : [b.time, b.open, b.high, b.low, b.close, b.volume];
+    return { time: Number(values[0]), open: Number(values[1]), high: Number(values[2]), low: Number(values[3]), close: Number(values[4]), volume: Number(values[5] ?? 0) };
   });
 }
 
@@ -245,222 +170,8 @@ export async function simulateStrategyOnPeriod(
   timeRange: { start: number; end: number },
   options: { intrabarMode?: "conservative" | "optimistic"; fvCache?: Map<string, FeatureVector | null> } = {}
 ): Promise<{ metrics: StrategyPeriodMetrics; trades: TradeRecord[] }> {
-  const intrabarMode = options.intrabarMode ?? "conservative";
-  const fvCache = options.fvCache;
-
-  interface SimPos {
-    symbol: string;
-    entryTime: number;
-    entryPrice: number;
-    tp1Price: number;
-    tp2Price: number;
-    slPrice: number;
-    st1Done: boolean;
-    st2Done: boolean;
-    netPnlPercent: number;
-    holdDeadline: number;
-  }
-
-  const activePositions: SimPos[] = [];
-  const closedTrades: TradeRecord[] = [];
-  const cooldownMap = new Map<string, number>();
-  const cooldownMs = (strategy.cooldownMinutes ?? 20) * MINUTE;
-
-  let currentBoard: Map<string, { rank: number; dayChange: number; high24h?: number; low24h?: number }> = new Map();
-
-  for (const nowTime of allTimesSorted) {
-    if (nowTime < timeRange.start) continue;
-    if (nowTime > timeRange.end) break;
-
-    if (framesMap.has(nowTime)) {
-      currentBoard = framesMap.get(nowTime)!;
-    }
-
-    // 1. 处理持仓退出 (D6: 保守撮合优先判 SL，极端价成交，保本止损对齐)
-    for (let pIdx = activePositions.length - 1; pIdx >= 0; pIdx--) {
-      const pos = activePositions[pIdx];
-      const candleList = candlesMap.get(pos.symbol);
-      const tMap = timeIndices.get(pos.symbol);
-      if (!candleList || !tMap) continue;
-      const curIdx = tMap.get(nowTime);
-      if (curIdx === undefined) continue;
-
-      const bar = candleList[curIdx];
-      const isLong = strategy.side === "LONG";
-
-      const hitSl = isLong ? bar.low <= pos.slPrice : bar.high >= pos.slPrice;
-      const hitTp1 = !pos.st1Done && (isLong ? bar.high >= pos.tp1Price : bar.low <= pos.tp1Price);
-      const hitTp2 = pos.st1Done && !pos.st2Done && (isLong ? bar.high >= pos.tp2Price : bar.low <= pos.tp2Price);
-
-      const doSl = () => {
-        // D6: 止损按极端价成交 (stopAtHigh / stopAtLow)
-        const exitPrice = isLong ? Math.min(pos.slPrice, bar.low) : Math.max(pos.slPrice, bar.high);
-        const ret = calcTradeReturn(strategy.side, pos.entryPrice, exitPrice);
-        const weight = pos.st1Done ? 0.5 : 1.0;
-        pos.netPnlPercent += ret.netPercent * weight;
-        closedTrades.push({
-          symbol: pos.symbol,
-          entryTime: pos.entryTime,
-          exitTime: nowTime,
-          entryPrice: pos.entryPrice,
-          exitPrice,
-          netPercent: pos.netPnlPercent,
-          isWin: pos.netPnlPercent > 0,
-          reason: "SL",
-          st1Done: pos.st1Done,
-        });
-        cooldownMap.set(pos.symbol, nowTime + cooldownMs);
-        activePositions.splice(pIdx, 1);
-      };
-
-      const doTp1 = () => {
-        const ret = calcTradeReturn(strategy.side, pos.entryPrice, pos.tp1Price);
-        pos.netPnlPercent += ret.netPercent * 0.5;
-        pos.st1Done = true;
-        // D6 & 3.2: 止损移动至入场保本价 (+-0.2% 覆盖手续费)
-        pos.slPrice = isLong ? pos.entryPrice * 0.998 : pos.entryPrice * 1.002;
-      };
-
-      const doTp2 = () => {
-        const ret = calcTradeReturn(strategy.side, pos.entryPrice, pos.tp2Price);
-        pos.netPnlPercent += ret.netPercent * 0.5;
-        pos.st2Done = true;
-        closedTrades.push({
-          symbol: pos.symbol,
-          entryTime: pos.entryTime,
-          exitTime: nowTime,
-          entryPrice: pos.entryPrice,
-          exitPrice: pos.tp2Price,
-          netPercent: pos.netPnlPercent,
-          isWin: pos.netPnlPercent > 0,
-          reason: "TP2",
-          st1Done: true,
-        });
-        cooldownMap.set(pos.symbol, nowTime + cooldownMs);
-        activePositions.splice(pIdx, 1);
-      };
-
-      if (intrabarMode === "conservative") {
-        // 保守模式：先判定 SL
-        if (hitSl) {
-          doSl();
-          continue;
-        }
-        if (hitTp1) doTp1();
-        if (hitTp2) {
-          doTp2();
-          continue;
-        }
-      } else {
-        // 乐观模式：先判定 TP
-        if (hitTp1) doTp1();
-        if (hitTp2) {
-          doTp2();
-          continue;
-        }
-        if (hitSl) {
-          doSl();
-          continue;
-        }
-      }
-
-      // 超时退出
-      if (nowTime >= pos.holdDeadline) {
-        const exitPrice = bar.close;
-        const ret = calcTradeReturn(strategy.side, pos.entryPrice, exitPrice);
-        const weight = pos.st1Done ? 0.5 : 1.0;
-        pos.netPnlPercent += ret.netPercent * weight;
-        closedTrades.push({
-          symbol: pos.symbol,
-          entryTime: pos.entryTime,
-          exitTime: nowTime,
-          entryPrice: pos.entryPrice,
-          exitPrice,
-          netPercent: pos.netPnlPercent,
-          isWin: pos.netPnlPercent > 0,
-          reason: pos.st1Done ? "TP1_TIMEOUT" : "TIMEOUT",
-          st1Done: pos.st1Done,
-        });
-        cooldownMap.set(pos.symbol, nowTime + cooldownMs);
-        activePositions.splice(pIdx, 1);
-        continue;
-      }
-    }
-
-    // 2. 检查开仓入场
-    for (const [sym, boardInfo] of currentBoard) {
-      // D7: 完整读取候选参数
-      const maxRank = strategy.topN ?? 10;
-      const minDayChange = strategy.minDayChange ?? 10;
-      if (boardInfo.rank > maxRank || boardInfo.dayChange < minDayChange) continue;
-
-      if (activePositions.some((p) => p.symbol === sym)) continue;
-      if ((cooldownMap.get(sym) ?? 0) > nowTime) continue;
-
-      const candleList = candlesMap.get(sym);
-      const tMap = timeIndices.get(sym);
-      if (!candleList || !tMap) continue;
-      const curIdx = tMap.get(nowTime);
-      if (curIdx === undefined || curIdx < 35 || curIdx >= candleList.length - 1) continue;
-
-      const targetIdx = curIdx - 1; // 上一根已收盘 K 线
-      const closedBar = candleList[targetIdx];
-
-      const ticker: Ticker24h = {
-        symbol: sym,
-        lastPrice: closedBar.close,
-        priceChangePercent: boardInfo.dayChange,
-        quoteVolume: 0,
-        highPrice: boardInfo.high24h ?? closedBar.high,
-        lowPrice: boardInfo.low24h ?? closedBar.low,
-      };
-
-      // P1: 使用统一特征向量与规则评估器 (带缓存加速)
-      let fv: FeatureVector | null | undefined;
-      const cacheKey = fvCache ? `${sym}:${closedBar.time}:${boardInfo.rank}` : null;
-      if (cacheKey && fvCache?.has(cacheKey)) {
-        fv = fvCache.get(cacheKey);
-      } else {
-        fv = computeFeatureVector(candleList, ticker, targetIdx, { rank: boardInfo.rank });
-        if (cacheKey && fvCache) {
-          fvCache.set(cacheKey, fv);
-        }
-      }
-      if (!fv) continue;
-
-      const evalRes = evaluateFeatureSpec(strategy.side, fv, strategy);
-      if (!evalRes.pass) continue;
-
-      // 达成触发：次根开盘价成交并叠加 1 档滑点
-      const nextBar = candleList[curIdx];
-      const isLong = strategy.side === "LONG";
-      const baseEntry = nextBar.open > 0 ? nextBar.open : closedBar.close;
-      const entryPrice = isLong ? baseEntry * 1.0002 : baseEntry * 0.9998;
-
-      const tp1Price = isLong
-        ? entryPrice * (1 + strategy.tp1Percent / 100)
-        : entryPrice * (1 - strategy.tp1Percent / 100);
-      const tp2Price = isLong
-        ? entryPrice * (1 + strategy.tp2Percent / 100)
-        : entryPrice * (1 - strategy.tp2Percent / 100);
-      const slPrice = isLong
-        ? entryPrice * (1 - strategy.stopLossPercent / 100)
-        : entryPrice * (1 + strategy.stopLossPercent / 100);
-
-      activePositions.push({
-        symbol: sym,
-        entryTime: nowTime,
-        entryPrice,
-        tp1Price,
-        tp2Price,
-        slPrice,
-        st1Done: false,
-        st2Done: false,
-        netPnlPercent: 0,
-        holdDeadline: nowTime + strategy.holdMinutes * MINUTE,
-      });
-    }
-  }
+  const result = replayStrategies(candlesMap, timeIndices, allTimesSorted, framesMap, [strategy], timeRange, options);
+  const closedTrades = result.trades;
 
   // D8 统计指标结算与修正
   const totalTrades = closedTrades.length;
@@ -546,214 +257,13 @@ export async function runPortfolioSimulation(
     leverage?: number;
   } = {}
 ) {
-  const maxTotalPositions = options.maxPositions ?? 5;
-  const marginRate = (options.marginPercent ?? 20) / 100;
-  const leverage = options.leverage ?? 10;
-
-  let balance = 100.0;
-  let peakEquity = 100.0;
-  let maxDrawdownUsdt = 0;
-  let maxDrawdownPct = 0;
-
-  interface PortfolioPosition {
-    strategyId: string;
-    symbol: string;
-    side: "LONG" | "SHORT";
-    entryTime: number;
-    entryPrice: number;
-    marginUsdt: number;
-    tp1Price: number;
-    tp2Price: number;
-    slPrice: number;
-    st1Done: boolean;
-    holdDeadline: number;
-  }
-
-  const activePositions: PortfolioPosition[] = [];
-  const closedPortfolioTrades: Array<{
-    strategyId: string;
-    symbol: string;
-    netPnlUsdt: number;
-    reason: string;
-  }> = [];
-
-  const cooldownMap = new Map<string, number>();
-
-  let currentBoard: Map<string, { rank: number; dayChange: number; high24h?: number; low24h?: number }> = new Map();
-
-  for (const nowTime of allTimesSorted) {
-    if (nowTime < timeRange.start) continue;
-    if (nowTime > timeRange.end) break;
-
-    if (framesMap.has(nowTime)) {
-      currentBoard = framesMap.get(nowTime)!;
-    }
-
-    // 1. 退出检查
-    for (let pIdx = activePositions.length - 1; pIdx >= 0; pIdx--) {
-      const pos = activePositions[pIdx];
-      const candleList = candlesMap.get(pos.symbol);
-      const tMap = timeIndices.get(pos.symbol);
-      if (!candleList || !tMap) continue;
-      const curIdx = tMap.get(nowTime);
-      if (curIdx === undefined) continue;
-
-      const bar = candleList[curIdx];
-      const isLong = pos.side === "LONG";
-
-      const hitSl = isLong ? bar.low <= pos.slPrice : bar.high >= pos.slPrice;
-      const hitTp1 = !pos.st1Done && (isLong ? bar.high >= pos.tp1Price : bar.low <= pos.tp1Price);
-      const hitTp2 = pos.st1Done && (isLong ? bar.high >= pos.tp2Price : bar.low <= pos.tp2Price);
-
-      if (hitSl) {
-        const exitPrice = isLong ? Math.min(pos.slPrice, bar.low) : Math.max(pos.slPrice, bar.high);
-        const ret = calcTradeReturn(pos.side, pos.entryPrice, exitPrice);
-        const notional = pos.marginUsdt * leverage;
-        const pnl = notional * (ret.netPercent / 100);
-        balance += pnl;
-        closedPortfolioTrades.push({ strategyId: pos.strategyId, symbol: pos.symbol, netPnlUsdt: pnl, reason: "SL" });
-        activePositions.splice(pIdx, 1);
-        continue;
-      }
-
-      if (hitTp1) {
-        const ret = calcTradeReturn(pos.side, pos.entryPrice, pos.tp1Price);
-        const halfNotional = (pos.marginUsdt * leverage) * 0.5;
-        const pnl = halfNotional * (ret.netPercent / 100);
-        balance += pnl;
-        pos.st1Done = true;
-        pos.slPrice = isLong ? pos.entryPrice * 0.998 : pos.entryPrice * 1.002;
-      }
-
-      if (hitTp2) {
-        const ret = calcTradeReturn(pos.side, pos.entryPrice, pos.tp2Price);
-        const halfNotional = (pos.marginUsdt * leverage) * 0.5;
-        const pnl = halfNotional * (ret.netPercent / 100);
-        balance += pnl;
-        closedPortfolioTrades.push({ strategyId: pos.strategyId, symbol: pos.symbol, netPnlUsdt: pnl, reason: "TP2" });
-        activePositions.splice(pIdx, 1);
-        continue;
-      }
-
-      if (nowTime >= pos.holdDeadline) {
-        const exitPrice = bar.close;
-        const ret = calcTradeReturn(pos.side, pos.entryPrice, exitPrice);
-        const weight = pos.st1Done ? 0.5 : 1.0;
-        const notional = (pos.marginUsdt * leverage) * weight;
-        const pnl = notional * (ret.netPercent / 100);
-        balance += pnl;
-        closedPortfolioTrades.push({ strategyId: pos.strategyId, symbol: pos.symbol, netPnlUsdt: pnl, reason: "TIMEOUT" });
-        activePositions.splice(pIdx, 1);
-        continue;
-      }
-    }
-
-    // 更新资产曲线与回撤
-    const equity = balance;
-    if (equity > peakEquity) peakEquity = equity;
-    const dd = peakEquity - equity;
-    const ddPct = peakEquity > 0 ? (dd / peakEquity) * 100 : 0;
-    if (dd > maxDrawdownUsdt) maxDrawdownUsdt = dd;
-    if (ddPct > maxDrawdownPct) maxDrawdownPct = ddPct;
-
-    // 2. 入场扫描 (并发与配额控制)
-    if (activePositions.length >= maxTotalPositions) continue;
-
-    for (const strat of strategies) {
-      if (activePositions.length >= maxTotalPositions) break;
-      if (activePositions.some((p) => p.strategyId === strat.id)) continue;
-
-      for (const [sym, boardInfo] of currentBoard) {
-        if (activePositions.length >= maxTotalPositions) break;
-        if (activePositions.some((p) => p.symbol === sym)) continue;
-        if ((cooldownMap.get(sym) ?? 0) > nowTime) continue;
-
-        const maxRank = strat.topN ?? 10;
-        const minDayChange = strat.minDayChange ?? 10;
-        if (boardInfo.rank > maxRank || boardInfo.dayChange < minDayChange) continue;
-
-        const candleList = candlesMap.get(sym);
-        const tMap = timeIndices.get(sym);
-        if (!candleList || !tMap) continue;
-        const curIdx = tMap.get(nowTime);
-        if (curIdx === undefined || curIdx < 35 || curIdx >= candleList.length - 1) continue;
-
-        const targetIdx = curIdx - 1;
-        const closedBar = candleList[targetIdx];
-
-        const ticker: Ticker24h = {
-          symbol: sym,
-          lastPrice: closedBar.close,
-          priceChangePercent: boardInfo.dayChange,
-          quoteVolume: 0,
-          highPrice: boardInfo.high24h ?? closedBar.high,
-          lowPrice: boardInfo.low24h ?? closedBar.low,
-        };
-
-        const fv = computeFeatureVector(candleList, ticker, targetIdx, { rank: boardInfo.rank });
-        if (!fv) continue;
-
-        const evalRes = evaluateFeatureSpec(strat.side, fv, strat);
-        if (!evalRes.pass) continue;
-
-        const nextBar = candleList[curIdx];
-        const isLong = strat.side === "LONG";
-        const baseEntry = nextBar.open > 0 ? nextBar.open : closedBar.close;
-        const entryPrice = isLong ? baseEntry * 1.0002 : baseEntry * 0.9998;
-
-        const marginUsdt = balance * marginRate;
-        if (marginUsdt < 5) continue;
-
-        const tp1Price = isLong
-          ? entryPrice * (1 + strat.tp1Percent / 100)
-          : entryPrice * (1 - strat.tp1Percent / 100);
-        const tp2Price = isLong
-          ? entryPrice * (1 + strat.tp2Percent / 100)
-          : entryPrice * (1 - strat.tp2Percent / 100);
-        const slPrice = isLong
-          ? entryPrice * (1 - strat.stopLossPercent / 100)
-          : entryPrice * (1 + strat.stopLossPercent / 100);
-
-        activePositions.push({
-          strategyId: strat.id,
-          symbol: sym,
-          side: strat.side,
-          entryTime: nowTime,
-          entryPrice,
-          marginUsdt,
-          tp1Price,
-          tp2Price,
-          slPrice,
-          st1Done: false,
-          holdDeadline: nowTime + strat.holdMinutes * MINUTE,
-        });
-        break; // 每次扫描单个策略至多入场一笔
-      }
-    }
-  }
-
-  const netPnlUsdt = balance - 100.0;
-  const roiPct = (netPnlUsdt / 100.0) * 100;
-  const wins = closedPortfolioTrades.filter((t) => t.netPnlUsdt > 0).length;
-  const winRate = closedPortfolioTrades.length > 0 ? (wins / closedPortfolioTrades.length) * 100 : 0;
-
-  return {
-    initialBalance: 100.0,
-    finalBalance: balance,
-    netPnlUsdt,
-    roiPct,
-    totalTrades: closedPortfolioTrades.length,
-    wins,
-    winRate,
-    maxDrawdownUsdt,
-    maxDrawdownPct,
-  };
+  return replayStrategies(candlesMap, timeIndices, allTimesSorted, framesMap, strategies, timeRange, options);
 }
 
 /**
  * D3: 构建逐分钟 24h 涨跌幅与榜单快照 (Minute-level rolling 24h rank & stats)
  * - 对拥有 1m 数据的币种，滚动 1440 根精准计算逐分钟 dayChange、high24h、low24h
- * - 对仅有 1h 数据的币种，按分钟在相邻小时帧之间线性插值 dayChange
+ * - 对仅有 1h 数据的币种，沿用当时已知的小时快照，禁止使用未来小时插值
  * - 每分钟对全市场币种按最新 dayChange 降序排序，产出精准 rank <= topN
  */
 export function buildMinuteFramesMap(
@@ -779,7 +289,7 @@ export function buildMinuteFramesMap(
     for (let i = 0; i < bars.length; i++) {
       const curBar = bars[i];
       const curTime = curBar.time;
-      const targetPastTime = curTime - DAY_MS;
+      const targetPastTime = curTime + MINUTE - DAY_MS;
 
       while (left < i && bars[left].time < targetPastTime) {
         left++;
@@ -807,7 +317,9 @@ export function buildMinuteFramesMap(
       const high24h = bars[maxDeque[0]].high;
       const low24h = bars[minDeque[0]].low;
 
-      minuteStats1m.set(`${sym}:${curTime}`, { dayChange, high24h, low24h });
+      if (curTime + MINUTE - bars[0].time >= DAY_MS) {
+        minuteStats1m.set(`${sym}:${curTime + MINUTE}`, { dayChange, high24h, low24h });
+      }
     }
   }
 
@@ -825,12 +337,7 @@ export function buildMinuteFramesMap(
       hIdx++;
     }
     const hPrevTime = hourlyTimes[hIdx] ?? 0;
-    const hNextTime = hourlyTimes[hIdx + 1] ?? hPrevTime + 3600000;
-    const hPrevFrame = hourlyTimeMap.get(hPrevTime);
-    const hNextFrame = hourlyTimeMap.get(hNextTime) ?? hPrevFrame;
-
-    const span = Math.max(1, hNextTime - hPrevTime);
-    const alpha = Math.max(0, Math.min(1, (nowTime - hPrevTime) / span));
+    const hPrevFrame = hPrevTime <= nowTime ? hourlyTimeMap.get(hPrevTime) : undefined;
 
     const symbolScores: Array<{
       symbol: string;
@@ -855,22 +362,9 @@ export function buildMinuteFramesMap(
     }
 
     if (hPrevFrame) {
-      const nextGainersMap = new Map<string, number>();
-      if (hNextFrame) {
-        for (const g of hNextFrame.boards.gainers) {
-          nextGainersMap.set(g.symbol, g.dayChange);
-        }
-      }
-
       for (const g of hPrevFrame.boards.gainers) {
         if (seenSymbols.has(g.symbol)) continue;
-        const prevDc = g.dayChange;
-        const nextDc = nextGainersMap.get(g.symbol) ?? prevDc;
-        const interpDc = prevDc + alpha * (nextDc - prevDc);
-        symbolScores.push({
-          symbol: g.symbol,
-          dayChange: interpDc,
-        });
+        symbolScores.push({ symbol: g.symbol, dayChange: g.dayChange });
         seenSymbols.add(g.symbol);
       }
     }
@@ -944,6 +438,7 @@ export function minePrecursorFeatureDistributions(
   framesMap: Map<number, Map<string, { rank: number; dayChange: number; high24h?: number; low24h?: number }>>,
   timeRange: { start: number; end: number },
   windowMinutes = 15,
+  ampDivisor = 10,
 ): PrecursorStatsResult {
   const longSamples: Array<{
     ma10Support: boolean;
@@ -990,114 +485,42 @@ export function minePrecursorFeatureDistributions(
       const curIdx = tMap.get(nowTime);
       if (curIdx === undefined || curIdx < windowMinutes + 35 || curIdx >= candleList.length - windowMinutes) continue;
 
-      const burstStartIdx = curIdx; // 时刻 T
-
-      // A. 检测后一段区间 [T, T + windowMinutes] 是否发生达标大幅冲高
-      const fwdBars = candleList.slice(burstStartIdx, burstStartIdx + windowMinutes + 1);
-      if (fwdBars.length >= 2) {
-        let fwdMinLow = Infinity;
-        let fwdMaxHigh = -Infinity;
-        for (const b of fwdBars) {
-          if (b.low < fwdMinLow) fwdMinLow = b.low;
-          if (b.high > fwdMaxHigh) fwdMaxHigh = b.high;
-        }
-        const forwardSurge = fwdMinLow > 0 ? ((fwdMaxHigh - fwdMinLow) / fwdMinLow) * 100 : 0;
-        const targetThreshold = boardInfo.dayChange / 10; // 达标振幅: >= 24h / 10
-
-        if (forwardSurge >= targetThreshold && forwardSurge >= 2.5) {
-          // 提取该达标冲高段【启动前一段区间 [T - windowMinutes, T - 1]】的客观特征统计
-          const preStartIdx = Math.max(0, burstStartIdx - windowMinutes);
-          const preEndIdx = burstStartIdx - 1;
-          const preBars = candleList.slice(preStartIdx, preEndIdx + 1);
-
-          if (preBars.length >= 3) {
-            const preCloses = preBars.map((b) => b.close);
-            const { hist: preHist } = computeMacd(preCloses);
-            let greenCount = 0;
-            let pMin = Infinity;
-            let pMax = -Infinity;
-            for (let k = 0; k < preBars.length; k++) {
-              if ((preHist[k] ?? 0) > 0) greenCount++;
-              if (preBars[k].low < pMin) pMin = preBars[k].low;
-              if (preBars[k].high > pMax) pMax = preBars[k].high;
-            }
-            const greenRatio = greenCount / preBars.length;
-            const preAmp = pMin > 0 ? ((pMax - pMin) / pMin) * 100 : 0;
-
-            const dummyTicker: Ticker24h = {
-              symbol: sym,
-              lastPrice: candleList[preEndIdx].close,
-              priceChangePercent: boardInfo.dayChange,
-              quoteVolume: 0,
-              highPrice: candleList[preEndIdx].high,
-              lowPrice: candleList[preEndIdx].low,
-            };
-            const fv = computeFeatureVector(candleList, dummyTicker, preEndIdx, { rank: boardInfo.rank });
-            if (fv) {
-              longSamples.push({
-                ma10Support: fv.ma[10]?.support ?? false,
-                ma20Support: fv.ma[20]?.support ?? false,
-                ma60Support: fv.ma[60]?.support ?? false,
-                bullStack: fv.stack === "bull_full" || fv.stack === "bull_short",
-                freshBull: fv.stack3Bars === "fresh_bull",
-                sustainedBull: fv.stack3Bars === "sustained_bull",
-                greenRatio,
-                goldenCross: fv.goldenCrossAgo <= 3,
-                preAmp,
-                forwardSurge,
-              });
-            }
-          }
-        }
+      const future = candleList.slice(curIdx, curIdx + windowMinutes);
+      if (future.length !== windowMinutes || future.at(-1)!.time + MINUTE > timeRange.end) continue;
+      const history = candleList.slice(curIdx - windowMinutes, curIdx);
+      const combined = [...history, ...future];
+      if (combined.some((bar, i) => i > 0 && bar.time - combined[i - 1].time !== MINUTE)) continue;
+      const start = future[0].open;
+      if (start <= 0) continue;
+      const forwardSurge = Math.max(0, (Math.max(...future.map(b => b.high)) / start - 1) * 100);
+      const forwardDrop = Math.max(0, (1 - Math.min(...future.map(b => b.low)) / start) * 100);
+      const threshold = Math.abs(boardInfo.dayChange) / ampDivisor;
+      const fv = computeFeatureVector(candleList, {
+        symbol: sym, lastPrice: candleList[curIdx - 1].close, priceChangePercent: boardInfo.dayChange,
+        quoteVolume: 0, highPrice: boardInfo.high24h, lowPrice: boardInfo.low24h,
+      }, curIdx - 1, { rank: boardInfo.rank });
+      if (!fv) continue;
+      const low = Math.min(...history.map(b => b.low));
+      const preAmp = low > 0 ? (Math.max(...history.map(b => b.high)) / low - 1) * 100 : 0;
+      const greenRatio = fv.greenRatio[windowMinutes] ?? fv.greenRatio[15] ?? 0;
+      if (forwardSurge >= threshold) {
+        longSamples.push({
+          ma10Support: fv.ma[10]?.support ?? false, ma20Support: fv.ma[20]?.support ?? false,
+          ma60Support: fv.ma[60]?.support ?? false,
+          bullStack: fv.stack === "bull_full" || fv.stack === "bull_short",
+          freshBull: fv.stack3Bars === "fresh_bull", sustainedBull: fv.stack3Bars === "sustained_bull",
+          greenRatio, goldenCross: fv.goldenCrossAgo <= 3, preAmp, forwardSurge,
+        });
       }
-
-      // B. 检测前一段区间 [T - windowMinutes, T] 是否刚刚发生达标大幅冲高 (用于做空前兆统计)
-      const pastBars = candleList.slice(Math.max(0, burstStartIdx - windowMinutes), burstStartIdx + 1);
-      let pLow = Infinity;
-      let pHigh = -Infinity;
-      for (const b of pastBars) {
-        if (b.low < pLow) pLow = b.low;
-        if (b.high > pHigh) pHigh = b.high;
-      }
-      const priorSurgeAmp = pLow > 0 ? ((pHigh - pLow) / pLow) * 100 : 0;
-      const targetThreshold = boardInfo.dayChange / 10;
-
-      // 后续是否发生深度回调 (Drop >= 2.0%)
-      const nextDropBars = candleList.slice(burstStartIdx, burstStartIdx + windowMinutes + 1);
-      let nMax = -Infinity;
-      let nMin = Infinity;
-      for (const b of nextDropBars) {
-        if (b.high > nMax) nMax = b.high;
-        if (b.low < nMin) nMin = b.low;
-      }
-      const forwardDrop = nMax > 0 ? ((nMax - nMin) / nMax) * 100 : 0;
-
-      if (priorSurgeAmp >= targetThreshold && forwardDrop >= 2.0) {
-        // 冲高力竭见顶时刻 (burstStartIdx) 的特征
-        const dummyTicker: Ticker24h = {
-          symbol: sym,
-          lastPrice: candleList[burstStartIdx].close,
-          priceChangePercent: boardInfo.dayChange,
-          quoteVolume: 0,
-          highPrice: candleList[burstStartIdx].high,
-          lowPrice: candleList[burstStartIdx].low,
-        };
-        const fv = computeFeatureVector(candleList, dummyTicker, burstStartIdx, { rank: boardInfo.rank });
-        if (fv) {
-          shortSamples.push({
-            ma60Resist: fv.ma[60]?.resist ?? false,
-            ma20Resist: fv.ma[20]?.resist ?? false,
-            ma10Breakdown: fv.ma[10]?.breakdown ?? false,
-            bearStack: fv.stack === "bear_full" || fv.stack === "bear_short",
-            freshBear: fv.stack3Bars === "fresh_bear",
-            sustainedBear: fv.stack3Bars === "sustained_bear",
-            histWeakening: fv.histSlope < 0 || fv.hist <= 0,
-            topDivergence: fv.topDivergence === true,
-            greenRatio: fv.greenRatio[windowMinutes] ?? fv.greenRatio[15] ?? 0,
-            priorSurgeAmp,
-            forwardDrop,
-          });
-        }
+      if (forwardDrop >= threshold) {
+        shortSamples.push({
+          ma60Resist: fv.ma[60]?.resist ?? false, ma20Resist: fv.ma[20]?.resist ?? false,
+          ma10Breakdown: fv.ma[10]?.breakdown ?? false,
+          bearStack: fv.stack === "bear_full" || fv.stack === "bear_short",
+          freshBear: fv.stack3Bars === "fresh_bear", sustainedBear: fv.stack3Bars === "sustained_bear",
+          histWeakening: fv.histSlope < 0 || fv.hist <= 0, topDivergence: fv.topDivergence === true,
+          greenRatio, priorSurgeAmp: fv.surge[windowMinutes] ?? preAmp, forwardDrop,
+        });
       }
     }
   }
@@ -1156,7 +579,15 @@ export function minePrecursorFeatureDistributions(
 export async function main() {
   const isQuick = process.argv.includes("--quick");
   const isOptimistic = process.argv.includes("--intrabar=optimistic");
-  const isPortfolioOnly = process.argv.includes("--portfolio");
+  const readPositive = (flag: string, fallback: number) => {
+    const index = process.argv.indexOf(flag);
+    const value = index < 0 ? fallback : Number(process.argv[index + 1]);
+    if (!Number.isFinite(value) || value <= 0) throw new Error(`${flag} 必须是正数`);
+    return value;
+  };
+  const precursorWindow = readPositive("--window", 15);
+  const precursorDivisor = readPositive("--divisor", 10);
+  if (![3, 5, 10, 15, 30, 60].includes(precursorWindow)) throw new Error("--window 支持 3/5/10/15/30/60 分钟");
 
   const outputArgIdx = process.argv.indexOf("--output");
   const outputPath =
@@ -1204,6 +635,8 @@ export async function main() {
     timeIndices.set(sym, tMap);
   }
   const allTimesSorted = Array.from(allTimeSet).sort((a, b) => a - b);
+  if (allTimesSorted.length === 0) throw new Error("没有可用于挖掘的 1m 行情数据");
+  maxTime += MINUTE;
 
   // 构建逐分钟 24h 涨跌幅与榜单快照 (D3: 滚动 1440 根与逐分钟全市场排名)
   console.log("正在构建逐分钟 24h 涨跌幅与榜单快照 (D3: 滚动 1440 根与逐分钟全市场排名)...");
@@ -1218,11 +651,12 @@ export async function main() {
   let holdoutRange: { start: number; end: number };
 
   if (isRecentVal) {
-    // 聚焦最新时段模式：70% 历史用于训练，最新近的 30% 时段作为验证集 (不使用久远时段验证)
+    // 聚焦最新时段模式：70% 历史用于训练，剩余 30% 平分为互不重叠的验证集与留出集 (不使用久远时段验证)
     const splitPoint = minTime + Math.floor(duration * 0.70);
     trainRange = { start: minTime, end: splitPoint };
-    valRange = { start: splitPoint, end: maxTime };
-    holdoutRange = { start: splitPoint + Math.floor((maxTime - splitPoint) * 0.5), end: maxTime };
+    const holdoutStart = splitPoint + Math.floor((maxTime - splitPoint) * 0.5);
+    valRange = { start: splitPoint, end: holdoutStart };
+    holdoutRange = { start: holdoutStart, end: maxTime };
   } else {
     // 标准三段式：60% 训练集, 20% 验证集, 20% 留出集
     const trainEnd = minTime + Math.floor(duration * 0.60);
@@ -1234,7 +668,7 @@ export async function main() {
 
   console.log(`\n📊 数据集时间序列切分 (${isRecentVal ? "聚焦最新时段验证模式 --val-recent" : "标准三段式切分"}):`);
   console.log(`  • 训练集 (${isRecentVal ? "70%" : "60%"}): ${new Date(trainRange.start).toISOString()} → ${new Date(trainRange.end).toISOString()}`);
-  console.log(`  • 验证集 (${isRecentVal ? "最新30%" : "20%"}): ${new Date(valRange.start).toISOString()} → ${new Date(valRange.end).toISOString()}`);
+  console.log(`  • 验证集 (${isRecentVal ? "中间15%" : "20%"}): ${new Date(valRange.start).toISOString()} → ${new Date(valRange.end).toISOString()}`);
   console.log(`  • 留出集 (${isRecentVal ? "最新15%" : "20%"}): ${new Date(holdoutRange.start).toISOString()} → ${new Date(holdoutRange.end).toISOString()}`);
 
   console.log("\n==================================================================");
@@ -1247,7 +681,8 @@ export async function main() {
     allTimesSorted,
     framesMap,
     trainRange,
-    15,
+    precursorWindow,
+    precursorDivisor,
   );
 
   console.log(`\n【多头起爆前兆特征统计】(挖掘样本量: ${precursorStats.totalSurgeEvents} 个达标冲高段)`);
@@ -1306,6 +741,7 @@ export async function main() {
               id: `LONG_W${window}_D${div}_${maReq}_${macdReq}_H${hold}`,
               name: `多头起爆: ${window}m蓄势(<24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + 持仓${hold}m`,
               side: "LONG",
+              leverage: 5,
               intervalWindow: window,
               ampDivisor: div,
               maRequirement: maReq,
@@ -1343,6 +779,7 @@ export async function main() {
               id: `SHORT_W${window}_D${div}_${maReq}_${macdReq}_H${hold}`,
               name: `空头摸顶: ${window}m冲高(>=24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + 持仓${hold}m`,
               side: "SHORT",
+              leverage: 10,
               intervalWindow: window,
               ampDivisor: div,
               maRequirement: maReq,
@@ -1477,7 +914,7 @@ export async function main() {
       valMetrics.wilsonLow >= 48 &&
       (valMetrics.pf >= 1.25 || !Number.isFinite(valMetrics.pf)) &&
       valMetrics.avgNet >= 0.15 &&
-      holdoutRes.metrics.totalNet >= -1.0;
+      holdoutRes.metrics.totalNet >= 0;
 
     comprehensiveResults.push({
       candidate: tq.candidate,
@@ -1604,7 +1041,7 @@ export async function main() {
 - **冲高段振幅中位数**: \`${precursorStats.shortPrecursors.priorSurgeAmpMedian.toFixed(2)}%\`
 
 ### 3. 量化因果推论
-- **空头策略逻辑**: 以【前一段大振幅冲高完成】(surgeRatio >= 1/divisor) 作为前置因果条件，在峰值出现衰竭信号（柱体衰竭 73.8%、均线受阻/破位）时入场做空捕捉回调段；
+- **空头策略逻辑**: 以【前一段大振幅冲高完成】(surgeRatio >= 1/divisor) 作为前置因果条件，在峰值出现衰竭信号（柱体衰竭、均线受阻/破位）时入场做空捕捉回调段；
 - **多头策略逻辑**: 以【前区间蓄势整理】(surgeRatio <= 1/divisor) 作为前置因果条件，在低波振幅中依托均线支撑（MA20/MA10 支撑）与健康 MACD（绿柱比例 > 50-70% / 金叉）起爆点入场，严防爆发段完成后追高。
 
 ---
@@ -1640,7 +1077,9 @@ ${shortRanked
 ## 五、组合模式并发表现 (Portfolio Mode)
 - **初始本金**: 100 USDT
 - **最终本金**: ${portfolioResult.finalBalance.toFixed(2)} USDT (净收益 +${portfolioResult.roiPct.toFixed(1)}%)
-- **总交易笔数**: ${portfolioResult.totalTrades} 笔 (胜率 ${portfolioResult.winRate.toFixed(1)}%)
+- **总交易笔数**: ${portfolioResult.totalTrades} 笔
+- **做多胜率**: ${portfolioResult.bySide.LONG.winRate.toFixed(1)}% (${portfolioResult.bySide.LONG.totalTrades} 笔)
+- **做空胜率**: ${portfolioResult.bySide.SHORT.winRate.toFixed(1)}% (${portfolioResult.bySide.SHORT.totalTrades} 笔)
 - **组合最大回撤**: ${portfolioResult.maxDrawdownPct.toFixed(1)}% (${portfolioResult.maxDrawdownUsdt.toFixed(2)} USDT)
 `;
 
@@ -1651,22 +1090,14 @@ ${shortRanked
   const bestShortRes = shortRanked[0];
   const bestLongRes = longRanked[0];
 
+  const shortMeetsThreshold = !!bestShortRes && (bestShortRes.meetsDeploymentThreshold ?? false);
+  const longMeetsThreshold = !!bestLongRes && (bestLongRes.meetsDeploymentThreshold ?? false);
+
   const strategyConfig: Partial<PaperStrategyConfig> = {
-    marginPercent: 20,
-    maxPositions: 5,
-    maxPositionsPerStrategy: 1,
-    enableStreak: true,
-    enableRebound: true,
-    enableDeepRebound: true,
-    enableHourlySuppression: true,
-    enableLongs: true,
-    enableWBottomDivergence: true,
-    enableKlineStatsShort: true,
-    enableKlineStatsLong: true,
-    klineStatsLeverage: 10,
-    streakLeverage: 10,
-    trendLeverage: 3,
-    longLeverage: 5,
+    marginPercent: 20, maxPositions: 5, maxPositionsPerStrategy: 1,
+    enableLongs: longMeetsThreshold,
+    enableKlineStatsShort: shortMeetsThreshold,
+    enableKlineStatsLong: longMeetsThreshold,
   };
 
   if (bestShortRes) {
@@ -1676,8 +1107,8 @@ ${shortRanked
       minDayChange: bs.minDayChange ?? 10,
       intervalWindow: bs.intervalWindow,
       ampDivisor: bs.ampDivisor,
-      maRequirement: bs.maRequirement,
-      macdRequirement: bs.macdRequirement,
+      maRequirement: bs.maRequirement as KlineStatsStrategyLiveConfig["maRequirement"],
+      macdRequirement: bs.macdRequirement as KlineStatsStrategyLiveConfig["macdRequirement"],
       holdMinutes: bs.holdMinutes,
       tp1Percent: bs.tp1Percent,
       tp2Percent: bs.tp2Percent,
@@ -1695,8 +1126,8 @@ ${shortRanked
       minDayChange: bl.minDayChange ?? 10,
       intervalWindow: bl.intervalWindow,
       ampDivisor: bl.ampDivisor,
-      maRequirement: bl.maRequirement,
-      macdRequirement: bl.macdRequirement,
+      maRequirement: bl.maRequirement as KlineStatsStrategyLiveConfig["maRequirement"],
+      macdRequirement: bl.macdRequirement as KlineStatsStrategyLiveConfig["macdRequirement"],
       holdMinutes: bl.holdMinutes,
       tp1Percent: bl.tp1Percent,
       tp2Percent: bl.tp2Percent,
@@ -1749,6 +1180,7 @@ ${shortRanked
         roiPct: portfolioResult.roiPct,
         trades: portfolioResult.totalTrades,
         winRate: portfolioResult.winRate,
+        bySide: portfolioResult.bySide,
         maxDrawdownPct: portfolioResult.maxDrawdownPct,
       },
     },
@@ -1776,5 +1208,5 @@ ${shortRanked
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch(console.error);
+  main().catch(error => { console.error(error); process.exitCode = 1; });
 }

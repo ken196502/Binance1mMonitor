@@ -1,12 +1,6 @@
-// Paper Trading Engine for Binance 1m Top-Gainers Core Strategy Suite (1 Long + 3 Shorts)
-// Implements the verified 1245 core strategies:
-// - 策略 1: 'w_bottom_divergence' (左侧3W底背离弹射做多): 3x 杠杆, 30m 动态退出
-// - 策略 2: 'rebound' (首次跌10%弱反弹做空): 3x 波段, 30m 动态退出
-// - 策略 4: 'streak' (新高顶背离闪击做空): 10x 闪击战, 15m 紧止损
-// - 策略 5: 'deep_rebound' (跌到20%+次级反弹做空): 3x 波段, 30m 动态退出
-
 import fs from "node:fs";
 import path from "node:path";
+import { validateStrategySpec } from "./strategy-spec.ts";
 import {
   consecutiveStreakAt,
   calculateSupportMaAt,
@@ -19,14 +13,8 @@ import {
   evaluateFeatureSpec,
   appendSignalSnapshot,
   FEATURE_VERSION,
-  type FeatureVector,
 } from "./features.ts";
-import { candlesToChartBars } from "./chart.ts";
-import {
-  analyzeMaAlignment,
-  analyzeOhlcComparison,
-  analyzeMacdStats,
-} from "./kline-stats.ts";
+import { breakevenPrice, calcTradeReturn, FIRST_CLOSE_FRACTION, DEFAULT_MAX_POSITIONS, DEFAULT_MAX_PER_STRATEGY, orderMargin, summarizeDirections } from "./trading-core.ts";
 import { sendTelegramMessage, telegramConfigured } from "./telegram.ts";
 import {
   UnifiedShortStrategyTracker,
@@ -36,7 +24,6 @@ import {
   type StreakStrategyLiveConfig,
   type DeepReboundLiveConfig,
   type HourlySuppressionLiveConfig,
-  type UnifiedLiveConfig,
 } from "./unified-short-strategy.ts";
 import {
   DUAL_SPEED_PEAK_REBOUND_CONFIG,
@@ -46,8 +33,6 @@ import {
   UnifiedLongStrategyTracker,
   W_BOTTOM_DIVERGENCE_DEFAULT_CONFIG,
   type WBottomDivergenceLiveConfig,
-  type UnifiedLongLiveConfig,
-  type UnifiedLongLiveSignal,
 } from "./unified-long-strategy.ts";
 import type {
   PaperAccount,
@@ -143,8 +128,8 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   marginUsdt: 20,          // 单笔保证金基准 20 USDT (100U 初本时对应 20%)
   marginRate: 0.20,        // 单笔保证金占当前总资产 20%
   marginPercent: 20,       // 20%
-  maxPositions: 5,         // 全局最大同时持仓数 5 笔 (每策略至多 1 笔)
-  maxPositionsPerStrategy: 1, // 单策略最大同时持仓数 1 笔 (确保各策略持仓至多 1 笔)
+  maxPositions: DEFAULT_MAX_POSITIONS,         // 全局最大同时持仓数 5 笔 (每策略至多 1 笔)
+  maxPositionsPerStrategy: DEFAULT_MAX_PER_STRATEGY, // 单策略最大同时持仓数 1 笔 (确保各策略持仓至多 1 笔)
   takerFeeBps: 5,          // 0.05%
   slippageBps: 2,          // 0.02%
   limitDivisor: 0,         // 默认 0 (直开市价模式)
@@ -157,8 +142,8 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   enableHourlySuppression: true, // 策略 6: 开启小时线压制做空 (最大 30m 持仓)
   enableLongs: true,       // 默认 true (开启涨幅榜做多)
   enableWBottomDivergence: true, // 策略 1: 开启左侧3W底背离弹射做多 (最大 30m 持仓)
-  enableKlineStatsShort: true,   // 策略 7: 开启量化K线统计特征做空 (45m 持仓，回测胜率 85%, PF 3.33)
-  enableKlineStatsLong: true,    // 策略 8: 开启量化K线统计特征做多 (30m 持仓，回测胜率 70.4%, PF 1.90)
+  enableKlineStatsShort: true,   // 策略 7: 开启量化K线统计特征做空 (45m 持仓)
+  enableKlineStatsLong: false,   // 策略 8: 默认关闭量化做多 (审计结论：线上净亏 -15.9U、样本外留出收益负值，未达部署门槛前严禁默认开启)
   storageFile: STATE_FILE,
   streakConfig: {
     ...STREAK_LIVE_DEFAULT_CONFIG,
@@ -348,12 +333,17 @@ export class PaperTradingEngine {
   private klineStatsCooldown = new Map<string, number>();
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
-    this.config = { ...PAPER_DEFAULT_CONFIG, ...config };
+    this.config = { ...PAPER_DEFAULT_CONFIG, ...config, firstCloseFraction: FIRST_CLOSE_FRACTION };
     if (config.marginUsdt !== undefined && config.marginRate === undefined && config.marginPercent === undefined) {
       const initBal = this.config.initialBalanceUsdt || 100;
       this.config.marginRate = config.marginUsdt / initBal;
       this.config.marginPercent = (config.marginUsdt / initBal) * 100;
     }
+    // Existing positions keep their size; new entries use the core risk ceilings.
+    this.config.marginRate = Math.min(0.2, Math.max(0, config.marginPercent !== undefined ? config.marginPercent / 100 : this.config.marginRate ?? 0.2));
+    this.config.marginPercent = this.config.marginRate * 100;
+    this.config.maxPositions = Math.min(5, Math.max(1, Math.floor(this.config.maxPositions ?? 5)));
+    this.config.maxPositionsPerStrategy = 1;
     if (config.leverage !== undefined) {
       if (config.streakLeverage === undefined) {
         this.config.streakLeverage = config.leverage;
@@ -400,40 +390,8 @@ export class PaperTradingEngine {
       totalPnlUsdt: 0,
       accountRoiPercent: 0,
     };
-    this.stats = {
-      initialBalanceUsdt: this.config.initialBalanceUsdt,
-      balanceUsdt: this.config.initialBalanceUsdt,
-      equityUsdt: this.config.initialBalanceUsdt,
-      accountRoiPercent: 0,
-      totalTrades: 0,
-      winningTrades: 0,
-      losingTrades: 0,
-      breakevenTrades: 0,
-      winRate: 0,
-      totalNetPnlUsdt: 0,
-      grossGainsUsdt: 0,
-      grossLossesUsdt: 0,
-      profitFactor: 1.0,
-      avgTradePnlUsdt: 0,
-      realizedRewardRisk: null,
-    };
-    this.stats24h = {
-      initialBalanceUsdt: this.config.initialBalanceUsdt,
-      balanceUsdt: this.config.initialBalanceUsdt,
-      equityUsdt: this.config.initialBalanceUsdt,
-      accountRoiPercent: 0,
-      totalTrades: 0,
-      winningTrades: 0,
-      losingTrades: 0,
-      breakevenTrades: 0,
-      winRate: 0,
-      totalNetPnlUsdt: 0,
-      grossGainsUsdt: 0,
-      grossLossesUsdt: 0,
-      profitFactor: 1.0,
-      avgTradePnlUsdt: 0,
-      realizedRewardRisk: null,
-    };
+    this.stats = this.computeStatsForPositions([]);
+    this.stats24h = this.computeStatsForPositions([]);
     this.loadState();
   }
 
@@ -485,10 +443,20 @@ export class PaperTradingEngine {
 
   public calculateOrderMargin(): number {
     const rate = this.config.marginRate ?? (this.config.marginPercent != null ? this.config.marginPercent / 100 : 0.20);
-    const totalAssets = Math.max(0, this.account.equityUsdt > 0 ? this.account.equityUsdt : this.account.balanceUsdt);
-    const computed = totalAssets * rate;
-    const margin = computed > 0 ? computed : (this.config.marginUsdt ?? 20);
-    return Math.max(5, Math.round(margin * 100) / 100);
+    return orderMargin(this.account.equityUsdt, rate);
+  }
+
+  private assertCapacity(symbol: string, signalType: PaperSignalType): void {
+    if (this.activePositions.has(symbol) || this.pendingOrders.has(symbol)) throw new Error(`${symbol} 已有持仓或挂单`);
+    if (this.activePositions.size + this.pendingOrders.size >= (this.config.maxPositions ?? 5)) throw new Error("已达全局持仓上限");
+    if (this.countPositionsByStrategy(signalType) >= (this.config.maxPositionsPerStrategy ?? 1)) throw new Error("已达单策略持仓上限");
+  }
+
+  private assertOrderMargin(margin: number): void {
+    const available = Math.min(this.account.balanceUsdt, this.account.equityUsdt) - this.calculateUsedMargin();
+    if (!Number.isFinite(margin) || margin <= 0 || margin > this.calculateOrderMargin() + 1e-8 || margin > available + 1e-8) {
+      throw new Error("保证金超过单笔仓位比例或可用资金");
+    }
   }
 
   /**
@@ -501,6 +469,7 @@ export class PaperTradingEngine {
     rank: number,
     candles: Candle[],
     now = Date.now(),
+    ticker?: Ticker24h,
   ): {
     side: "SHORT" | "LONG";
     type: PaperSignalType;
@@ -520,9 +489,9 @@ export class PaperTradingEngine {
     const cdUntil = this.klineStatsCooldown.get(symbol) ?? 0;
     if (cdUntil > now) return null;
 
-    // 2. K 线数量充足性检查 (至少需 35 根)
+    // 2. K 线数量充足性检查 (至少需 60 根已收盘 K 线)
     const targetIdx = candles.length - 2;
-    if (targetIdx < 35) return null;
+    if (targetIdx < 59) return null;
 
     const targetCandle = candles[targetIdx];
     if (!targetCandle || targetCandle.close <= 0) return null;
@@ -533,8 +502,8 @@ export class PaperTradingEngine {
       lastPrice: targetCandle.close,
       priceChangePercent: dayChangePercent,
       quoteVolume: 0,
-      highPrice: targetCandle.high,
-      lowPrice: targetCandle.low,
+      highPrice: ticker?.highPrice,
+      lowPrice: ticker?.lowPrice,
     };
 
     const fv = computeFeatureVector(candles, dummyTicker, targetIdx, { rank });
@@ -542,9 +511,8 @@ export class PaperTradingEngine {
 
     const evalResult = evaluateFeatureSpec(side, fv, config);
 
-    // 2.6 信号快照落盘 (包括触发以及差点触发的记录)
-    const isClose = !evalResult.pass && !evalResult.failedReason?.includes("rank");
-    if (evalResult.pass || isClose) {
+    // 只归档真正触发的信号，避免每轮为所有不匹配标的重复写入完整特征。
+    if (evalResult.pass) {
       void appendSignalSnapshot({
         time: targetCandle.time,
         symbol,
@@ -589,6 +557,30 @@ export class PaperTradingEngine {
   }
 
   public updateConfig(updates: Partial<PaperStrategyConfig>): PaperStrategyConfig {
+    if (!updates || typeof updates !== "object" || Array.isArray(updates)) throw new Error("配置必须是对象");
+    for (const [key, max] of [["marginRate", 0.2], ["marginPercent", 20], ["maxPositions", 5], ["maxPositionsPerStrategy", 1]] as const) {
+      const value = updates[key];
+      if (value !== undefined && (!Number.isFinite(value) || value <= 0 || value > max || (key.startsWith("maxPositions") && !Number.isInteger(value)))) {
+        throw new Error(`${key} 必须大于 0 且不超过 ${max}`);
+      }
+    }
+    if (updates.marginUsdt !== undefined && updates.marginRate === undefined && updates.marginPercent === undefined && updates.marginUsdt > this.account.equityUsdt * 0.2) {
+      throw new Error("单笔保证金不能超过当前净权益的 20%");
+    }
+    // Validate the entire patch before mutating any live settings.
+    for (const key of ["klineStatsShortConfig", "klineStatsLongConfig"] as const) {
+      if (updates[key] !== undefined) {
+        validateStrategySpec(updates[key]);
+        validateStrategySpec({ ...this.config[key], ...updates[key] });
+      }
+    }
+    if (updates.firstCloseFraction !== undefined && updates.firstCloseFraction !== FIRST_CLOSE_FRACTION) {
+      throw new Error("二阶段平仓固定每阶段 50%");
+    }
+    for (const key of ["takerFeeBps", "slippageBps"] as const) {
+      const value = updates[key];
+      if (value !== undefined && (!Number.isFinite(value) || value < 0 || value >= 1000)) throw new Error(`${key} 必须在 0 ~ 1000 bps 之间`);
+    }
     if (typeof updates.leverage === "number" && Number.isFinite(updates.leverage) && updates.leverage >= 1 && updates.leverage <= 100) {
       this.config.leverage = updates.leverage;
     }
@@ -719,7 +711,7 @@ export class PaperTradingEngine {
       this.config.exitM = updates.exitM;
     }
     if (typeof updates.firstCloseFraction === "number" && Number.isFinite(updates.firstCloseFraction) && updates.firstCloseFraction > 0 && updates.firstCloseFraction <= 1) {
-      this.config.firstCloseFraction = updates.firstCloseFraction;
+      this.config.firstCloseFraction = FIRST_CLOSE_FRACTION;
     }
     if (typeof updates.takerFeeBps === "number" && Number.isFinite(updates.takerFeeBps)) {
       this.config.takerFeeBps = updates.takerFeeBps;
@@ -814,6 +806,7 @@ export class PaperTradingEngine {
     now?: number;
   }): PaperPendingOrder {
     const { symbol, dayChangePercent, rank, basePrice, signal, exitParams } = params;
+    this.assertCapacity(symbol, params.signalType ?? "streak");
     const now = params.now ?? Date.now();
     const divisor = this.config.limitDivisor > 0 ? this.config.limitDivisor : 100;
     const limitOffsetPercent = dayChangePercent / divisor;
@@ -829,6 +822,7 @@ export class PaperTradingEngine {
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
     const leverage = exitParams?.leverage ?? this.getLeverageForSignal(signalType);
     const marginUsdt = params.marginUsdt ?? this.calculateOrderMargin();
+    this.assertOrderMargin(marginUsdt);
     const notionalUsdt = marginUsdt * leverage;
 
     const order: PaperPendingOrder = {
@@ -863,6 +857,7 @@ export class PaperTradingEngine {
     };
 
     this.pendingOrders.set(symbol, order);
+    this.recalculateStats();
     this.scheduleSave();
 
     console.log(
@@ -886,6 +881,7 @@ export class PaperTradingEngine {
     this.pendingOrders.delete(symbol);
     this.unifiedTracker.closePosition(symbol);
     this.longTracker.closePosition(symbol);
+    this.recalculateStats();
     this.scheduleSave();
     console.log(`[paper-trading] ⏱️ 撤销限价挂单 [${order.signalLabel ?? (order.side === "LONG" ? "做多" : "做空")}] ${symbol} @ ${order.limitPrice.toFixed(4)}: ${reason}`);
   }
@@ -951,8 +947,8 @@ export class PaperTradingEngine {
       // 2. 动态单笔保证金计算与可用资金检查 (资产量 20%)
       const marginUsdt = this.calculateOrderMargin();
       const usedMargin = this.calculateUsedMargin();
-      const availableMargin = this.account.balanceUsdt - usedMargin;
-      if (availableMargin < marginUsdt) {
+      const availableMargin = Math.min(this.account.balanceUsdt, this.account.equityUsdt) - usedMargin;
+      if (marginUsdt <= 0 || availableMargin < marginUsdt) {
         console.warn(
           `[paper-trading] 可用保证金不足 (${availableMargin.toFixed(2)} USDT < ${marginUsdt.toFixed(2)} USDT)，跳过扫描 ${ticker.symbol}`,
         );
@@ -1081,6 +1077,7 @@ export class PaperTradingEngine {
           rank,
           symCache.candles1m,
           now,
+          ticker,
         );
         if (klineShortSignal) {
           const signalType = klineShortSignal.type;
@@ -1105,6 +1102,7 @@ export class PaperTradingEngine {
           rank,
           symCache.candles1m,
           now,
+          ticker,
         );
         if (klineLongSignal) {
           const signalType = klineLongSignal.type;
@@ -1189,7 +1187,8 @@ export class PaperTradingEngine {
     } = params;
 
     const signalType = params.signalType ?? "streak";
-    const isLong = (params.side ?? (signalType === "w_bottom_divergence" ? "LONG" : "SHORT")) === "LONG";
+    const isLong = (params.side ?? (signalType === "w_bottom_divergence" || signalType === "kline_stats_long" ? "LONG" : "SHORT")) === "LONG";
+    this.assertCapacity(symbol, signalType);
     const side: "SHORT" | "LONG" = isLong ? "LONG" : "SHORT";
 
     const exitX = exitParams?.exitX ?? this.config.exitX;
@@ -1229,6 +1228,7 @@ export class PaperTradingEngine {
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
     const leverage = params.leverage ?? exitParams?.leverage ?? this.getLeverageForSignal(signalType);
     const marginUsdt = params.marginUsdt ?? this.calculateOrderMargin();
+    this.assertOrderMargin(marginUsdt);
     const notionalUsdt = marginUsdt * leverage;
 
     const position: PaperPosition = {
@@ -1340,6 +1340,12 @@ export class PaperTradingEngine {
       }
       // 价格向上冲高打到做空限价挂单：撮合成交！
       else if (pending.side === "SHORT" && tick.price >= pending.limitPrice) {
+        const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
+        const availableAfterRelease = Math.min(this.account.balanceUsdt, this.account.equityUsdt) - this.calculateUsedMargin() + pending.marginUsdt;
+        if (this.activePositions.size >= (this.config.maxPositions ?? 5) || this.countPositionsByStrategy(pending.signalType) > maxPerStrategy || pending.marginUsdt > this.calculateOrderMargin() + 1e-8 || pending.marginUsdt > availableAfterRelease + 1e-8) {
+          this.cancelPendingOrder(pending.symbol, "配置更新后持仓额度不足");
+          return;
+        }
         this.pendingOrders.delete(pending.symbol);
         console.log(
           `[paper-trading] 🎯 挂单成交！[${pending.signalLabel ?? "做空"}] ${pending.symbol} 触及做空限价 @ ${pending.limitPrice.toFixed(4)} (成交Tick: ${tick.price.toFixed(4)})`,
@@ -1421,7 +1427,7 @@ export class PaperTradingEngine {
       }
 
       // 3. Check Stage 2 if remainingFraction == 0.5
-      if (position.remainingFraction === 0.5) {
+      if (position.remainingFraction > 0 && position.remainingFraction < 1) {
         if (price >= position.tp2Price) {
           this.closeStage(position, 2, position.tp2Price, time, "target");
           return;
@@ -1461,7 +1467,7 @@ export class PaperTradingEngine {
       }
 
       // 3. Check Stage 2 if remainingFraction == 0.5
-      if (position.remainingFraction === 0.5) {
+      if (position.remainingFraction > 0 && position.remainingFraction < 1) {
         if (price <= position.tp2Price) {
           this.closeStage(position, 2, position.tp2Price, time, "target");
           return;
@@ -1531,26 +1537,15 @@ export class PaperTradingEngine {
     skipNotify = false,
   ): PaperExit {
     const safeExitTime = Math.max(exitTime, pos.entryTime);
-    const fraction = this.config.firstCloseFraction;
+    const fraction = stage === 1 ? FIRST_CLOSE_FRACTION : pos.remainingFraction;
     const stageNotional = pos.notionalUsdt * fraction;
 
-    const isLong = pos.side === "LONG";
-    const grossPercent = isLong
-      ? ((exitPrice - pos.entryPrice) / pos.entryPrice) * 100
-      : ((pos.entryPrice - exitPrice) / pos.entryPrice) * 100;
-    const grossPnlUsdt = stageNotional * (grossPercent / 100);
-
-    const entryFeeUsdt = stageNotional * (this.config.takerFeeBps / 10000);
-    const exitNotional = stageNotional * (exitPrice / pos.entryPrice);
-    const exitFeeUsdt = exitNotional * (this.config.takerFeeBps / 10000);
-    const feeUsdt = entryFeeUsdt + exitFeeUsdt;
-
-    const slippageUsdt =
-      stageNotional * (this.config.slippageBps / 10000) +
-      exitNotional * (this.config.slippageBps / 10000);
-
-    const netPnlUsdt = grossPnlUsdt - feeUsdt - slippageUsdt;
-    const netPercent = (netPnlUsdt / stageNotional) * 100;
+    const ret = calcTradeReturn(pos.side, pos.entryPrice, exitPrice, this.config);
+    const grossPnlUsdt = stageNotional * ret.grossPercent / 100;
+    const feeUsdt = stageNotional * ret.feePercent / 100;
+    const slippageUsdt = stageNotional * ret.slippagePercent / 100;
+    const netPnlUsdt = stageNotional * ret.netPercent / 100;
+    const netPercent = ret.netPercent;
 
     const exit: PaperExit = {
       stage,
@@ -1574,13 +1569,8 @@ export class PaperTradingEngine {
 
       // 阶段一止盈达成后，若开启保本机制，将剩余仓位止损移动至入场保本价 (覆盖手续费)
       if (reason === "target" && pos.moveSlToEntryAfterTp1 !== false) {
-        if (isLong) {
-          pos.sl2Price = pos.entryPrice * 0.998;
-          pos.sl2Percent = 0.2;
-        } else {
-          pos.sl2Price = pos.entryPrice * 1.002;
-          pos.sl2Percent = 0.2;
-        }
+        pos.sl2Price = breakevenPrice(pos.side, pos.entryPrice, this.config);
+        pos.sl2Percent = Math.abs(pos.sl2Price / pos.entryPrice - 1) * 100;
         pos.isBreakevenArmed = true;
         console.log(
           `[paper-trading] 🛡️ ${pos.symbol} 阶段一止盈达成，剩余仓位止损已锁定保本价 @ ${formatPrice(pos.sl2Price)}`,
@@ -1662,7 +1652,7 @@ export class PaperTradingEngine {
     console.log(
       `[paper-trading] 🏆 ${pos.symbol} [${label}] 订单结清 (${pos.finalReason}) | ` +
       `整单净盈亏: ${pos.totalNetPnlUsdt >= 0 ? "+" : ""}${pos.totalNetPnlUsdt.toFixed(2)} USDT (ROE: ${pos.roePercent >= 0 ? "+" : ""}${pos.roePercent.toFixed(1)}%) | ` +
-      `胜率: ${this.stats.winRate.toFixed(1)}% | 账户最新余额: ${this.account.balanceUsdt.toFixed(2)} USDT`,
+      `做多胜率: ${this.stats.bySide.LONG.winRate.toFixed(1)}% / 做空胜率: ${this.stats.bySide.SHORT.winRate.toFixed(1)}% | 账户最新余额: ${this.account.balanceUsdt.toFixed(2)} USDT`,
     );
   }
 
@@ -1672,6 +1662,7 @@ export class PaperTradingEngine {
   }
 
   public getStats24h(): PaperTradingStats {
+    this.stats24h = this.computeStatsForPositions(this.getClosedPositions24h());
     return { ...this.stats24h };
   }
 
@@ -1713,7 +1704,7 @@ export class PaperTradingEngine {
 
     let totalUnrealized = 0;
     for (const p of this.activePositions.values()) {
-      totalUnrealized += p.unrealizedNetPnlUsdt;
+      totalUnrealized += p.totalNetPnlUsdt;
     }
     const equity = this.account ? this.account.balanceUsdt + totalUnrealized : this.config.initialBalanceUsdt;
     const totalPnl = equity - this.config.initialBalanceUsdt;
@@ -1727,6 +1718,7 @@ export class PaperTradingEngine {
       balanceUsdt: this.account?.balanceUsdt ?? this.config.initialBalanceUsdt,
       equityUsdt: equity,
       accountRoiPercent,
+      bySide: summarizeDirections(positions),
       totalTrades,
       winningTrades,
       losingTrades,
@@ -1751,12 +1743,12 @@ export class PaperTradingEngine {
     // 3. 账户净值与可用保证金计算
     let totalUnrealized = 0;
     for (const p of this.activePositions.values()) {
-      totalUnrealized += p.unrealizedNetPnlUsdt;
+      totalUnrealized += p.totalNetPnlUsdt;
     }
     const usedMargin = Array.from(this.activePositions.values()).reduce((sum, p) => sum + p.marginUsdt, 0);
     const pendingMargin = Array.from(this.pendingOrders.values()).reduce((sum, o) => sum + o.marginUsdt, 0);
-    const availableMargin = Math.max(0, this.account.balanceUsdt - usedMargin - pendingMargin);
     const equity = this.account.balanceUsdt + totalUnrealized;
+    const availableMargin = Math.max(0, Math.min(this.account.balanceUsdt, equity) - usedMargin - pendingMargin);
     const totalPnl = equity - this.account.initialBalanceUsdt;
     const accountRoiPercent =
       this.account.initialBalanceUsdt > 0
@@ -1767,7 +1759,7 @@ export class PaperTradingEngine {
       initialBalanceUsdt: this.config.initialBalanceUsdt,
       balanceUsdt: this.account.balanceUsdt,
       equityUsdt: equity,
-      usedMarginUsdt: usedMargin,
+      usedMarginUsdt: usedMargin + pendingMargin,
       availableMarginUsdt: availableMargin,
       totalPnlUsdt: totalPnl,
       accountRoiPercent,
@@ -1921,7 +1913,7 @@ export class PaperTradingEngine {
       `• <b>成交明细</b>: 开 <code>${formatPrice(pos.entryPrice)}</code> → 平均 <code>${formatPrice(avgExitPrice)}</code>\n` +
       `• <b>整单净盈亏</b>: <b>${pnlSign}${pos.totalNetPnlUsdt.toFixed(2)} USDT (ROE: ${pnlSign}${pos.roePercent.toFixed(1)}%)</b>\n` +
       `• <b>模拟账户总览</b>: 余额 <b>${this.account.balanceUsdt.toFixed(2)} USDT</b> (净值 <b>${this.account.equityUsdt.toFixed(2)} USDT</b>, 累计回报 <b>${totSign}${this.account.accountRoiPercent.toFixed(2)}%</b>)\n` +
-      `• <b>累计模拟战绩</b>: 共 ${this.stats.totalTrades} 笔 | 胜率 <b>${this.stats.winRate.toFixed(1)}%</b> | PF <b>${Number.isFinite(this.stats.profitFactor) ? this.stats.profitFactor.toFixed(2) : "∞"}</b>`;
+      `• <b>累计模拟战绩</b>: 共 ${this.stats.totalTrades} 笔 | 做多 <b>${this.stats.bySide.LONG.winRate.toFixed(1)}%</b> (${this.stats.bySide.LONG.totalTrades}笔) / 做空 <b>${this.stats.bySide.SHORT.winRate.toFixed(1)}%</b> (${this.stats.bySide.SHORT.totalTrades}笔) | PF <b>${Number.isFinite(this.stats.profitFactor) ? this.stats.profitFactor.toFixed(2) : "∞"}</b>`;
     await this.sendTg(msg, `订单结清 ${pos.symbol}`);
   }
 
@@ -1953,7 +1945,9 @@ export class PaperTradingEngine {
           storageFile: undefined,
         },
       };
-      fs.writeFileSync(this.config.storageFile, JSON.stringify(data, null, 2), "utf8");
+      const temporaryFile = `${this.config.storageFile}.tmp`;
+      fs.writeFileSync(temporaryFile, JSON.stringify(data, null, 2), "utf8");
+      fs.renameSync(temporaryFile, this.config.storageFile);
     } catch (e) {
       console.warn(`[paper-trading] 保存状态文件失败:`, (e as any)?.message ?? e);
     }
@@ -2036,7 +2030,10 @@ export class PaperTradingEngine {
         }
         this.recalculateStats();
         if ((data as any).configOverrides) {
-          this.updateConfig((data as any).configOverrides);
+          const saved = (data as any).configOverrides as Partial<PaperStrategyConfig>;
+          const rate = Math.min(0.2, saved.marginPercent != null ? saved.marginPercent / 100 : saved.marginRate ?? 0.2);
+          this.updateConfig({ ...saved, marginRate: rate, marginPercent: rate * 100,
+            maxPositions: Math.min(5, saved.maxPositions ?? 5), maxPositionsPerStrategy: 1, firstCloseFraction: FIRST_CLOSE_FRACTION });
         }
         console.log(
           `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
@@ -2048,6 +2045,8 @@ export class PaperTradingEngine {
   }
 
   public reset(): void {
+    if (this.saveTimeout) clearTimeout(this.saveTimeout);
+    this.saveTimeout = null;
     this.pendingOrders.clear();
     this.activePositions.clear();
     this.closedPositions = [];
@@ -2087,46 +2086,16 @@ export class PaperTradingEngine {
       totalPnlUsdt: 0,
       accountRoiPercent: 0,
     };
-    this.stats = {
-      initialBalanceUsdt: this.config.initialBalanceUsdt,
-      balanceUsdt: this.config.initialBalanceUsdt,
-      equityUsdt: this.config.initialBalanceUsdt,
-      accountRoiPercent: 0,
-      totalTrades: 0,
-      winningTrades: 0,
-      losingTrades: 0,
-      breakevenTrades: 0,
-      winRate: 0,
-      totalNetPnlUsdt: 0,
-      grossGainsUsdt: 0,
-      grossLossesUsdt: 0,
-      profitFactor: 1.0,
-      avgTradePnlUsdt: 0,
-      realizedRewardRisk: null,
-    };
-    this.stats24h = {
-      initialBalanceUsdt: this.config.initialBalanceUsdt,
-      balanceUsdt: this.config.initialBalanceUsdt,
-      equityUsdt: this.config.initialBalanceUsdt,
-      accountRoiPercent: 0,
-      totalTrades: 0,
-      winningTrades: 0,
-      losingTrades: 0,
-      breakevenTrades: 0,
-      winRate: 0,
-      totalNetPnlUsdt: 0,
-      grossGainsUsdt: 0,
-      grossLossesUsdt: 0,
-      profitFactor: 1.0,
-      avgTradePnlUsdt: 0,
-      realizedRewardRisk: null,
-    };
+    this.stats = this.computeStatsForPositions([]);
+    this.stats24h = this.computeStatsForPositions([]);
     this.saveState();
     console.log(`[paper-trading] 🔄 模拟交易账户、活跃持仓、挂单与历史明细已全部重置为初始状态 (100 USDT)`);
   }
 
   public getSummary(): PaperTradingSummary {
+    this.getStats24h();
     return {
+      bySide: this.stats.bySide,
       account: this.account,
       pendingOrders: Array.from(this.pendingOrders.values()),
       pendingCount: this.pendingOrders.size,
@@ -2176,6 +2145,7 @@ export class PaperTradingEngine {
   }
 
   public getState(): PaperTradingState & { config: PaperStrategyConfig; summary: PaperTradingSummary } {
+    this.getStats24h();
     return {
       account: this.account,
       pendingOrders: Array.from(this.pendingOrders.values()),
@@ -2190,4 +2160,4 @@ export class PaperTradingEngine {
   }
 }
 
-export const paperTrading = new PaperTradingEngine();
+export const paperTrading = new PaperTradingEngine(process.env.NODE_TEST_CONTEXT ? { storageFile: null } : {});

@@ -444,15 +444,12 @@ export function detectIntervalSignals(
     ? dayChangePercent
     : null;
 
-  // 若无外部 24h 涨幅传入，则从 bars 整体首尾估算
-  const effectiveDayChange = dc !== null
-    ? dc
-    : bars[0].open > 0
-    ? ((bars[bars.length - 1].close - bars[0].open) / bars[0].open) * 100
-    : 0;
-
+  // Missing 24h data cannot be inferred from a shorter chart window.
+  const effectiveDayChange = dc ?? 0;
+  const dayMagnitude = Math.abs(effectiveDayChange);
   const minDayChange = options.minDayChange ?? 0;
-  if (effectiveDayChange < minDayChange) return [];
+  if (dayMagnitude < minDayChange) return [];
+  if (options.ampDivisor != null && (!Number.isFinite(options.ampDivisor) || options.ampDivisor <= 0)) return [];
 
   const windowMinutes = Math.max(1, options.windowMinutes ?? 15);
   const mode = options.mode ?? "both";
@@ -566,7 +563,7 @@ export function detectIntervalSignals(
 
     // 计算该段振幅 / 24h 涨幅比例
     const ratioToDayChange =
-      effectiveDayChange > 0 ? seg.amp / effectiveDayChange : 0;
+      dayMagnitude > 0 ? seg.amp / dayMagnitude : 0;
     const divisor = ratioToDayChange > 0 ? 1 / ratioToDayChange : 0;
 
     // 若调用方传入了硬性阈值过滤 (兼容旧逻辑)，则校验
@@ -586,7 +583,7 @@ export function detectIntervalSignals(
 
     // 【核心因果特性】：提取该达标振幅段“启动前一段区间”的特征统计 (起爆前兆特征)
     const burstStartIdx = seg.startIdx; // 冲高/回撤实际爆发启动点
-    const preEndIdx = Math.max(0, burstStartIdx - 1);
+    const preEndIdx = burstStartIdx - 1;
     const preStartIdx = Math.max(0, burstStartIdx - windowMinutes);
     const preBars = bars.slice(preStartIdx, preEndIdx + 1);
 
@@ -608,7 +605,7 @@ export function detectIntervalSignals(
     const preOhlc = analyzeOhlcComparison(bars, preEndIdx);
     const preMacd = analyzeMacdStats(bars, preEndIdx);
 
-    const precursor: PrecursorFeatures = {
+    const precursor: PrecursorFeatures | undefined = preBars.length ? {
       windowMinutes,
       startTime: preBars[0]?.time ?? bars[preStartIdx].time,
       endTime: preBars[preBars.length - 1]?.time ?? bars[preEndIdx].time,
@@ -621,7 +618,7 @@ export function detectIntervalSignals(
       ohlc: preOhlc,
       macd: preMacd,
       preAmpPercent,
-    };
+    } : undefined;
 
     // 当时均线排列、OHLC 对比与 MACD 状态 (在段终点处取值)
     const maAlignment = analyzeMaAlignment(bars, seg.endIdx);

@@ -3,12 +3,13 @@ import { mkdir, appendFile } from "node:fs/promises";
 import type { Candle } from "./macd.ts";
 import { computeMacd, ema, aggregate1mTo5m, aggregate1mTo15m } from "./macd.ts";
 import type { Ticker24h } from "./binance.ts";
+import { INTERVAL_WINDOWS } from "./strategy-spec.ts";
 
-export const FEATURE_VERSION = "2.0.0";
+export const FEATURE_VERSION = "2.1.0";
 
-export const FEATURE_SURGE_WINDOWS = [3, 5, 10, 15, 30, 60] as const;
+export const FEATURE_SURGE_WINDOWS = INTERVAL_WINDOWS;
 export const FEATURE_MA_PERIODS = [5, 10, 20, 30, 60] as const;
-export const FEATURE_GREEN_WINDOWS = [10, 15, 20, 30] as const;
+export const FEATURE_GREEN_WINDOWS = [3, 5, 10, 15, 20, 30, 60] as const;
 
 export type MaAlignmentStack =
   | "bull_full"
@@ -227,8 +228,15 @@ export function computeFeatureVector(
 
   // 统一回溯 500 根进行截取，确保回测和实盘使用完全相同长度的历史窗口
   const WARMUP_LIMIT = 500;
-  const windowStart = Math.max(0, targetIdx - WARMUP_LIMIT + 1);
+  let windowStart = Math.max(0, targetIdx - WARMUP_LIMIT + 1);
+  for (let i = targetIdx; i > windowStart; i--) {
+    if (candles[i].time - candles[i - 1].time !== 60_000) {
+      windowStart = i;
+      break;
+    }
+  }
   const subCandles = candles.slice(windowStart, targetIdx + 1);
+  if (subCandles.length < 60) return null;
   const curSubIdx = subCandles.length - 1;
 
   const bar = subCandles[curSubIdx];
@@ -603,6 +611,9 @@ export function evaluateFeatureSpec(
   // 2. 冲高 / 振幅比例过滤 (因果前驱分流)
   const w = spec.intervalWindow ?? 5;
   const divisor = spec.ampDivisor ?? 8;
+  if (!(FEATURE_SURGE_WINDOWS as readonly number[]).includes(w) || !Number.isFinite(divisor) || divisor <= 0) {
+    return { pass: false, failedReason: "invalid intervalWindow or ampDivisor" };
+  }
   const requiredRatio = 1 / divisor;
 
   if (side === "SHORT") {
@@ -614,7 +625,7 @@ export function evaluateFeatureSpec(
   } else {
     // 多头逻辑：前置因果必须满足【启动前蓄势整理】(避免追高已经冲刺过热的标的)，依托均线支撑与MACD健康起爆
     const currentRatio = fv.surgeRatio[w] ?? 0;
-    const maxRatio = Math.max(0.25, 1.5 / divisor);
+    const maxRatio = requiredRatio;
     if (currentRatio > maxRatio) {
       return { pass: false, failedReason: `precursor surgeRatio[${w}] ${currentRatio.toFixed(3)} > ${maxRatio.toFixed(3)} (already pumped)` };
     }
@@ -676,7 +687,7 @@ export function evaluateFeatureSpec(
         maPass = Math.abs(fv.ma[30]?.biasPct ?? 0) / Math.max(1, fv.dayChange) >= 0.2;
         break;
       default:
-        maPass = true;
+        maPass = false;
     }
     if (!maPass) {
       return { pass: false, failedReason: `maRequirement ${spec.maRequirement} not met` };
@@ -730,7 +741,7 @@ export function evaluateFeatureSpec(
             : fv.tf5m.macdHistSlope > 0 || fv.tf5m.macdHist > 0;
         break;
       default:
-        macdPass = true;
+        macdPass = false;
     }
     if (!macdPass) {
       return { pass: false, failedReason: `macdRequirement ${spec.macdRequirement} not met` };

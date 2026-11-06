@@ -1,6 +1,8 @@
+import { KlineStrategySettings } from "./KlineStrategySettings";
 import { useState, useEffect } from "react";
 import type {
   PaperTradingSummary,
+  KlineStatsStrategyLiveConfig,
   PaperPosition,
   PaperPendingOrder,
   PaperExitReason,
@@ -119,7 +121,6 @@ export function PaperTradingPanel({
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [streakLevInput, setStreakLevInput] = useState<number>(10);
   const [trendLevInput, setTrendLevInput] = useState<number>(3);
-  const [klineStatsLevInput, setKlineStatsLevInput] = useState<number>(10);
   const [longLevInput, setLongLevInput] = useState<number>(3);
   const [marginPercentInput, setMarginPercentInput] = useState<number>(20);
   const [maxPositionsInput, setMaxPositionsInput] = useState<number>(5);
@@ -134,6 +135,8 @@ export function PaperTradingPanel({
   const [enableWBottomDivergenceInput, setEnableWBottomDivergenceInput] = useState<boolean>(true);
   const [enableKlineStatsShortInput, setEnableKlineStatsShortInput] = useState<boolean>(true);
   const [enableKlineStatsLongInput, setEnableKlineStatsLongInput] = useState<boolean>(true);
+  const [shortSpec, setShortSpec] = useState<Partial<KlineStatsStrategyLiveConfig>>({});
+  const [longSpec, setLongSpec] = useState<Partial<KlineStatsStrategyLiveConfig>>({});
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
   // 自主同步与高频轮询 /api/paper-trading，彻底摆脱主状态依赖与轮询迟滞
@@ -146,6 +149,7 @@ export function PaperTradingPanel({
         setLiveSummary(data.summary);
       } else if (data.account && data.stats) {
         setLiveSummary({
+          bySide: data.stats.bySide,
           account: data.account,
           pendingOrders: data.pendingOrders ?? [],
           pendingCount: data.pendingOrders?.length ?? 0,
@@ -174,7 +178,7 @@ export function PaperTradingPanel({
         });
       }
       if (Array.isArray(data.closedPositions)) {
-        setHistoryList(data.closedPositions.slice().reverse());
+        setHistoryList(data.closedPositions.slice().sort((a: PaperPosition, b: PaperPosition) => (b.closedAt ?? b.entryTime) - (a.closedAt ?? a.entryTime)));
       }
     } catch {
       // 忽略偶发网络波动
@@ -211,10 +215,11 @@ export function PaperTradingPanel({
   const summary = liveSummary ?? propSummary;
 
   useEffect(() => {
-    if (summary?.config) {
+    if (summary?.config && !showConfigModal) {
+      setShortSpec(summary.config.klineStatsShortConfig ?? {});
+      setLongSpec(summary.config.klineStatsLongConfig ?? {});
       setStreakLevInput(summary.config.streakLeverage ?? 10);
       setTrendLevInput(summary.config.trendLeverage ?? summary.config.leverage ?? 3);
-      setKlineStatsLevInput(summary.config.klineStatsLeverage ?? 10);
       setLongLevInput(summary.config.longLeverage ?? 3);
       setMarginPercentInput(summary.config.marginPercent ?? 20);
       setMaxPositionsInput(summary.config.maxPositions ?? 5);
@@ -230,7 +235,7 @@ export function PaperTradingPanel({
       setEnableKlineStatsShortInput(summary.config.enableKlineStatsShort ?? true);
       setEnableKlineStatsLongInput(summary.config.enableKlineStatsLong ?? true);
     }
-  }, [summary?.config]);
+  }, [summary?.config, showConfigModal]);
 
   const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -240,9 +245,10 @@ export function PaperTradingPanel({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          klineStatsShortConfig: shortSpec,
+          klineStatsLongConfig: longSpec,
           streakLeverage: Number(streakLevInput),
           trendLeverage: Number(trendLevInput),
-          klineStatsLeverage: Number(klineStatsLevInput),
           longLeverage: Number(longLevInput),
           leverage: Number(trendLevInput),
           marginRate: Number(marginPercentInput) / 100,
@@ -279,28 +285,7 @@ export function PaperTradingPanel({
   const handleResetOptimal = () => {
     setStreakLevInput(10);
     setTrendLevInput(3);
-    setKlineStatsLevInput(10);
     setLongLevInput(3);
-    setMarginPercentInput(20);
-    setMaxPositionsInput(5);
-    setMaxPerStrategyInput(1);
-    setLimitDivisorInput(0);
-    setAmpDivisorInput(8);
-    setEnableStreakInput(true);
-    setEnableReboundInput(true);
-    setEnableDeepReboundInput(true);
-    setEnableHourlySuppressionInput(true);
-    setEnableLongsInput(true);
-    setEnableWBottomDivergenceInput(true);
-    setEnableKlineStatsShortInput(true);
-    setEnableKlineStatsLongInput(true);
-  };
-
-  const handleApplyMinedPreset = () => {
-    setKlineStatsLevInput(10);
-    setLongLevInput(5);
-    setStreakLevInput(10);
-    setTrendLevInput(3);
     setMarginPercentInput(20);
     setMaxPositionsInput(5);
     setMaxPerStrategyInput(1);
@@ -352,7 +337,7 @@ export function PaperTradingPanel({
       const res = await fetch("/api/paper-trading");
       const data = await res.json();
       if (Array.isArray(data.closedPositions)) {
-        setHistoryList(data.closedPositions.slice().reverse());
+        setHistoryList(data.closedPositions.slice().sort((a: PaperPosition, b: PaperPosition) => (b.closedAt ?? b.entryTime) - (a.closedAt ?? a.entryTime)));
       }
     } catch (e) {
       console.warn("加载模拟交易历史记录失败:", e);
@@ -378,7 +363,7 @@ export function PaperTradingPanel({
   const config = summary?.config;
   const streakLev = config?.streakLeverage ?? 10;
   const trendLev = config?.trendLeverage ?? (config?.leverage ?? 3);
-  const klineStatsLev = config?.klineStatsLeverage ?? 10;
+  const klineStatsLev = config?.klineStatsShortConfig?.leverage ?? config?.klineStatsLeverage ?? 10;
   const longLev = config?.longLeverage ?? 3;
   const marginPercent = config?.marginPercent ?? 20;
   const marginUsdt = config?.marginUsdt ?? (activePositions[0]?.marginUsdt ?? 20);
@@ -395,8 +380,8 @@ export function PaperTradingPanel({
             <span className="badge-leverage" title={`新高闪击 ${streakLev}x · 量化特征 ${klineStatsLev}x · 做多 ${longLev}x · 顺势波段 ${trendLev}x · 动态仓位 ${marginPercent}% (当前约 ${marginUsdt}U) · 最大 ${maxPositions} 仓 (每策略 ${maxPerStrategy})`}>
               杠杆 (闪击{streakLev}x / 量化{klineStatsLev}x / 多{longLev}x / 波段{trendLev}x) · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions}
             </span>
-            <span className="badge-strategy" title="7大核心策略：新高顶背离 · 首次跌10% · 跌到20%+ · 小时线压制 · 左侧3W底背离 · 量化特征做空 · 量化特征做多">
-              7大核心策略 · 首次跌10% · 新高顶背离 · 跌到20%+ · 小时线压制 · 3W底背离 · 量化做空 · 量化做多
+            <span className="badge-strategy" title="可独立配置的策略：新高顶背离 · 首次跌10% · 跌到20%+ · 小时线压制 · 左侧3W底背离 · 量化特征做空 · 量化特征做多">
+              量化形态挖掘 · 多空二阶段交易
             </span>
           </h2>
           <div className="paper-stats-chips">
@@ -415,6 +400,15 @@ export function PaperTradingPanel({
               成交: <b>{summary?.totalTrades ?? 0}</b> 笔
               <span className="sub-counts"> (胜 {summary?.winningTrades ?? 0} / 负 {summary?.losingTrades ?? 0})</span>
             </span>
+            {(["LONG", "SHORT"] as const).map(side => {
+              const total = summary?.bySide?.[side];
+              const recent = summary?.stats24h?.bySide?.[side];
+              const format = (stats: typeof total) => stats?.totalTrades ? `${stats.winRate.toFixed(1)}% (${stats.winningTrades}/${stats.totalTrades})` : "— (0笔)";
+              return <span className="chip" key={side} title="按整笔交易扣除手续费和滑点后的净盈亏统计；未完全平仓不计入">
+                {side === "LONG" ? "做多" : "做空"}胜率: <b>{format(total)}</b>
+                <small> · 24h {format(recent)}</small>
+              </span>;
+            })}
             {summary?.stats24h && summary.stats24h.totalTrades > 0 && (
               <span className="chip" style={{ background: "rgba(52, 152, 219, 0.12)", borderColor: "rgba(52, 152, 219, 0.3)" }} title="过去 24 小时已结清订单战绩">
                 24h平仓: <b>{summary.stats24h.totalTrades}</b> 笔
@@ -883,18 +877,7 @@ export function PaperTradingPanel({
                     />
                   </div>
                   <div className="config-form-group" style={{ margin: 0 }}>
-                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>量化做空杠杆 (Kline Stats)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="50"
-                      value={klineStatsLevInput}
-                      onChange={(e) => setKlineStatsLevInput(Number(e.target.value))}
-                      required
-                    />
-                  </div>
-                  <div className="config-form-group" style={{ margin: 0 }}>
-                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>做多专属杠杆 (Longs)</label>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>3W 底背离做多杠杆</label>
                     <input
                       type="number"
                       min="1"
@@ -927,8 +910,8 @@ export function PaperTradingPanel({
                     <input
                       type="number"
                       min="5"
-                      max="100"
-                      step="5"
+                      max="20"
+                      step="1"
                       value={marginPercentInput}
                       onChange={(e) => setMarginPercentInput(Number(e.target.value))}
                       required
@@ -939,7 +922,7 @@ export function PaperTradingPanel({
                     <input
                       type="number"
                       min="1"
-                      max="20"
+                      max="5"
                       value={maxPositionsInput}
                       onChange={(e) => setMaxPositionsInput(Number(e.target.value))}
                       required
@@ -950,14 +933,14 @@ export function PaperTradingPanel({
                     <input
                       type="number"
                       min="1"
-                      max="10"
+                      max="1"
                       value={maxPerStrategyInput}
                       onChange={(e) => setMaxPerStrategyInput(Number(e.target.value))}
                       required
                     />
                   </div>
                   <div className="config-form-group" style={{ margin: 0 }}>
-                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>冲高分母 (24h/N)</label>
+                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>新高背离分母 (24h/N)</label>
                     <input
                       type="number"
                       min="1"
@@ -982,6 +965,8 @@ export function PaperTradingPanel({
                 </div>
               </div>
 
+              <KlineStrategySettings title="量化做空形态与二阶段退出" value={shortSpec} onChange={setShortSpec} />
+              <KlineStrategySettings title="量化做多形态与二阶段退出" value={longSpec} onChange={setLongSpec} />
               {/* 3. 策略开关 */}
               <div style={{ marginBottom: "16px", padding: "10px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
                 <div style={{ fontSize: "12px", fontWeight: "bold", color: "var(--text)", marginBottom: "8px" }}>🚦 策略独立运行开关</div>
@@ -1060,16 +1045,7 @@ export function PaperTradingPanel({
                   onClick={handleResetOptimal}
                   title="恢复默认推荐设置"
                 >
-                  恢复默认
-                </button>
-                <button
-                  type="button"
-                  className="btn-preset-reset"
-                  style={{ color: "#4d9dff", borderColor: "rgba(77, 157, 255, 0.4)" }}
-                  onClick={handleApplyMinedPreset}
-                  title="载入 Top 1 量化挖掘策略 (10x空 / 5x多 / 20%仓位)"
-                >
-                  🚀 载入 Top 1 挖掘参数
+                  恢复基础配置
                 </button>
                 <button
                   type="submit"

@@ -1397,3 +1397,7 @@ tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
   .chart-symbol { max-width: 110px; font-size: 11px; }
   .chart-meta { width: 100%; margin-left: 0; }
 }
+.kline-strategy-settings { margin: 14px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+.kline-strategy-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.kline-strategy-fields label { display: grid; gap: 4px; min-width: 0; }
+.kline-strategy-fields input, .kline-strategy-fields select { width: 100%; box-sizing: border-box; padding: 7px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }

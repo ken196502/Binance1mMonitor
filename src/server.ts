@@ -64,8 +64,8 @@ export function getNextMinuteDelay(now = Date.now(), offsetMs = ALIGN_OFFSET_MS)
   return Math.max(50, target - now);
 }
 const KLINE_LIMIT = Number(process.env.KLINE_LIMIT ?? 100);
-const KLINE_INIT_LIMIT = Number(process.env.KLINE_INIT_LIMIT ?? 500); // 冷启动拉取 500 根 (用于 15m MA20, MA60, 30 根绿柱与 MACD 预热)
-const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? 500); // 滚动存储 500 根 1m K 线
+const KLINE_INIT_LIMIT = Number(process.env.KLINE_INIT_LIMIT ?? 501); // 冷启动拉取 500 根已收盘 + 1 根形成中 K 线 (用于 15m MA20, MA60, 30 根绿柱与 MACD 预热)
+const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? 501); // 滚动存储 500 根已收盘 + 1 根形成中 K 线
 // "High position" = current DEA/DIFF is at/near the highest value in the window.
 const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
 const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in bars
@@ -881,6 +881,11 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(reqUrl, `http://${req.headers.host ?? "localhost"}`);
 
   if (u.pathname === "/api/paper-trading/reset") {
+    if (req.method !== "POST") {
+      res.writeHead(405, { "Content-Type": "application/json", Allow: "POST" });
+      res.end(JSON.stringify({ error: "请使用 POST 重置模拟账户" }));
+      return;
+    }
     paperTrading.reset();
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",

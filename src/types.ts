@@ -1,3 +1,4 @@
+import type { MA_REQUIREMENTS, MACD_REQUIREMENTS } from "./strategy-spec.ts";
 // Shared type definitions for both the Node backend (server.ts) and the React
 // frontend (web/). This module is type-only — no runtime side effects — so it is
 // safe to import from the browser bundle. Keeps the Status/Row contract in one
@@ -105,22 +106,8 @@ export interface KlineStatsStrategyLiveConfig {
   minDayChange?: number;       // 24h 涨幅门槛 (默认 10%)
   intervalWindow: number;      // 冲高/回溯窗口 (如 5m, 10m, 15m)
   ampDivisor: number;          // 冲高涨幅 >= 24h 涨幅 / ampDivisor (如 8, 10, 12)
-  maRequirement:               // 均线条件
-    | "MA10_SUPPORT"
-    | "MA20_SUPPORT"
-    | "MA60_SUPPORT"
-    | "MA_BULLISH_STACK"
-    | "MA60_RESIST"
-    | "MA20_RESIST"
-    | "MA10_BREAKDOWN"
-    | "NONE";
-  macdRequirement:             // MACD 条件
-    | "GREEN_RATIO_15_70"
-    | "GREEN_RATIO_30_70"
-    | "GREEN_RATIO_30_80"
-    | "GREEN_STREAK_3"
-    | "HIST_WEAKENING"
-    | "NONE";
+  maRequirement: typeof MA_REQUIREMENTS[number];
+  macdRequirement: typeof MACD_REQUIREMENTS[number];
   holdMinutes: number;         // 持仓分钟数 (如 15m, 30m, 45m)
   tp1Percent: number;          // TP1 止盈 % (如 3.0%)
   tp2Percent: number;          // TP2 止盈 % (如 7.0%)
@@ -240,7 +227,17 @@ export interface PaperAccount {
   accountRoiPercent: number;  // 账户总回报率%
 }
 
+export interface PaperDirectionStats {
+  totalTrades: number;
+  winningTrades: number;
+  losingTrades: number;
+  breakevenTrades: number;
+  winRate: number;
+  totalNetPnlUsdt: number;
+}
+
 export interface PaperTradingStats {
+  bySide: Record<"LONG" | "SHORT", PaperDirectionStats>;
   initialBalanceUsdt: number;
   balanceUsdt: number;
   equityUsdt: number;
@@ -305,6 +302,7 @@ export interface PaperTradingSummaryConfig {
 }
 
 export interface PaperTradingSummary {
+  bySide?: Record<"LONG" | "SHORT", PaperDirectionStats>;
   account: PaperAccount;
   pendingOrders: PaperPendingOrder[];
   pendingCount: number;

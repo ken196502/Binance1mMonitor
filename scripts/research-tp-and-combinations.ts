@@ -3,6 +3,7 @@ import { loadDataset } from '../research/data.ts';
 import { buildFrames } from '../research/backtest.ts';
 import type { MinuteDataset } from '../research/gainers-types.ts';
 import { MINUTE } from '../research/gainers-types.ts';
+import { breakevenPrice } from '../src/trading-core.ts';
 import { loadAllMinutes, extractAllSignals, type RawSignal } from './research-low-leverage-long-hold.ts';
 
 interface ComboConfig {
@@ -123,9 +124,9 @@ function runComboSimulation(
         stage1Closed = true;
         tp1Hits++;
 
-        // 若开启保本，移动剩余仓位止损至入场价 (微加手续费缓冲)
+        // 若开启保本，移动剩余仓位止损至入场价 (覆盖双边费用与滑点)
         if (cfg.moveSlToEntryAfterTp1) {
-          currentStop = entry * 1.002;
+          currentStop = breakevenPrice('SHORT', entry, { takerFeeBps: 5, slippageBps: 2 });
         }
 
         // 若同一根 K 线也打到了 TP2

@@ -62,19 +62,19 @@ test("PaperTradingEngine: differential dual-speed leverage (10x streak vs 3x tre
   const updatedCfg = engine.updateConfig({
     streakLeverage: 8,
     trendLeverage: 2,
-    marginUsdt: 25,
+    marginUsdt: 15,
   });
 
   assert.equal(updatedCfg.streakLeverage, 8);
   assert.equal(updatedCfg.trendLeverage, 2);
-  assert.equal(updatedCfg.marginUsdt, 25);
+  assert.equal(updatedCfg.marginUsdt, 15);
   assert.equal(engine.getLeverageForSignal("streak"), 8);
   assert.equal(engine.getLeverageForSignal("rebound"), 2);
 
   const summary = engine.getSummary();
   assert.equal(summary.config?.streakLeverage, 8);
   assert.equal(summary.config?.trendLeverage, 2);
-  assert.equal(summary.config?.marginUsdt, 25);
+  assert.equal(summary.config?.marginUsdt, 15);
 });
 
 test("PAPER_DEFAULT_CONFIG: has zero dependency on process.env for strategy & trading params", () => {
@@ -86,7 +86,7 @@ test("PAPER_DEFAULT_CONFIG: has zero dependency on process.env for strategy & tr
   assert.equal(PAPER_DEFAULT_CONFIG.limitDivisor, 0);
   assert.equal(PAPER_DEFAULT_CONFIG.stopAtHigh, true);
   assert.equal(PAPER_DEFAULT_CONFIG.enableKlineStatsShort, true);
-  assert.equal(PAPER_DEFAULT_CONFIG.enableKlineStatsLong, true);
+  assert.equal(PAPER_DEFAULT_CONFIG.enableKlineStatsLong, false);
 });
 
 test("PaperTradingEngine: updateConfig updates klineStats strategy parameters and persists state", (t) => {
@@ -254,13 +254,13 @@ test("deploy-strategy: deployConfig and fetchCurrentConfig work seamlessly over 
     const balancedRes = await deployConfig(PRESET_CONFIGS.balanced, { port: testPort });
     assert.equal(balancedRes.ok, true);
     assert.equal(balancedRes.config?.enableKlineStatsShort, true);
-    assert.equal(balancedRes.config?.enableKlineStatsLong, true);
+    assert.equal(balancedRes.config?.enableKlineStatsLong, false);
     assert.equal(balancedRes.config?.klineStatsLongConfig?.maRequirement, "MA20_SUPPORT");
 
     // 4. Deploy using full remote URL string (e.g. http://<remote-ip>:<port>)
-    const urlRes = await deployConfig({ marginPercent: 28 }, { url: `http://127.0.0.1:${testPort}` });
+    const urlRes = await deployConfig({ marginPercent: 18 }, { url: `http://127.0.0.1:${testPort}` });
     assert.equal(urlRes.ok, true);
-    assert.equal(urlRes.config?.marginPercent, 28);
+    assert.equal(urlRes.config?.marginPercent, 18);
   } finally {
     server.close();
   }
