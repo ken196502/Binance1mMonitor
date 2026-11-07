@@ -387,26 +387,68 @@ export function PaperTradingPanel({
               量化形态挖掘 · 多空二阶段交易
             </span>
           </h2>
-          {summary?.factorMining && <div className="paper-factor-status" aria-live="polite">
-            <strong>{config?.factorMining?.enabled ? (summary.factorMining.running ? "正在挖掘新因子" : "持续挖掘已启用") : "因子自动更新已关闭"}</strong>
-            {config?.factorMining?.enabled && <>
-              <span>每 {config.factorMining.refreshMinutes} 分钟更新 · 有效期 {config.factorMining.validForMinutes / 60} 小时 · 持仓期间持续运行</span>
-              {(["LONG", "SHORT"] as const).map(side => {
-                const status = summary.factorMining!.sides[side];
-                const active = status.active;
-                const enabled = side === "LONG" ? config.enableLongs && config.enableKlineStatsLong : config.enableKlineStatsShort;
-                const allowed = summary.factorMining!.entryAllowed[side];
-                return <span key={side}>
-                  {side === "LONG" ? "量化做多" : "量化做空"}：{!enabled ? "策略已关闭" : allowed ? "验证通过，可开仓" : "暂停新开仓"}
-                  {active && <> · 留出胜率 {active.holdout.winRate.toFixed(1)}% / {active.holdout.trades} 笔 · 到期 {new Date(active.expiresAt).toLocaleString("zh-CN")}</>}
-                  {!active && enabled && <> · {status.reason}</>}
-                </span>;
-              })}
-              {summary.factorMining.nextRunAt && <span>下轮：{new Date(summary.factorMining.nextRunAt).toLocaleString("zh-CN")}</span>}
-              {summary.factorMining.lastError && <span>最近一轮：{summary.factorMining.lastError}</span>}
-            </>}
-          </div>}
           <div className="paper-stats-chips">
+            {summary?.factorMining && (() => {
+              const fm = summary.factorMining;
+              const isEnabled = config?.factorMining?.enabled;
+              let label = "已关闭";
+              let color = "var(--text-muted, #888)";
+              if (isEnabled) {
+                if (fm.running) {
+                  label = "计算中...";
+                  color = "#3498db";
+                } else {
+                  const shortAct = fm.sides.SHORT.active;
+                  const longAct = fm.sides.LONG.active;
+                  if (shortAct && longAct) {
+                    label = `多空生效 (空${shortAct.holdout.winRate.toFixed(0)}%/多${longAct.holdout.winRate.toFixed(0)}%)`;
+                    color = "#2ecc71";
+                  } else if (shortAct) {
+                    label = `空头生效 (胜率${shortAct.holdout.winRate.toFixed(0)}%)`;
+                    color = "#2ecc71";
+                  } else if (longAct) {
+                    label = `多头生效 (胜率${longAct.holdout.winRate.toFixed(0)}%)`;
+                    color = "#2ecc71";
+                  } else {
+                    label = "待样本积累";
+                    color = "#f39c12";
+                  }
+                }
+              }
+
+              const tooltipLines: string[] = [
+                `持续因子挖掘: ${isEnabled ? "已启用" : "已关闭"}`
+              ];
+              if (isEnabled) {
+                if (config?.factorMining) {
+                  tooltipLines.push(`调度周期: 每 ${config.factorMining.refreshMinutes} 分钟更新 · 因子有效期 ${config.factorMining.validForMinutes / 60} 小时`);
+                }
+                (["SHORT", "LONG"] as const).forEach(side => {
+                  const s = fm.sides[side];
+                  const sideEnabled = side === "LONG" ? (config.enableLongs && config.enableKlineStatsLong) : config.enableKlineStatsShort;
+                  const sideName = side === "LONG" ? "量化做多" : "量化做空";
+                  if (!sideEnabled) {
+                    tooltipLines.push(`${sideName}: 策略已关闭`);
+                  } else if (s.active) {
+                    tooltipLines.push(`${sideName}: 验证通过 (留出胜率 ${s.active.holdout.winRate.toFixed(1)}% / ${s.active.holdout.trades}笔 · 到期 ${new Date(s.active.expiresAt).toLocaleTimeString("zh-CN")})`);
+                  } else {
+                    tooltipLines.push(`${sideName}: 暂停新开仓 (${s.reason})`);
+                  }
+                });
+                if (fm.nextRunAt) {
+                  tooltipLines.push(`下轮调度: ${new Date(fm.nextRunAt).toLocaleTimeString("zh-CN")}`);
+                }
+                if (fm.lastError) {
+                  tooltipLines.push(`最近轮次: ${fm.lastError}`);
+                }
+              }
+
+              return (
+                <span className="chip" title={tooltipLines.join("\n")}>
+                  ⛏️ 因子挖掘: <b style={{ color }}>{label}</b>
+                </span>
+              );
+            })()}
             <span className={`chip ${account.totalPnlUsdt >= 0 ? "chip-pos" : "chip-neg"}`}>
               账户净值: <b>{account.equityUsdt.toFixed(2)} USDT</b>
               <small> ({account.accountRoiPercent >= 0 ? "+" : ""}{account.accountRoiPercent.toFixed(1)}%)</small>
@@ -997,7 +1039,25 @@ export function PaperTradingPanel({
                   <label>有效期（分钟，最长半天）<input type="number" min={Math.max(30, factorMiningInput.refreshMinutes + 1)} max={720} step={1} required
                     value={factorMiningInput.validForMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, validForMinutes: Number(e.target.value) })} /></label>
                 </div>
-                <p>自动模式使用 3x。手动修改量化参数后须重新验证；因子过期时暂停新开仓，已有持仓按建仓规则退出。策略开关仍由你控制。</p>
+                <p style={{ margin: "6px 0 0 0", color: "var(--text-muted, #94a3b8)", fontSize: "11px" }}>
+                  自动模式统一使用 3x 杠杆。手动修改量化参数后须重新验证；因子过期时暂停新开仓，已有持仓按建仓规则退出。
+                </p>
+                {summary?.factorMining && (
+                  <div style={{ marginTop: "6px", fontSize: "11px", color: "var(--text-muted, #94a3b8)", lineHeight: "1.5" }}>
+                    <span>当前状态：</span>
+                    {config?.factorMining?.enabled ? (
+                      <>
+                        <b style={{ color: summary.factorMining.running ? "#3498db" : (summary.factorMining.sides.SHORT.active || summary.factorMining.sides.LONG.active ? "#2ecc71" : "#f39c12") }}>
+                          {summary.factorMining.running ? "后台计算中" : (summary.factorMining.sides.SHORT.active || summary.factorMining.sides.LONG.active ? "因子生效中" : "待样本积累与验证")}
+                        </b>
+                        {summary.factorMining.lastError && <span> · {summary.factorMining.lastError}</span>}
+                        {summary.factorMining.nextRunAt && <span> · 下轮调度：{new Date(summary.factorMining.nextRunAt).toLocaleTimeString("zh-CN")}</span>}
+                      </>
+                    ) : (
+                      <span>已停用</span>
+                    )}
+                  </div>
+                )}
               </fieldset>
               <KlineStrategySettings title="量化做空形态与二阶段退出" value={shortSpec} onChange={setShortSpec} />
               <KlineStrategySettings title="量化做多形态与二阶段退出" value={longSpec} onChange={setLongSpec} />

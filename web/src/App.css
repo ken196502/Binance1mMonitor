@@ -1401,15 +1401,4 @@ tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
 .kline-strategy-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .kline-strategy-fields label { display: grid; gap: 4px; min-width: 0; }
 .kline-strategy-fields input, .kline-strategy-fields select { width: 100%; box-sizing: border-box; padding: 7px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
-.paper-factor-status {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin: 12px 0;
-  padding: 12px;
-  border: 1px solid var(--border, #334155);
-  border-radius: 8px;
-  font-size: 13px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
+
