@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { validateStrategySpec } from "./strategy-spec.ts";
 import {
-  DEFAULT_FACTOR_MINING, FACTOR_POLICY_VERSION, FACTOR_MAX_DATA_AGE_MS, MINUTE_MS,
-  emptyFactorState, factorConfigKey, passesFactorCandidate, validateFactorMiningConfig,
+  createBaselineFactor, DEFAULT_FACTOR_MINING, FACTOR_POLICY_VERSION, FACTOR_MAX_DATA_AGE_MS, MINUTE_MS,
+  emptyFactorState, initialFactorMiningState, factorConfigKey, passesFactorCandidate, validateFactorMiningConfig,
   type FactorMiningConfig, type FactorMiningState, type FactorMiningResult, type FactorSide,
 } from "./factor-policy.ts";
 import {
@@ -428,9 +428,11 @@ export class PaperTradingEngine {
 
   public factorEntryAllowed(side: FactorSide, now = Date.now()): boolean {
     if (!this.config.factorMining?.enabled) return true;
-    const active = this.factorMiningState.sides[side].active;
+    const sideState = this.factorMiningState.sides[side];
+    const active = sideState?.active;
     const config = side === "LONG" ? this.config.klineStatsLongConfig : this.config.klineStatsShortConfig;
-    return !!active && active.featureVersion === FEATURE_VERSION && active.policyVersion === FACTOR_POLICY_VERSION &&
+    if (!config || !active) return false;
+    return active.featureVersion === FEATURE_VERSION && active.policyVersion === FACTOR_POLICY_VERSION &&
       active.dataAsOf <= now && now < Math.min(active.expiresAt, active.dataAsOf + this.config.factorMining.validForMinutes * MINUTE_MS) &&
       active.costs.takerFeeBps === this.config.takerFeeBps && active.costs.slippageBps === this.config.slippageBps &&
       factorConfigKey(active.config) === factorConfigKey(config ?? {});
@@ -665,7 +667,13 @@ export class PaperTradingEngine {
       const value = updates[key];
       if (value !== undefined && (!Number.isFinite(value) || value < 0 || value >= 1000)) throw new Error(`${key} 必须在 0 ~ 1000 bps 之间`);
     }
-    if (updates.factorMining !== undefined) this.config.factorMining = { ...updates.factorMining };
+    if (updates.factorMining !== undefined) {
+      this.config.factorMining = { ...updates.factorMining };
+      if (!this.config.factorMining.enabled) {
+        this.factorMiningState.sides.SHORT = { reason: "因子自动更新已关闭" };
+        this.factorMiningState.sides.LONG = { reason: "因子自动更新已关闭" };
+      }
+    }
     if (typeof updates.leverage === "number" && Number.isFinite(updates.leverage) && updates.leverage >= 1 && updates.leverage <= 100) {
       this.config.leverage = updates.leverage;
     }
@@ -829,12 +837,20 @@ export class PaperTradingEngine {
         ...this.config.klineStatsShortConfig,
         ...updates.klineStatsShortConfig,
       };
+      if (this.factorMiningState?.sides?.SHORT?.active &&
+          factorConfigKey(this.factorMiningState.sides.SHORT.active.config) !== factorConfigKey(this.config.klineStatsShortConfig)) {
+        this.factorMiningState.sides.SHORT = { reason: "手动修改参数，等待重新验证" };
+      }
     }
     if (updates.klineStatsLongConfig && typeof updates.klineStatsLongConfig === "object") {
       this.config.klineStatsLongConfig = {
         ...this.config.klineStatsLongConfig,
         ...updates.klineStatsLongConfig,
       };
+      if (this.factorMiningState?.sides?.LONG?.active &&
+          factorConfigKey(this.factorMiningState.sides.LONG.active.config) !== factorConfigKey(this.config.klineStatsLongConfig)) {
+        this.factorMiningState.sides.LONG = { reason: "手动修改参数，等待重新验证" };
+      }
     }
 
     const currentMargin = this.calculateOrderMargin();
@@ -2144,6 +2160,12 @@ export class PaperTradingEngine {
           this.factorMiningState = { ...data.factorMining, running: false,
             nextRunAt: data.factorMining.running ? 0 : data.factorMining.nextRunAt };
         }
+        if (!this.factorMiningState.sides.SHORT?.active) {
+          this.factorMiningState.sides.SHORT = {
+            active: createBaselineFactor("SHORT", { takerFeeBps: this.config.takerFeeBps, slippageBps: this.config.slippageBps }),
+            reason: "近期基准策略生效中",
+          };
+        }
         console.log(
           `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
         );
@@ -2197,6 +2219,7 @@ export class PaperTradingEngine {
     };
     this.stats = this.computeStatsForPositions([]);
     this.stats24h = this.computeStatsForPositions([]);
+    this.factorMiningState = initialFactorMiningState({ takerFeeBps: this.config.takerFeeBps, slippageBps: this.config.slippageBps });
     this.saveState();
     console.log(`[paper-trading] 🔄 模拟交易账户、活跃持仓、挂单与历史明细已全部重置为初始状态 (100 USDT)`);
   }

@@ -40,11 +40,13 @@ test("all new default entries and mined candidates use 3x; manual overrides rema
 
 test("factor approvals expire after half a day even without a completed mining job", () => {
   const e = engine();
-  assert.equal(e.factorEntryAllowed("SHORT", now), false);
-  assert.throws(() => e.openPosition({ symbol: "A", entryPrice: 100, entryTime: now, dayChangePercent: 20, signal, signalType: "kline_stats_short" }), /因子/);
-  e.applyMinedFactors(result());
+  assert.equal(e.factorEntryAllowed("SHORT", now), true, "initial deployment has active recent baseline factor");
   assert.equal(e.factorEntryAllowed("SHORT", now + 720 * M - 1), true);
-  assert.equal(e.factorEntryAllowed("SHORT", now + 720 * M), false);
+  assert.equal(e.factorEntryAllowed("SHORT", now + 720 * M), false, "outdated factor pauses entry");
+  assert.throws(() => e.openPosition({ symbol: "A", entryPrice: 100, entryTime: now + 720 * M, dayChangePercent: 20, signal, signalType: "kline_stats_short" }), /因子/);
+  e.applyMinedFactors(result(now + 720 * M), now + 720 * M);
+  assert.equal(e.factorEntryAllowed("SHORT", now + 720 * M), true);
+  assert.equal(e.factorEntryAllowed("SHORT", now + 1440 * M), false);
   assert.equal(e.factorEntryAllowed("LONG", now), false);
   assert.equal(e.getConfig().enableKlineStatsLong, false, "mining must preserve the operator's strategy switches");
   e.updateConfig({ klineStatsShortConfig: { holdMinutes: 30 } });
