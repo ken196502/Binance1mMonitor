@@ -1,3 +1,4 @@
+import { validateRules } from "./strategy-rules.ts";
 // Shared by the API validator, evaluator and browser form.
 export const INTERVAL_WINDOWS = [3, 5, 10, 15, 30, 60] as const;
 export const MA_REQUIREMENTS = [
@@ -16,6 +17,10 @@ export const MACD_REQUIREMENTS = [
 export function validateStrategySpec(value: unknown): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("策略参数必须是对象");
   const spec = value as Record<string, unknown>;
+  if (spec.rules !== undefined) {
+    if (!Array.isArray(spec.rules)) throw new Error("rules 必须是数组");
+    for (const rule of spec.rules) validateRules(rule);
+  }
   const numeric: Record<string, [number, number]> = {
     topN: [1, 1000], minDayChange: [0, 10000], ampDivisor: [0.001, 10000],
     holdMinutes: [1, 10080], tp1Percent: [0.001, 99], tp2Percent: [0.001, 99],

@@ -508,7 +508,8 @@ async function refresh(): Promise<Status> {
     ? prevGainers.filter((s) => !currGainerSymbols.has(s))
     : [];
 
-  const droppedGainerTickers = droppedGainerSymbols
+  const monitoredSymbols = [...new Set([...droppedGainerSymbols, ...paperTrading.getWatchedSymbols()])].filter(s => !currGainerSymbols.has(s));
+  const droppedGainerTickers = monitoredSymbols
     .map((s) => tickerMap.get(s))
     .filter(Boolean) as Ticker24h[];
 
@@ -552,9 +553,11 @@ async function refresh(): Promise<Status> {
     losers: [],
   };
 
-  // 触发模拟交易扫描（基于最新已收盘 1m K 线检测3大互斥做空信号：新高顶背离、首次跌10%、跌到20%+）
+  // 统一特征扫描；持续监控曾上榜标的，并传入真实排名，避免将观察名单位置当成榜单排名。
   try {
-    await paperTrading.onScan([...tops.gainers, ...droppedGainerTickers], candleCache);
+    const ranks = new Map(tickers.filter(t => !["BTCUSDT", "SOLUSDT"].includes(t.symbol))
+      .sort((a, b) => b.priceChangePercent - a.priceChangePercent).map((t, i) => [t.symbol, i + 1]));
+    await paperTrading.onScan([...tops.gainers, ...droppedGainerTickers], candleCache, ranks);
   } catch (err) {
     console.warn(`[paper-trading] 扫描信号异常:`, (err as any)?.message ?? err);
   }

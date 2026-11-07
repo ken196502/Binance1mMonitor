@@ -91,17 +91,27 @@ export type PaperSignalType =
   | "deep_rebound"        // 策略 5: 跌到20%+次级反弹做空
   | "hourly_suppression"  // 策略 6: 小时线压制做空
   | "kline_stats_short"   // 策略 7: 量化K线统计挖掘做空
-  | "kline_stats_long";   // 策略 8: 量化K线统计挖掘做多
+  | "kline_stats_long"
+  | (string & {});   // 策略 8: 量化K线统计挖掘做多
 export type PaperSignalLabel =
   | "左侧3W底背离"
   | "首次跌10%"
   | "新高顶背离"
   | "跌到20%+"
   | "小时线压制"
+  | "冲高破位"
+  | "回踩支撑"
+  | "均线受阻"
+  | "空头排列"
+  | "多头排列"
+  | "均线突破"
+  | "量化特征"
   | "量化特征做空"
-  | "量化特征做多";
+  | "量化特征做多"
+  | (string & {});
 
 export interface KlineStatsStrategyLiveConfig {
+  rules?: import("./strategy-rules.ts").FeatureCondition[];
   topN?: number;               // 适用榜单 Top N (默认 10)
   minDayChange?: number;       // 24h 涨幅门槛 (默认 10%)
   intervalWindow: number;      // 冲高/回溯窗口 (如 5m, 10m, 15m)
@@ -257,6 +267,8 @@ export interface PaperTradingStats {
 }
 
 export interface PaperTradingState {
+  strategyRuntime?: import("./strategy-engine.ts").StrategyRuntimeState;
+  strategyMonitor?: import("./strategy-engine.ts").StrategyMonitorResult[];
   factorMining?: import("./factor-policy.ts").FactorMiningState;
   account: PaperAccount;
   pendingOrders: PaperPendingOrder[];
@@ -270,6 +282,7 @@ export interface PaperTradingState {
 }
 
 export interface PaperTradingSummaryConfig {
+  strategies?: import("./strategy-definition.ts").StrategyDefinition[];
   factorMining?: import("./factor-policy.ts").FactorMiningConfig;
   leverage: number;
   streakLeverage?: number;

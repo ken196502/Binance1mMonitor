@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { PaperTradingEngine, PAPER_DEFAULT_CONFIG } from "../../src/paper-trading.ts";
+import { PaperTradingEngine, PAPER_DEFAULT_CONFIG, formatSignalLabel, formatDirectionAndSignal } from "../../src/paper-trading.ts";
 
 test("PaperTradingEngine: differential dual-speed leverage (10x streak vs 3x trend)", () => {
   const engine = new PaperTradingEngine({
@@ -203,7 +203,7 @@ test("PaperTradingEngine: checkKlineStatsSignal correctly evaluates 1m candles f
   if (sig) {
     assert.equal(sig.side, "SHORT");
     assert.equal(sig.type, "kline_stats_short");
-    assert.equal(sig.label, "量化特征做空");
+    assert.equal(sig.label, "冲高破位");
     assert.equal(sig.exitParams.holdMinutes, 45);
     assert.equal(sig.exitParams.tp1Percent, 3.0);
     assert.equal(sig.exitParams.tp2Percent, 7.0);
@@ -265,4 +265,29 @@ test("deploy-strategy: deployConfig and fetchCurrentConfig work seamlessly over 
   } finally {
     server.close();
   }
+});
+
+test("formatDirectionAndSignal: prevents redundant direction phrasing and maps kline stats to concrete setups", () => {
+  // 1. Direct label normalization to concrete pattern names
+  assert.equal(formatSignalLabel("kline_stats_short"), "冲高破位");
+  assert.equal(formatSignalLabel("kline_stats_long"), "回踩支撑");
+  assert.equal(formatSignalLabel("kline_stats_short", "量化特征做空"), "冲高破位");
+  assert.equal(formatSignalLabel("kline_stats_long", "量化特征做多"), "回踩支撑");
+  assert.equal(formatSignalLabel("kline_stats_short", "量化特征"), "冲高破位");
+  assert.equal(formatSignalLabel("kline_stats_long", "量化特征"), "回踩支撑");
+
+  // 2. formatDirectionAndSignal prevents redundant direction phrasing and outputs clear setup
+  assert.equal(formatDirectionAndSignal("SHORT", "kline_stats_short"), "做空 · 冲高破位");
+  assert.equal(formatDirectionAndSignal("LONG", "kline_stats_long"), "做多 · 回踩支撑");
+  assert.equal(formatDirectionAndSignal("做空", "量化特征做空"), "做空 · 冲高破位");
+  assert.equal(formatDirectionAndSignal("做多", "量化特征做多"), "做多 · 回踩支撑");
+  assert.equal(formatDirectionAndSignal("SHORT", "kline_stats_short", "量化特征做空"), "做空 · 冲高破位");
+  assert.equal(formatDirectionAndSignal("LONG", "kline_stats_long", "量化特征做多"), "做多 · 回踩支撑");
+  assert.equal(formatDirectionAndSignal("SHORT", "kline_stats_short", "量化特征"), "做空 · 冲高破位");
+  assert.equal(formatDirectionAndSignal("LONG", "kline_stats_long", "量化特征"), "做多 · 回踩支撑");
+
+  // 3. Regular strategies remain unaffected
+  assert.equal(formatDirectionAndSignal("SHORT", "streak", "新高顶背离"), "做空 · 新高顶背离");
+  assert.equal(formatDirectionAndSignal("SHORT", "rebound", "首次跌10%"), "做空 · 首次跌10%");
+  assert.equal(formatDirectionAndSignal("LONG", "w_bottom_divergence", "左侧3W底背离"), "做多 · 左侧3W底背离");
 });

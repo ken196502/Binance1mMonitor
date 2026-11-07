@@ -3,9 +3,10 @@ import { mkdir, appendFile } from "node:fs/promises";
 import type { Candle } from "./macd.ts";
 import { computeMacd, ema, aggregate1mTo5m, aggregate1mTo15m } from "./macd.ts";
 import type { Ticker24h } from "./binance.ts";
+import { compileFeatureSpec, evaluateRules, readFeaturePath, type FeatureCondition } from "./strategy-rules.ts";
 import { INTERVAL_WINDOWS } from "./strategy-spec.ts";
 
-export const FEATURE_VERSION = "2.1.0";
+export const FEATURE_VERSION = "3.0.0";
 
 export const FEATURE_SURGE_WINDOWS = INTERVAL_WINDOWS;
 export const FEATURE_MA_PERIODS = [5, 10, 20, 30, 60] as const;
@@ -99,11 +100,8 @@ export interface FeatureVector {
   tf15m: MultiTfFeature;
 }
 
-export interface FeatureRuleCondition {
-  dimension: "A" | "B" | "C" | "D" | "TF";
-  field: string;
-  op: ">=" | "<=" | "==" | "!=" | ">" | "<" | "in" | "contains";
-  value: any;
+export interface FeatureRuleCondition extends FeatureCondition {
+  dimension?: "A" | "B" | "C" | "D" | "TF";
 }
 
 export interface KlineStatsStrategySpec {
@@ -598,170 +596,11 @@ export function evaluateFeatureSpec(
   fv: FeatureVector,
   spec: KlineStatsStrategySpec,
 ): { pass: boolean; failedReason?: string } {
-  // 1. 榜单排名与 24h 涨幅过滤
-  const maxRank = spec.topN ?? 10;
-  if (fv.rank > maxRank) {
-    return { pass: false, failedReason: `rank ${fv.rank} > ${maxRank}` };
-  }
-  const minDayChange = spec.minDayChange ?? 10;
-  if (fv.dayChange < minDayChange) {
-    return { pass: false, failedReason: `dayChange ${fv.dayChange}% < ${minDayChange}%` };
-  }
-
-  // 2. 冲高 / 振幅比例过滤 (因果前驱分流)
   const w = spec.intervalWindow ?? 5;
-  const divisor = spec.ampDivisor ?? 8;
-  if (!(FEATURE_SURGE_WINDOWS as readonly number[]).includes(w) || !Number.isFinite(divisor) || divisor <= 0) {
-    return { pass: false, failedReason: "invalid intervalWindow or ampDivisor" };
-  }
-  const requiredRatio = 1 / divisor;
-
-  if (side === "SHORT") {
-    // 空头逻辑：前置因果必须满足【达标大振幅冲高完成】(surgeRatio >= 1/divisor)，后续寻找力竭做空
-    const currentRatio = fv.surgeRatio[w] ?? 0;
-    if (currentRatio < requiredRatio) {
-      return { pass: false, failedReason: `surgeRatio[${w}] ${currentRatio.toFixed(3)} < 1/${divisor}` };
-    }
-  } else {
-    // 多头逻辑：前置因果必须满足【启动前蓄势整理】(避免追高已经冲刺过热的标的)，依托均线支撑与MACD健康起爆
-    const currentRatio = fv.surgeRatio[w] ?? 0;
-    const maxRatio = requiredRatio;
-    if (currentRatio > maxRatio) {
-      return { pass: false, failedReason: `precursor surgeRatio[${w}] ${currentRatio.toFixed(3)} > ${maxRatio.toFixed(3)} (already pumped)` };
-    }
-  }
-
-  // 3. 均线条件（向前兼容 maRequirement）
-  if (spec.maRequirement && spec.maRequirement !== "NONE") {
-    let maPass = false;
-    switch (spec.maRequirement) {
-      case "MA10_SUPPORT":
-        maPass = fv.ma[10]?.support ?? false;
-        break;
-      case "MA20_SUPPORT":
-        maPass = fv.ma[20]?.support ?? false;
-        break;
-      case "MA30_SUPPORT":
-        maPass = fv.ma[30]?.support ?? false;
-        break;
-      case "MA60_SUPPORT":
-        maPass = fv.ma[60]?.support ?? false;
-        break;
-      case "MA10_BREAKOUT":
-        maPass = fv.ma[10]?.breakout ?? false;
-        break;
-      case "MA20_BREAKOUT":
-        maPass = fv.ma[20]?.breakout ?? false;
-        break;
-      case "MA_BULLISH_STACK":
-        maPass = fv.stack === "bull_full" || fv.stack === "bull_short";
-        break;
-      case "MA_FRESH_BULL":
-        maPass = fv.stack3Bars === "fresh_bull";
-        break;
-      case "MA_SUSTAINED_BULL":
-        maPass = fv.stack3Bars === "sustained_bull";
-        break;
-      case "MA60_RESIST":
-        maPass = fv.ma[60]?.resist ?? false;
-        break;
-      case "MA20_RESIST":
-        maPass = fv.ma[20]?.resist ?? false;
-        break;
-      case "MA10_BREAKDOWN":
-        maPass = fv.ma[10]?.breakdown ?? false;
-        break;
-      case "MA_BEARISH_STACK":
-        maPass = fv.stack === "bear_full" || fv.stack === "bear_short";
-        break;
-      case "MA_FRESH_BEAR":
-        maPass = fv.stack3Bars === "fresh_bear";
-        break;
-      case "MA_SUSTAINED_BEAR":
-        maPass = fv.stack3Bars === "sustained_bear";
-        break;
-      case "MA30_RESIST":
-        maPass = fv.ma[30]?.resist ?? false;
-        break;
-      case "BIAS_RATIO_HIGH":
-        maPass = Math.abs(fv.ma[30]?.biasPct ?? 0) / Math.max(1, fv.dayChange) >= 0.2;
-        break;
-      default:
-        maPass = false;
-    }
-    if (!maPass) {
-      return { pass: false, failedReason: `maRequirement ${spec.maRequirement} not met` };
-    }
-  }
-
-  // 4. MACD 条件（向前兼容 macdRequirement）
-  if (spec.macdRequirement && spec.macdRequirement !== "NONE") {
-    let macdPass = false;
-    switch (spec.macdRequirement) {
-      case "GREEN_RATIO_15_50":
-        macdPass = (fv.greenRatio[15] ?? 0) >= 0.5 && fv.dif >= fv.dea;
-        break;
-      case "GREEN_RATIO_20_50":
-        macdPass = (fv.greenRatio[20] ?? 0) >= 0.5;
-        break;
-      case "GREEN_RATIO_15_70":
-        macdPass = (fv.greenRatio[15] ?? 0) >= 0.7 && fv.dif >= fv.dea;
-        break;
-      case "GREEN_RATIO_30_70":
-        macdPass = (fv.greenRatio[30] ?? 0) >= 0.7;
-        break;
-      case "GREEN_RATIO_30_80":
-        macdPass = (fv.greenRatio[30] ?? 0) >= 0.8;
-        break;
-      case "GREEN_STREAK_3":
-        macdPass = fv.greenStreak >= 3;
-        break;
-      case "HIST_WEAKENING":
-        macdPass = fv.histSlope < 0 || fv.hist <= 0;
-        break;
-      case "HIST_EXPANDING":
-        macdPass = fv.histSlope > 0 && fv.hist > 0;
-        break;
-      case "DEATH_CROSS_RECENT":
-        macdPass = fv.deathCrossAgo <= 3;
-        break;
-      case "GOLDEN_CROSS_RECENT":
-        macdPass = fv.goldenCrossAgo <= 3;
-        break;
-      case "TOP_DIVERGENCE":
-        macdPass = fv.topDivergence === true;
-        break;
-      case "BOTTOM_DIVERGENCE":
-        macdPass = fv.bottomDivergence === true;
-        break;
-      case "TF5M_CONFIRM":
-        macdPass =
-          side === "SHORT"
-            ? fv.tf5m.macdHistSlope < 0 || fv.tf5m.macdHist < 0
-            : fv.tf5m.macdHistSlope > 0 || fv.tf5m.macdHist > 0;
-        break;
-      default:
-        macdPass = false;
-    }
-    if (!macdPass) {
-      return { pass: false, failedReason: `macdRequirement ${spec.macdRequirement} not met` };
-    }
-  }
-
-  // 5. 规则语法扩展 (FeatureRuleCondition)
-  if (spec.rules && spec.rules.length > 0) {
-    for (const rule of spec.rules) {
-      const actualVal = (fv as any)[rule.field] ?? (fv.ma as any)[rule.field]?.value;
-      if (rule.op === ">=" && !(actualVal >= rule.value)) return { pass: false, failedReason: `${rule.field} not >= ${rule.value}` };
-      if (rule.op === "<=" && !(actualVal <= rule.value)) return { pass: false, failedReason: `${rule.field} not <= ${rule.value}` };
-      if (rule.op === "==" && !(actualVal === rule.value)) return { pass: false, failedReason: `${rule.field} not == ${rule.value}` };
-      if (rule.op === "!=" && !(actualVal !== rule.value)) return { pass: false, failedReason: `${rule.field} not != ${rule.value}` };
-      if (rule.op === ">" && !(actualVal > rule.value)) return { pass: false, failedReason: `${rule.field} not > ${rule.value}` };
-      if (rule.op === "<" && !(actualVal < rule.value)) return { pass: false, failedReason: `${rule.field} not < ${rule.value}` };
-    }
-  }
-
-  return { pass: true };
+  if (!(FEATURE_SURGE_WINDOWS as readonly number[]).includes(w) || !Number.isFinite(spec.ampDivisor ?? 8) || (spec.ampDivisor ?? 8) <= 0) return { pass: false, failedReason: "invalid intervalWindow or ampDivisor" };
+  return evaluateRules(compileFeatureSpec(side, spec), field => field === "relativeBias30"
+    ? Math.abs(fv.ma[30]?.biasPct ?? 0) / Math.max(1, fv.dayChange)
+    : readFeaturePath(fv, field));
 }
 
 /**
@@ -777,6 +616,8 @@ export async function appendSignalSnapshot(record: {
   triggered: boolean;
   failedReason?: string;
   featureVector: FeatureVector;
+  strategy?: import("./strategy-definition.ts").StrategyDefinition;
+  monitoredFeatures?: Record<string, unknown>;
   ticker?: any;
   configVersion?: string;
 }): Promise<void> {

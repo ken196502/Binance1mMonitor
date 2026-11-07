@@ -1,3 +1,8 @@
+import { all, rule, ref, evaluateRules } from "./strategy-rules.ts";
+import { StrategyEngine, type StrategyMatch, type StrategyMonitorResult } from "./strategy-engine.ts";
+import { StrategyFeatureMonitor } from "./strategy-features.ts";
+import { validateStrategies, type StrategyDefinition } from "./strategy-definition.ts";
+import { buildStrategyPresets, LEGACY_STRATEGY_KEYS, quantPreset } from "./strategy-presets.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { validateStrategySpec } from "./strategy-spec.ts";
@@ -7,22 +12,15 @@ import {
   type FactorMiningConfig, type FactorMiningState, type FactorMiningResult, type FactorSide,
 } from "./factor-policy.ts";
 import {
-  consecutiveStreakAt,
-  calculateSupportMaAt,
-  calculateSma,
-  computeMacd,
   type Candle,
 } from "./macd.ts";
 import {
-  computeFeatureVector,
-  evaluateFeatureSpec,
   appendSignalSnapshot,
   FEATURE_VERSION,
 } from "./features.ts";
 import { breakevenPrice, calcTradeReturn, FIRST_CLOSE_FRACTION, DEFAULT_MAX_POSITIONS, DEFAULT_MAX_PER_STRATEGY, orderMargin, summarizeDirections } from "./trading-core.ts";
 import { sendTelegramMessage, telegramConfigured } from "./telegram.ts";
 import {
-  UnifiedShortStrategyTracker,
   STREAK_LIVE_DEFAULT_CONFIG,
   DUAL_SPEED_DEEP_REBOUND_CONFIG,
   HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG,
@@ -35,7 +33,6 @@ import {
   type PeakReboundLiveConfig,
 } from "./peak-rebound-strategy.ts";
 import {
-  UnifiedLongStrategyTracker,
   W_BOTTOM_DIVERGENCE_DEFAULT_CONFIG,
   type WBottomDivergenceLiveConfig,
 } from "./unified-long-strategy.ts";
@@ -57,6 +54,7 @@ import type { Ticker24h } from "./binance.ts";
 import type { TradeTick } from "./ws.ts";
 
 export interface PaperStrategyConfig {
+  strategies?: StrategyDefinition[];
   topN: number;
   supportMaPeriods: readonly number[];
   ampDivisor: number; // 30m振幅 >= 24h / ampDivisor (默认 12)
@@ -222,15 +220,81 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   },
 };
 
-export function formatSignalLabel(type?: PaperSignalType, label?: PaperSignalLabel): PaperSignalLabel {
-  if (label) return label;
+export function resolveKlineStatsLabel(side: "SHORT" | "LONG", maRequirement?: string): PaperSignalLabel {
+  if (side === "SHORT") {
+    if (maRequirement === "MA20_RESIST" || maRequirement === "MA60_RESIST" || maRequirement === "MA30_RESIST") return "均线受阻";
+    if (maRequirement === "MA_BEARISH_STACK") return "空头排列";
+    return "冲高破位";
+  } else {
+    if (maRequirement === "MA_BULLISH_STACK") return "多头排列";
+    if (maRequirement === "MA10_BREAKOUT" || maRequirement === "MA20_BREAKOUT") return "均线突破";
+    return "回踩支撑";
+  }
+}
+
+export function formatSignalLabel(
+  type?: PaperSignalType,
+  label?: PaperSignalLabel | string,
+  side?: "LONG" | "SHORT" | string,
+): PaperSignalLabel {
+  const isLong = side === "LONG" || side === "做多" || type === "kline_stats_long";
+  const defaultKlineLabel: PaperSignalLabel = isLong ? "回踩支撑" : "冲高破位";
+
+  if (label) {
+    if (label === "量化特征做空") return "冲高破位";
+    if (label === "量化特征做多") return "回踩支撑";
+    if (label === "量化特征") return defaultKlineLabel;
+    return label as PaperSignalLabel;
+  }
   if (type === "deep_rebound") return "跌到20%+";
   if (type === "rebound") return "首次跌10%";
   if (type === "hourly_suppression") return "小时线压制";
   if (type === "w_bottom_divergence") return "左侧3W底背离";
-  if (type === "kline_stats_short") return "量化特征做空";
-  if (type === "kline_stats_long") return "量化特征做多";
+  if (type === "kline_stats_short") return "冲高破位";
+  if (type === "kline_stats_long") return "回踩支撑";
   return "新高顶背离";
+}
+
+const KNOWN_SIGNAL_TYPES = new Set([
+  "streak",
+  "rebound",
+  "deep_rebound",
+  "hourly_suppression",
+  "w_bottom_divergence",
+  "kline_stats_short",
+  "kline_stats_long",
+]);
+
+/**
+ * 格式化“方向 · 策略名称”文案，避免如“做空 · 量化特征做空”等重复方向修饰词或空泛的冗余表述
+ */
+export function formatDirectionAndSignal(
+  sideOrDir: "LONG" | "SHORT" | "做多" | "做空" | string,
+  typeOrLabel?: PaperSignalType | PaperSignalLabel | string,
+  maybeLabel?: PaperSignalLabel | string,
+): string {
+  const dir = sideOrDir === "LONG" || sideOrDir === "做多" ? "做多" : "做空";
+  const side = dir === "做多" ? "LONG" : "SHORT";
+  let label: string;
+  if (maybeLabel !== undefined) {
+    label = formatSignalLabel(typeOrLabel as PaperSignalType, maybeLabel, side);
+  } else if (typeOrLabel && KNOWN_SIGNAL_TYPES.has(typeOrLabel)) {
+    label = formatSignalLabel(typeOrLabel as PaperSignalType, undefined, side);
+  } else if (typeOrLabel) {
+    label = formatSignalLabel(undefined, typeOrLabel, side);
+  } else {
+    label = "新高顶背离";
+  }
+  if (label === "量化特征做空") {
+    label = "冲高破位";
+  } else if (label === "量化特征做多") {
+    label = "回踩支撑";
+  } else if (label === "量化特征") {
+    label = dir === "做多" ? "回踩支撑" : "冲高破位";
+  } else if (label.endsWith(dir)) {
+    label = label.slice(0, -dir.length).trim() || label;
+  }
+  return `${dir} · ${label}`;
 }
 
 /**
@@ -261,69 +325,17 @@ export function checkPaperSignal(
   candles: Candle[],
   config: PaperStrategyConfig = PAPER_DEFAULT_CONFIG,
 ): SignalMatchDetails | null {
-  if (dayChangePercent <= 0) return null;
-  // Candles array ends with forming bar, targetIndex is the latest closed candle
-  const targetIndex = candles.length - 2;
-  const minRequiredBars = Math.max(35, config.greenWindow + 5, ...config.supportMaPeriods);
-  if (targetIndex < minRequiredBars - 1) return null;
-
-  const candle = candles[targetIndex];
-  if (!candle || candle.close <= 0 || candle.open <= 0) return null;
-
-  // 1. 至少连续 minStreakCount 根阳线 (默认 >= 2 连阳)
-  const streak = consecutiveStreakAt(candles, targetIndex);
-  if (streak.direction !== "up" || streak.count < config.minStreakCount) return null;
-
-  // 2. 30 分钟振幅 >= 24h 涨幅 / ampDivisor (默认 8)
-  const window30 = candles.slice(targetIndex - 30 + 1, targetIndex + 1);
-  const maxHigh = Math.max(...window30.map((c) => c.high));
-  const minLow = Math.min(...window30.map((c) => c.low));
-  if (minLow <= 0) return null;
-  const amp30Percent = ((maxHigh - minLow) / minLow) * 100;
-  if (amp30Percent < dayChangePercent / config.ampDivisor) {
-    return null;
-  }
-
-  // 3. 均线 MA[3, 7, 15] 均无支撑
-  const supportMa = calculateSupportMaAt(candles, targetIndex, config.supportMaPeriods);
-  if (supportMa != null) return null;
-
-  // 4. 最后一根阳线上影线介于 0.5% 与 30% 之间 (实体坚挺且顶部遇阻回落，排除光头大阳线陷阱)
-  const body = candle.close - candle.open;
-  const upperShadow = Math.max(0, candle.high - candle.close);
-  const upperShadowRatio = body > 0 ? upperShadow / body : 0;
-  const minShadow = config.minUpperShadowRatio ?? 0.005;
-  if (upperShadowRatio < minShadow || upperShadowRatio >= config.maxUpperShadowRatio) return null;
-
-  // 5. 近 30 根已收盘 1m MACD 绿柱占比严格 > 70%
-  const { hist } = computeMacd(candles.map((c) => c.close));
-  if (hist.length <= targetIndex) return null;
-
-  const greenStart = targetIndex - config.greenWindow + 1;
-  if (greenStart < 0) return null;
-  let greenCount = 0;
-  for (let i = greenStart; i <= targetIndex; i++) {
-    if (hist[i] > 0) greenCount++;
-  }
-  const greenRatio = greenCount / config.greenWindow;
-  if (greenRatio <= config.minGreenRatio) return null;
-
-  // 6. 末尾连续 >= 7 根 MACD 全绿柱
-  let consecutiveGreenBars = 0;
-  for (let j = targetIndex; j >= 0; j--) {
-    if (hist[j] > 0) consecutiveGreenBars++;
-    else break;
-  }
-  if (consecutiveGreenBars < config.minConsecutiveGreenBars) return null;
-
-  return {
-    candle,
-    streakCount: streak.count,
-    amp30Percent,
-    upperShadowRatio,
-    greenRatio,
-    consecutiveGreenBars,
-  };
+  const monitor = new StrategyFeatureMonitor(candles, { symbol, priceChangePercent: dayChangePercent, lastPrice: candles.at(-2)?.close ?? 0, quoteVolume: 0 }, 1);
+  if (monitor.bars.length < Math.max(35, config.greenWindow + 5, ...config.supportMaPeriods)) return null;
+  const entry = all(rule("dayChange", ">", 0), rule("streak.0.up", ">=", config.minStreakCount),
+    rule("range.30", ">=", ref("dayChange", 1 / config.ampDivisor)),
+    ...config.supportMaPeriods.map(p => rule(`support.${p}`, "==", false)),
+    rule("upperShadowRatio", ">=", config.minUpperShadowRatio ?? 0.005), rule("upperShadowRatio", "<", config.maxUpperShadowRatio),
+    rule(`greenRatio.${config.greenWindow}`, ">", config.minGreenRatio), rule("greenStreak", ">=", config.minConsecutiveGreenBars));
+  if (!evaluateRules(entry, field => monitor.read(field)).pass) return null;
+  const read = (field: string) => Number(monitor.read(field));
+  return { candle: monitor.bar!, streakCount: read("streak.0.count"), amp30Percent: read("range.30"), upperShadowRatio: read("upperShadowRatio"),
+    greenRatio: read(`greenRatio.${config.greenWindow}`), consecutiveGreenBars: read("greenStreak") };
 }
 
 export class PaperTradingEngine {
@@ -335,9 +347,8 @@ export class PaperTradingEngine {
   private stats: PaperTradingStats;
   private stats24h: PaperTradingStats;
   private saveTimeout: NodeJS.Timeout | null = null;
-  private unifiedTracker: UnifiedShortStrategyTracker;
-  private longTracker: UnifiedLongStrategyTracker;
-  private klineStatsCooldown = new Map<string, number>();
+  private strategyEngine: StrategyEngine;
+  private strategyMonitor: StrategyMonitorResult[] = [];
   private factorMiningState: FactorMiningState = emptyFactorState();
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
@@ -365,32 +376,11 @@ export class PaperTradingEngine {
         this.config.longLeverage = config.leverage;
       }
     }
-    this.unifiedTracker = new UnifiedShortStrategyTracker({
-      streakConfig: {
-        ...STREAK_LIVE_DEFAULT_CONFIG,
-        topN: this.config.topN,
-        supportMaPeriods: this.config.supportMaPeriods,
-        ampDivisor: this.config.ampDivisor,
-        holdMinutes: this.config.holdMinutes,
-        exitX: this.config.exitX,
-        exitN: this.config.exitN,
-        exitM: this.config.exitM,
-        ...this.config.streakConfig,
-      },
-      reboundConfig: this.config.reboundConfig,
-      deepReboundConfig: this.config.deepReboundConfig,
-      hourlySuppressionConfig: this.config.hourlySuppressionConfig,
-      preventConflict: true,
-      enableStreak: this.config.enableStreak ?? true, // 开启新高顶背离 3x 闪击
-      enableRebound: this.config.enableRebound ?? true,
-      enableDeepRebound: this.config.enableDeepRebound ?? true,
-      enableHourlySuppression: this.config.enableHourlySuppression ?? true,
-    });
-    this.longTracker = new UnifiedLongStrategyTracker({
-      wBottomDivergenceConfig: this.config.wBottomDivergenceConfig,
-      preventConflict: true,
-      enableWBottomDivergence: this.config.enableWBottomDivergence ?? true,
-    });
+    this.config.strategies = structuredClone(config.strategies ?? buildStrategyPresets(this.config));
+    this.strategyEngine = new StrategyEngine(this.config.strategies);
+    for (const [id, keys] of Object.entries(LEGACY_STRATEGY_KEYS)) {
+      Object.assign(this.config, { [keys.find(key => key.startsWith("enable"))!]: this.config.strategies.find(s => s.id === id)?.enabled ?? false });
+    }
     this.account = {
       initialBalanceUsdt: this.config.initialBalanceUsdt,
       balanceUsdt: this.config.initialBalanceUsdt,
@@ -405,16 +395,10 @@ export class PaperTradingEngine {
     this.loadState();
   }
 
-  public getUnifiedTracker(): UnifiedShortStrategyTracker {
-    return this.unifiedTracker;
-  }
-
-  public getLongTracker(): UnifiedLongStrategyTracker {
-    return this.longTracker;
-  }
+  public getStrategyEngine(): StrategyEngine { return this.strategyEngine; }
 
   public getConfig(): PaperStrategyConfig {
-    return { ...this.config };
+    return structuredClone(this.config);
   }
 
   public getFactorMiningState(): FactorMiningState {
@@ -432,6 +416,10 @@ export class PaperTradingEngine {
     const active = sideState?.active;
     const config = side === "LONG" ? this.config.klineStatsLongConfig : this.config.klineStatsShortConfig;
     if (!config || !active) return false;
+    const definition = this.config.strategies?.find(s => s.id === `kline_stats_${side.toLowerCase()}`);
+    const validated = quantPreset(side, active.config);
+    if (!definition || JSON.stringify(definition.entry) !== JSON.stringify(validated.entry) ||
+        JSON.stringify(definition.exit) !== JSON.stringify(validated.exit)) return false;
     return active.featureVersion === FEATURE_VERSION && active.policyVersion === FACTOR_POLICY_VERSION &&
       active.dataAsOf <= now && now < Math.min(active.expiresAt, active.dataAsOf + this.config.factorMining.validForMinutes * MINUTE_MS) &&
       active.costs.takerFeeBps === this.config.takerFeeBps && active.costs.slippageBps === this.config.slippageBps &&
@@ -468,6 +456,11 @@ export class PaperTradingEngine {
         };
       }
     }
+    this.config.strategies = (this.config.strategies ?? []).map(s => {
+      const candidate = s.id === "kline_stats_long" ? result.sides.LONG.candidate : s.id === "kline_stats_short" ? result.sides.SHORT.candidate : undefined;
+      return candidate ? { ...quantPreset(s.side, candidate.config), enabled: s.enabled } : s;
+    });
+    this.strategyEngine.setStrategies(this.config.strategies);
     this.factorMiningState.datasetHash = result.datasetHash;
     // A limit order belongs to its original factor; never fill it after that factor is retired.
     this.cancelRetiredFactorOrders(now);
@@ -488,6 +481,8 @@ export class PaperTradingEngine {
   }
 
   public getLeverageForSignal(signalType?: PaperSignalType): number {
+    const configured = this.config.strategies?.find(s => s.id === signalType)?.exit.leverage;
+    if (configured !== undefined) return configured;
     if (signalType === "streak") {
       return this.config.streakLeverage ?? 3;
     }
@@ -527,7 +522,7 @@ export class PaperTradingEngine {
   }
 
   private assertCapacity(symbol: string, signalType: PaperSignalType, now = Date.now()): void {
-    if (signalType.startsWith("kline_stats_") && !this.factorEntryAllowed(signalType === "kline_stats_long" ? "LONG" : "SHORT", now)) {
+    if (["kline_stats_long", "kline_stats_short"].includes(signalType) && !this.factorEntryAllowed(signalType === "kline_stats_long" ? "LONG" : "SHORT", now)) {
       throw new Error("量化因子尚未通过近期验证或已过期，暂停新开仓");
     }
     if (this.activePositions.has(symbol) || this.pendingOrders.has(symbol)) throw new Error(`${symbol} 已有持仓或挂单`);
@@ -545,105 +540,48 @@ export class PaperTradingEngine {
   /**
    * 检查 K 线统计量化特征策略入场信号 (做多或做空)
    */
-  public checkKlineStatsSignal(
-    side: "SHORT" | "LONG",
-    symbol: string,
-    dayChangePercent: number,
-    rank: number,
-    candles: Candle[],
-    now = Date.now(),
-    ticker?: Ticker24h,
-  ): {
-    side: "SHORT" | "LONG";
-    type: PaperSignalType;
-    label: PaperSignalLabel;
-    entryPrice: number;
-    exitParams: PaperExitParams;
-    signalDetails: SignalMatchDetails;
-  } | null {
+  private paperSignal(match: StrategyMatch) {
+    const { strategy: s, monitor } = match;
+    const read = (field: string) => Number(monitor.read(field, match.observation)) || 0;
+    return { side: s.side, type: s.id, label: s.label, entryPrice: monitor.bar!.close,
+      exitParams: { ...s.exit, factorRevision: s.factorManaged && this.config.factorMining?.enabled ? this.factorMiningState.sides[s.side].active?.revision : undefined },
+      signalDetails: { candle: monitor.bar!, streakCount: read("streak.0.count"), amp30Percent: read("surge.5"),
+        upperShadowRatio: read("upperShadowRatio"), greenRatio: read("greenRatio.30"), consecutiveGreenBars: read("greenStreak") } };
+  }
+
+  /** Compatibility entry point; uses the same definition and evaluator as onScan/replay. */
+  public checkKlineStatsSignal(side: "SHORT" | "LONG", symbol: string, dayChangePercent: number, rank: number, candles: Candle[], now = Date.now(), ticker?: Ticker24h) {
     if (!this.factorEntryAllowed(side, now)) return null;
-    const config =
-      side === "SHORT"
-        ? this.config.klineStatsShortConfig
-        : this.config.klineStatsLongConfig;
-
-    if (!config) return null;
-
-    // 1. 冷却时间检查
-    const cdUntil = this.klineStatsCooldown.get(symbol) ?? 0;
-    if (cdUntil > now) return null;
-
-    // 2. K 线数量充足性检查 (至少需 60 根已收盘 K 线)
-    const targetIdx = candles.length - 2;
-    if (targetIdx < 59) return null;
-
-    const targetCandle = candles[targetIdx];
-    if (!targetCandle || targetCandle.close <= 0) return null;
-
-    // 3. 统一特征计算与规则评估
-    const dummyTicker: Ticker24h = {
-      symbol,
-      lastPrice: targetCandle.close,
-      priceChangePercent: dayChangePercent,
-      quoteVolume: 0,
-      highPrice: ticker?.highPrice,
-      lowPrice: ticker?.lowPrice,
-    };
-
-    const fv = computeFeatureVector(candles, dummyTicker, targetIdx, { rank });
-    if (!fv) return null;
-
-    const evalResult = evaluateFeatureSpec(side, fv, config);
-
-    // 只归档真正触发的信号，避免每轮为所有不匹配标的重复写入完整特征。
-    if (evalResult.pass) {
-      void appendSignalSnapshot({
-        time: targetCandle.time,
-        symbol,
-        type: side === "SHORT" ? "kline_stats_short" : "kline_stats_long",
-        side,
-        triggered: evalResult.pass,
-        failedReason: evalResult.failedReason,
-        featureVector: fv,
-        ticker: dummyTicker,
-        configVersion: FEATURE_VERSION,
-      });
-    }
-
-    if (!evalResult.pass) return null;
-
-    const formingBar = candles[candles.length - 1];
-    const entryPrice = formingBar && formingBar.close > 0 ? formingBar.close : targetCandle.close;
-    const signalType: PaperSignalType = side === "SHORT" ? "kline_stats_short" : "kline_stats_long";
-    const signalLabel: PaperSignalLabel = side === "SHORT" ? "量化特征做空" : "量化特征做多";
-
-    return {
-      side,
-      type: signalType,
-      label: signalLabel,
-      entryPrice,
-      exitParams: {
-        factorRevision: this.config.factorMining?.enabled ? this.factorMiningState.sides[side].active?.revision : undefined,
-        holdMinutes: config.holdMinutes ?? (side === "SHORT" ? 45 : 30),
-        tp1Percent: config.tp1Percent ?? (side === "SHORT" ? 3.0 : 2.5),
-        tp2Percent: config.tp2Percent ?? (side === "SHORT" ? 7.0 : 5.5),
-        stopLossPercent: config.stopLossPercent ?? (side === "SHORT" ? 5.0 : 3.5),
-        moveSlToEntryAfterTp1: config.moveSlToEntryAfterTp1 ?? true,
-      },
-      signalDetails: {
-        candle: targetCandle,
-        streakCount: fv.greenStreak,
-        amp30Percent: fv.surge[config.intervalWindow ?? 5] ?? 0,
-        upperShadowRatio: fv.upperWick,
-        greenRatio: fv.greenRatio[30] ?? 0,
-        consecutiveGreenBars: fv.greenStreak,
-      },
-    };
+    const monitor = new StrategyFeatureMonitor(candles, { ...ticker, symbol, priceChangePercent: dayChangePercent, lastPrice: candles.at(-2)?.close ?? 0, quoteVolume: ticker?.quoteVolume ?? 0 }, rank);
+    const match = this.strategyEngine.evaluate(monitor, now, s => s.id === `kline_stats_${side.toLowerCase()}`)[0];
+    return match ? this.paperSignal(match) : null;
   }
 
   public updateConfig(updates: Partial<PaperStrategyConfig>): PaperStrategyConfig {
     if (!updates || typeof updates !== "object" || Array.isArray(updates)) throw new Error("配置必须是对象");
     if (updates.factorMining !== undefined) validateFactorMiningConfig(updates.factorMining);
+    const proposed = { ...this.config, ...updates };
+    for (const key of ["streakConfig", "reboundConfig", "deepReboundConfig", "hourlySuppressionConfig", "wBottomDivergenceConfig", "klineStatsShortConfig", "klineStatsLongConfig"] as const) {
+      if (updates[key] !== undefined) {
+        if (!updates[key] || typeof updates[key] !== "object" || Array.isArray(updates[key])) throw new Error(`${key} 必须是对象`);
+        Object.assign(proposed, { [key]: { ...this.config[key], ...updates[key] } });
+      }
+    }
+    if (updates.ampDivisor !== undefined) proposed.streakConfig = { ...proposed.streakConfig, ampDivisor: updates.streakConfig?.ampDivisor ?? updates.ampDivisor };
+    if (updates.supportMaPeriods !== undefined) proposed.streakConfig = { ...proposed.streakConfig, supportMaPeriods: updates.streakConfig?.supportMaPeriods ?? updates.supportMaPeriods };
+    const presets = buildStrategyPresets(proposed);
+    validateStrategies(presets);
+    const nextStrategies = updates.strategies ?? (this.config.strategies ?? presets).map(s => {
+      const keys = LEGACY_STRATEGY_KEYS[s.id as keyof typeof LEGACY_STRATEGY_KEYS];
+      const changed = keys?.filter(key => updates[key] !== undefined && JSON.stringify(updates[key]) !== JSON.stringify(this.config[key])) ?? [];
+      if (!changed.length) return s;
+      const preset = presets.find(p => p.id === s.id)!;
+      if (changed.some(key => !key.startsWith("enable") && !key.toLowerCase().endsWith("leverage"))) return preset;
+      return { ...s, enabled: changed.some(key => key.startsWith("enable")) ? preset.enabled : s.enabled,
+        exit: { ...s.exit, leverage: changed.some(key => key.toLowerCase().endsWith("leverage")) ? preset.exit.leverage : s.exit.leverage } };
+    });
+    validateStrategies(nextStrategies);
+
     for (const [key, max] of [["marginRate", 0.2], ["marginPercent", 20], ["maxPositions", 5], ["maxPositionsPerStrategy", 1]] as const) {
       const value = updates[key];
       if (value !== undefined && (!Number.isFinite(value) || value <= 0 || value > max || (key.startsWith("maxPositions") && !Number.isInteger(value)))) {
@@ -725,26 +663,21 @@ export class PaperTradingEngine {
     }
     if (typeof updates.enableStreak === "boolean") {
       this.config.enableStreak = updates.enableStreak;
-      this.unifiedTracker.updateConfig({ enableStreak: updates.enableStreak });
     }
     if (typeof updates.enableRebound === "boolean") {
       this.config.enableRebound = updates.enableRebound;
-      this.unifiedTracker.updateConfig({ enableRebound: updates.enableRebound });
     }
     if (typeof updates.enableDeepRebound === "boolean") {
       this.config.enableDeepRebound = updates.enableDeepRebound;
-      this.unifiedTracker.updateConfig({ enableDeepRebound: updates.enableDeepRebound });
     }
     if (typeof updates.enableHourlySuppression === "boolean") {
       this.config.enableHourlySuppression = updates.enableHourlySuppression;
-      this.unifiedTracker.updateConfig({ enableHourlySuppression: updates.enableHourlySuppression });
     }
     if (typeof updates.enableLongs === "boolean") {
       this.config.enableLongs = updates.enableLongs;
     }
     if (typeof updates.enableWBottomDivergence === "boolean") {
       this.config.enableWBottomDivergence = updates.enableWBottomDivergence;
-      this.longTracker.updateConfig({ enableWBottomDivergence: updates.enableWBottomDivergence });
     }
     if (typeof updates.enableKlineStatsShort === "boolean") {
       this.config.enableKlineStatsShort = updates.enableKlineStatsShort;
@@ -760,18 +693,12 @@ export class PaperTradingEngine {
       if (this.config.streakConfig) {
         this.config.streakConfig = { ...this.config.streakConfig, ampDivisor: updates.ampDivisor };
       }
-      this.unifiedTracker.updateConfig({
-        streakConfig: { ...this.config.streakConfig, ampDivisor: updates.ampDivisor },
-      });
     }
     if (Array.isArray(updates.supportMaPeriods) && updates.supportMaPeriods.every((p) => typeof p === "number" && p > 0)) {
       this.config.supportMaPeriods = [...updates.supportMaPeriods];
       if (this.config.streakConfig) {
         this.config.streakConfig = { ...this.config.streakConfig, supportMaPeriods: this.config.supportMaPeriods };
       }
-      this.unifiedTracker.updateConfig({
-        streakConfig: { ...this.config.streakConfig, supportMaPeriods: this.config.supportMaPeriods },
-      });
     }
     if (typeof updates.minStreakCount === "number" && Number.isFinite(updates.minStreakCount) && updates.minStreakCount >= 1) {
       this.config.minStreakCount = Math.floor(updates.minStreakCount);
@@ -814,23 +741,18 @@ export class PaperTradingEngine {
     }
     if (updates.streakConfig && typeof updates.streakConfig === "object") {
       this.config.streakConfig = { ...this.config.streakConfig, ...updates.streakConfig };
-      this.unifiedTracker.updateConfig({ streakConfig: this.config.streakConfig });
     }
     if (updates.reboundConfig && typeof updates.reboundConfig === "object") {
       this.config.reboundConfig = { ...this.config.reboundConfig, ...updates.reboundConfig };
-      this.unifiedTracker.updateConfig({ reboundConfig: this.config.reboundConfig });
     }
     if (updates.deepReboundConfig && typeof updates.deepReboundConfig === "object") {
       this.config.deepReboundConfig = { ...this.config.deepReboundConfig, ...updates.deepReboundConfig };
-      this.unifiedTracker.updateConfig({ deepReboundConfig: this.config.deepReboundConfig });
     }
     if (updates.hourlySuppressionConfig && typeof updates.hourlySuppressionConfig === "object") {
       this.config.hourlySuppressionConfig = { ...this.config.hourlySuppressionConfig, ...updates.hourlySuppressionConfig };
-      this.unifiedTracker.updateConfig({ hourlySuppressionConfig: this.config.hourlySuppressionConfig });
     }
     if (updates.wBottomDivergenceConfig && typeof updates.wBottomDivergenceConfig === "object") {
       this.config.wBottomDivergenceConfig = { ...this.config.wBottomDivergenceConfig, ...updates.wBottomDivergenceConfig };
-      this.longTracker.updateConfig({ wBottomDivergenceConfig: this.config.wBottomDivergenceConfig });
     }
     if (updates.klineStatsShortConfig && typeof updates.klineStatsShortConfig === "object") {
       this.config.klineStatsShortConfig = {
@@ -853,6 +775,14 @@ export class PaperTradingEngine {
       }
     }
 
+    this.config.strategies = structuredClone(nextStrategies);
+    this.strategyEngine.setStrategies(nextStrategies);
+    // Keep old clients' switches in sync with the canonical list.
+    for (const [id, keys] of Object.entries(LEGACY_STRATEGY_KEYS)) {
+      const enabledKey = keys.find(key => key.startsWith("enable"))!;
+      Object.assign(this.config, { [enabledKey]: nextStrategies.find(s => s.id === id)?.enabled ?? false });
+    }
+    this.cancelRetiredFactorOrders(Date.now());
     const currentMargin = this.calculateOrderMargin();
     console.log(
       `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高闪击杠杆 ${this.config.streakLeverage ?? 3}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 量化特征杠杆 ${this.config.klineStatsLeverage ?? 3}x, 做多杠杆 ${this.config.longLeverage ?? 3}x, 仓位比例 ${((this.config.marginRate ?? 0.2) * 100).toFixed(0)}% (约 ${currentMargin.toFixed(1)}U), 最大持仓 ${this.config.maxPositions ?? 5} 笔 (每策略 ${this.config.maxPositionsPerStrategy ?? 1} 笔), ampDivisor=${this.config.ampDivisor ?? 10}`,
@@ -866,8 +796,10 @@ export class PaperTradingEngine {
     return { ...this.account };
   }
 
+  public getWatchedSymbols(): string[] { return this.strategyEngine.getWatchedSymbols(); }
+
   public getActiveSymbols(): string[] {
-    return Array.from(new Set([...this.activePositions.keys(), ...this.pendingOrders.keys()]));
+    return Array.from(new Set([...this.activePositions.keys(), ...this.pendingOrders.keys(), ...this.getWatchedSymbols()]));
   }
 
   public hasActivePosition(symbol: string): boolean {
@@ -984,8 +916,7 @@ export class PaperTradingEngine {
     const order = this.pendingOrders.get(symbol);
     if (!order) return;
     this.pendingOrders.delete(symbol);
-    this.unifiedTracker.closePosition(symbol);
-    this.longTracker.closePosition(symbol);
+
     this.recalculateStats();
     this.scheduleSave();
     console.log(`[paper-trading] ⏱️ 撤销限价挂单 [${order.signalLabel ?? (order.side === "LONG" ? "做多" : "做空")}] ${symbol} @ ${order.limitPrice.toFixed(4)}: ${reason}`);
@@ -1000,268 +931,49 @@ export class PaperTradingEngine {
   public async onScan(
     gainers: Ticker24h[],
     candleMap: Map<string, { candles1m: Candle[]; initialized: boolean }>,
+    ranks?: ReadonlyMap<string, number>,
   ): Promise<PaperPosition[]> {
     const openedList: PaperPosition[] = [];
-    const pinnedSymbols = new Set(["BTCUSDT", "SOLUSDT"]);
     const now = Date.now();
-
-    // Check timeouts first on scan
     this.checkTimeouts(now);
-
-    // 1. 同步非置顶榜首标的至弱反弹追踪器 (watch 24h gainers rank 1)
-    const nonPinnedGainers = gainers.filter((t) => !pinnedSymbols.has(t.symbol));
-    const topGainer = nonPinnedGainers[0];
-    if (topGainer && topGainer.priceChangePercent > 0) {
-      this.unifiedTracker.onRankUpdate(topGainer.symbol, topGainer.priceChangePercent, now);
+    this.strategyMonitor = [];
+    const candidates = gainers.filter(t => !["BTCUSDT", "SOLUSDT"].includes(t.symbol));
+    const seen = new Set<string>();
+    for (let i = 0; i < candidates.length; i++) {
+      const ticker = candidates[i], rank = ranks?.get(ticker.symbol) ?? i + 1;
+      if (seen.has(ticker.symbol)) continue;
+      seen.add(ticker.symbol);
+      this.strategyEngine.onRank(ticker.symbol, rank, ticker.priceChangePercent, now);
+      const cache = candleMap.get(ticker.symbol);
+      if (!cache?.initialized) continue;
+      const monitor = new StrategyFeatureMonitor(cache.candles1m, ticker, rank);
+      const margin = this.calculateOrderMargin();
+      const available = Math.min(this.account.balanceUsdt, this.account.equityUsdt) - this.calculateUsedMargin();
+      const capacity = !this.hasActivePosition(ticker.symbol) && !this.hasPendingOrder(ticker.symbol) &&
+        this.activePositions.size + this.pendingOrders.size < (this.config.maxPositions ?? 5) && margin > 0 && available >= margin;
+      const match = this.strategyEngine.evaluate(monitor, now, s => capacity &&
+        (s.side !== "LONG" || this.config.enableLongs !== false) &&
+        this.countPositionsByStrategy(s.id) < (this.config.maxPositionsPerStrategy ?? 1) &&
+        (!s.factorManaged || this.factorEntryAllowed(s.side, now)))[0];
+      this.strategyMonitor.push(...this.strategyEngine.getResults());
+      if (!match) continue;
+      const chosen = this.paperSignal(match);
+      const forming = cache.candles1m.at(-1);
+      const basePrice = forming && forming.close > 0 ? forming.close : chosen.entryPrice;
+      if (chosen.side === "SHORT" && this.config.limitDivisor > 0) {
+        this.createPendingOrder({ symbol: ticker.symbol, dayChangePercent: ticker.priceChangePercent, rank, basePrice, marginUsdt: margin,
+          signal: chosen.signalDetails, signalType: chosen.type, signalLabel: chosen.label, exitParams: chosen.exitParams, now });
+      } else {
+        openedList.push(this.openPosition({ symbol: ticker.symbol, side: chosen.side, dayChangePercent: ticker.priceChangePercent, rank,
+          entryPrice: basePrice, entryTime: now, marginUsdt: margin, signal: chosen.signalDetails, signalType: chosen.type, signalLabel: chosen.label, exitParams: chosen.exitParams }));
+      }
+      // Only accepted entries/orders consume a signal or start its cooldown.
+      this.strategyEngine.commit(match, now);
+      const vector = monitor.vector;
+      if (vector) void appendSignalSnapshot({ time: monitor.bar!.time, symbol: ticker.symbol, type: chosen.type, side: chosen.side,
+        triggered: true, featureVector: vector, ticker, configVersion: FEATURE_VERSION, strategy: match.strategy, monitoredFeatures: monitor.snapshot() });
     }
-
-    // 收集所有需要扫描的标的：全量传入标的 (含 Top N 与跌出前十标的) + 处于弱反弹监控中的标的
-    const candidates: Array<{ ticker: Ticker24h; rank: number }> = [];
-    const seenSymbols = new Set<string>();
-
-    for (let i = 0; i < nonPinnedGainers.length; i++) {
-      const ticker = nonPinnedGainers[i];
-      if (!seenSymbols.has(ticker.symbol)) {
-        seenSymbols.add(ticker.symbol);
-        candidates.push({ ticker, rank: i + 1 });
-      }
-    }
-
-    for (const watched of this.unifiedTracker.getReboundWatchlist()) {
-      if (!seenSymbols.has(watched.symbol)) {
-        const found = nonPinnedGainers.find((t) => t.symbol === watched.symbol);
-        if (found) {
-          seenSymbols.add(found.symbol);
-          const r = nonPinnedGainers.indexOf(found) + 1;
-          candidates.push({ ticker: found, rank: r });
-        }
-      }
-    }
-
-    for (const { ticker, rank } of candidates) {
-      if (ticker.priceChangePercent <= 0) continue;
-      if (this.hasActivePosition(ticker.symbol) || this.hasPendingOrder(ticker.symbol)) continue;
-
-      // 1. 全局最大持仓限制检查 (默认 5 个)
-      const currentTotalPositions = this.activePositions.size + this.pendingOrders.size;
-      const maxPositions = this.config.maxPositions ?? 5;
-      if (currentTotalPositions >= maxPositions) {
-        break;
-      }
-
-      // 2. 动态单笔保证金计算与可用资金检查 (资产量 20%)
-      const marginUsdt = this.calculateOrderMargin();
-      const usedMargin = this.calculateUsedMargin();
-      const availableMargin = Math.min(this.account.balanceUsdt, this.account.equityUsdt) - usedMargin;
-      if (marginUsdt <= 0 || availableMargin < marginUsdt) {
-        console.warn(
-          `[paper-trading] 可用保证金不足 (${availableMargin.toFixed(2)} USDT < ${marginUsdt.toFixed(2)} USDT)，跳过扫描 ${ticker.symbol}`,
-        );
-        break;
-      }
-
-      const symCache = candleMap.get(ticker.symbol);
-      if (!symCache || !symCache.initialized || symCache.candles1m.length < 35) continue;
-
-      const targetIdx = symCache.candles1m.length - 2;
-
-      // 3. 做空信号检测 (3个核心做空: 首次跌10%, 跌20%+, 新高顶背离闪击)
-      const shortSignal = this.unifiedTracker.checkCandles(
-        ticker.symbol,
-        ticker.priceChangePercent,
-        rank,
-        symCache.candles1m,
-        now,
-        ticker,
-      );
-
-      let chosenSignal: {
-        side: "SHORT" | "LONG";
-        type: PaperSignalType;
-        label: PaperSignalLabel;
-        entryPrice: number;
-        exitParams: PaperExitParams;
-        signalDetails: SignalMatchDetails;
-      } | null = null;
-
-      if (shortSignal) {
-        const signalType = shortSignal.type;
-        const currentStrategyPositions = this.countPositionsByStrategy(signalType);
-        const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
-        if (currentStrategyPositions < maxPerStrategy) {
-          const streakCount =
-            shortSignal.details.streakSignal?.streakCount ??
-            shortSignal.details.reboundSignal?.reboundUpCandles ??
-            shortSignal.details.hourlySuppressionSignal?.nGreenBars ??
-            2;
-          const upperShadowRatio =
-            shortSignal.details.streakSignal?.upperShadowRatio ??
-            shortSignal.details.reboundSignal?.upperShadowRatio ??
-            0;
-          const greenRatio =
-            shortSignal.details.streakSignal?.greenRatio ??
-            shortSignal.details.reboundSignal?.greenRatio20 ??
-            shortSignal.details.deepReboundSignal?.greenRatio20 ??
-            (shortSignal.details.hourlySuppressionSignal ? 1.0 : 0);
-          const consecutiveGreenBars =
-            shortSignal.details.streakSignal?.consecutiveGreenBars ??
-            shortSignal.details.hourlySuppressionSignal?.nGreenBars ??
-            0;
-          const amp30Percent =
-            shortSignal.details.streakSignal?.amp30Percent ??
-            shortSignal.details.reboundSignal?.reboundPercent ??
-            shortSignal.details.deepReboundSignal?.reboundFrom10m ??
-            shortSignal.details.hourlySuppressionSignal?.xRisePercent ??
-            0;
-
-          chosenSignal = {
-            side: "SHORT",
-            type: signalType,
-            label: formatSignalLabel(signalType, shortSignal.label),
-            entryPrice: shortSignal.entryPrice,
-            exitParams: shortSignal.exitParams,
-            signalDetails: {
-              candle: symCache.candles1m[targetIdx],
-              streakCount,
-              amp30Percent,
-              upperShadowRatio,
-              greenRatio,
-              consecutiveGreenBars,
-            },
-          };
-        } else {
-          console.log(
-            `[paper-trading] 做空策略 [${formatSignalLabel(signalType, shortSignal.label)}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，跳过 ${ticker.symbol}`,
-          );
-        }
-      }
-
-      // 4. 做多信号检测 (核心做多: 左侧3W底背离弹射)
-      if (!chosenSignal && (this.config.enableLongs ?? true)) {
-        const longSignal = this.longTracker.checkCandles(
-          ticker.symbol,
-          ticker.priceChangePercent,
-          rank,
-          symCache.candles1m,
-          now,
-        );
-        if (longSignal) {
-          const signalType = longSignal.type;
-          const currentStrategyPositions = this.countPositionsByStrategy(signalType);
-          const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
-          if (currentStrategyPositions < maxPerStrategy) {
-            chosenSignal = {
-              side: "LONG",
-              type: signalType,
-              label: formatSignalLabel(signalType, longSignal.label as any),
-              entryPrice: longSignal.entryPrice,
-              exitParams: longSignal.exitParams,
-              signalDetails: {
-                candle: symCache.candles1m[targetIdx],
-                streakCount: 0,
-                amp30Percent: longSignal.details.ampX ?? longSignal.details.boxAmp ?? longSignal.details.dropFrom24h ?? 0,
-                upperShadowRatio: 0,
-                greenRatio: 0,
-                consecutiveGreenBars: 0,
-              },
-            };
-          } else {
-            console.log(
-              `[paper-trading] 做多策略 [${formatSignalLabel(signalType, longSignal.label as any)}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，跳过 ${ticker.symbol}`,
-            );
-          }
-        }
-      }
-
-      // 5. 量化特征做空信号检测 (策略 7)
-      if (!chosenSignal && (this.config.enableKlineStatsShort ?? true)) {
-        const klineShortSignal = this.checkKlineStatsSignal(
-          "SHORT",
-          ticker.symbol,
-          ticker.priceChangePercent,
-          rank,
-          symCache.candles1m,
-          now,
-          ticker,
-        );
-        if (klineShortSignal) {
-          const signalType = klineShortSignal.type;
-          const currentStrategyPositions = this.countPositionsByStrategy(signalType);
-          const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
-          if (currentStrategyPositions < maxPerStrategy) {
-            chosenSignal = klineShortSignal;
-          } else {
-            console.log(
-              `[paper-trading] 量化特征策略 [${klineShortSignal.label}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，跳过 ${ticker.symbol}`,
-            );
-          }
-        }
-      }
-
-      // 6. 量化特征做多信号检测 (策略 8)
-      if (!chosenSignal && (this.config.enableLongs ?? true) && (this.config.enableKlineStatsLong ?? true)) {
-        const klineLongSignal = this.checkKlineStatsSignal(
-          "LONG",
-          ticker.symbol,
-          ticker.priceChangePercent,
-          rank,
-          symCache.candles1m,
-          now,
-          ticker,
-        );
-        if (klineLongSignal) {
-          const signalType = klineLongSignal.type;
-          const currentStrategyPositions = this.countPositionsByStrategy(signalType);
-          const maxPerStrategy = this.config.maxPositionsPerStrategy ?? 1;
-          if (currentStrategyPositions < maxPerStrategy) {
-            chosenSignal = klineLongSignal;
-          } else {
-            console.log(
-              `[paper-trading] 量化特征策略 [${klineLongSignal.label}] 持仓已达配额上限 (${currentStrategyPositions}/${maxPerStrategy})，跳过 ${ticker.symbol}`,
-            );
-          }
-        }
-      }
-
-      if (chosenSignal) {
-        const forming = symCache.candles1m[symCache.candles1m.length - 1];
-        const basePrice =
-          forming && forming.close > 0 ? forming.close : chosenSignal.entryPrice;
-
-        if (chosenSignal.side === "SHORT" && this.config.limitDivisor > 0) {
-          // 挂单模式：以 24h涨幅/limitDivisor 向上挂单等待冲高撮合
-          this.createPendingOrder({
-            symbol: ticker.symbol,
-            dayChangePercent: ticker.priceChangePercent,
-            rank,
-            basePrice,
-            marginUsdt,
-            signal: chosenSignal.signalDetails,
-            signalType: chosenSignal.type,
-            signalLabel: chosenSignal.label,
-            exitParams: chosenSignal.exitParams,
-            now,
-          });
-        } else {
-          // 直开市价开仓模式 (做多与做空均直接开仓)
-          const pos = this.openPosition({
-            symbol: ticker.symbol,
-            side: chosenSignal.side,
-            dayChangePercent: ticker.priceChangePercent,
-            rank,
-            entryPrice: basePrice,
-            entryTime: now,
-            marginUsdt,
-            signal: chosenSignal.signalDetails,
-            signalType: chosenSignal.type,
-            signalLabel: chosenSignal.label,
-            exitParams: chosenSignal.exitParams,
-          });
-          openedList.push(pos);
-        }
-      }
-    }
-
+    this.scheduleSave();
     return openedList;
   }
 
@@ -1392,21 +1104,6 @@ export class PaperTradingEngine {
     };
 
     this.activePositions.set(symbol, position);
-    if (isLong) {
-      this.longTracker.registerPosition(symbol, {
-        tradeId: position.id,
-        type: signalType as any,
-        entryTime,
-        maxExitTime: timeoutAt,
-      });
-    } else {
-      this.unifiedTracker.registerPosition(symbol, {
-        tradeId: position.id,
-        type: signalType as any,
-        entryTime,
-        maxExitTime: timeoutAt,
-      });
-    }
     this.recalculateStats();
     this.scheduleSave();
 
@@ -1735,15 +1432,7 @@ export class PaperTradingEngine {
 
   private finalizePosition(pos: PaperPosition): void {
     this.activePositions.delete(pos.symbol);
-    this.unifiedTracker.closePosition(pos.symbol);
-    this.longTracker.closePosition(pos.symbol);
-    if (pos.signalType === "kline_stats_short") {
-      const cd = (this.config.klineStatsShortConfig?.cooldownMinutes ?? 20) * 60 * 1000;
-      this.klineStatsCooldown.set(pos.symbol, Date.now() + cd);
-    } else if (pos.signalType === "kline_stats_long") {
-      const cd = (this.config.klineStatsLongConfig?.cooldownMinutes ?? 20) * 60 * 1000;
-      this.klineStatsCooldown.set(pos.symbol, Date.now() + cd);
-    }
+    this.strategyEngine.recordExit(pos.signalType ?? "streak", pos.symbol, pos.closedAt ?? Date.now());
     this.closedPositions.unshift(pos);
     // 默认保留最近 1000 笔平仓明细，确保至少完整保留 24 小时内的所有交易记录
     if (this.closedPositions.length > 1000) {
@@ -1897,7 +1586,7 @@ export class PaperTradingEngine {
     const msg =
       `⏳ <b>[模拟交易] 发现${dirStr}信号【${label}】，已提交限价${dirStr}挂单</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${order.symbol}"><b>${order.symbol}</b></a>\n` +
-      `• <b>信号类型</b>: <b>【${dirStr} · ${label}】</b>\n` +
+      `• <b>信号类型</b>: <b>【${formatDirectionAndSignal(dirStr, label)}】</b>\n` +
       `• <b>挂单限价</b>: <code>${formatPrice(order.limitPrice)}</code> (基准价: <code>${formatPrice(order.basePrice)}</code>, 偏移: <b>${order.limitOffsetPercent >= 0 ? "+" : ""}${order.limitOffsetPercent.toFixed(2)}%</b>)\n` +
       `• <b>杠杆 / 保证金</b>: <b>${order.leverage}x / ${order.marginUsdt.toFixed(1)} USDT</b> (名义仓位: ${order.notionalUsdt.toFixed(1)} USDT)\n` +
       `• <b>24h涨幅</b>: +${order.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${ampStr}\n` +
@@ -1924,7 +1613,7 @@ export class PaperTradingEngine {
     const msg =
       `⚡ <b>[模拟交易] ${actionStr}【${label}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
-      `• <b>方向 / 信号</b>: <b>【${dirStr} · ${label}】</b>\n` +
+      `• <b>方向 / 信号</b>: <b>【${formatDirectionAndSignal(dirStr, label)}】</b>\n` +
       `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt.toFixed(1)} USDT</b> (名义仓位: ${pos.notionalUsdt.toFixed(1)} USDT)\n` +
       `• <b>成交开仓价</b>: <code>${formatPrice(pos.entryPrice)}</code>\n` +
       `• <b>24h涨幅</b>: +${pos.dayChangePercent.toFixed(2)}% ${rankStr} | <b>30m振幅</b>: ${ampStr}\n` +
@@ -1955,9 +1644,9 @@ export class PaperTradingEngine {
       ? `\n• <b>保护机制</b>: 🛡️ 剩余仓位止损已锁定保本价 <code>${formatPrice(pos.sl2Price)}</code> (锁定无风险交易！)`
       : "";
     const msg =
-      `🎯 <b>[模拟交易] 阶段一达成 (平仓 50%) 【${dirStr} · ${label}】</b>\n` +
+      `🎯 <b>[模拟交易] 阶段一达成 (平仓 50%) 【${formatDirectionAndSignal(dirStr, label)}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
-      `• <b>方向 / 信号</b>: <b>【${dirStr} · ${label}】</b>\n` +
+      `• <b>方向 / 信号</b>: <b>【${formatDirectionAndSignal(dirStr, label)}】</b>\n` +
       `• <b>动作</b>: ${action}\n` +
       `• <b>成交价</b>: <code>${formatPrice(exit.exitPrice)}</code>\n` +
       `• <b>阶段净盈亏</b>: <b>${pnlSign}${exit.netPnlUsdt.toFixed(2)} USDT (ROE: ${roeSign}${stageRoe}%)</b>\n` +
@@ -2014,9 +1703,9 @@ export class PaperTradingEngine {
     const dirStr = pos.side === "LONG" ? "做多" : "做空";
 
     const msg =
-      `${headerIcon} <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${dirStr} · ${label}】</b>\n` +
+      `${headerIcon} <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${formatDirectionAndSignal(dirStr, label)}】</b>\n` +
       `• <b>标的</b>: <a href="https://www.binance.com/zh-CN/futures/${pos.symbol}"><b>${pos.symbol}</b></a>\n` +
-      `• <b>方向 / 信号</b>: <b>【${dirStr} · ${label}】</b>\n` +
+      `• <b>方向 / 信号</b>: <b>【${formatDirectionAndSignal(dirStr, label)}】</b>\n` +
       `• <b>杠杆 / 保证金</b>: <b>${pos.leverage}x / ${pos.marginUsdt.toFixed(1)} USDT</b> (名义仓位: ${pos.notionalUsdt.toFixed(1)} USDT)\n` +
       `• <b>持仓耗时</b>: ${holdMins} 分钟\n` +
       `• <b>结算原因</b>: ${reasonStr}\n` +
@@ -2051,7 +1740,8 @@ export class PaperTradingEngine {
         activePositions: Array.from(this.activePositions.values()),
         closedPositions: this.closedPositions,
         stats: this.stats,
-        reboundWatchlist: this.unifiedTracker.getReboundWatchlist(),
+        reboundWatchlist: this.strategyEngine.getWatch("rebound").getWatchlist(),
+        strategyRuntime: this.strategyEngine.exportState(),
         updatedAt: new Date().toISOString(),
         configOverrides: {
           ...this.config,
@@ -2082,21 +1772,7 @@ export class PaperTradingEngine {
             o.signalType = o.signalType ?? "streak";
             o.signalLabel = formatSignalLabel(o.signalType, o.signalLabel);
             this.pendingOrders.set(o.symbol, o);
-            if (o.side === "LONG") {
-              this.longTracker.registerPosition(o.symbol, {
-                tradeId: o.id,
-                type: o.signalType as any,
-                entryTime: o.createdAt,
-                maxExitTime: o.expireAt,
-              });
-            } else {
-              this.unifiedTracker.registerPosition(o.symbol, {
-                tradeId: o.id,
-                type: o.signalType as any,
-                entryTime: o.createdAt,
-                maxExitTime: o.expireAt,
-              });
-            }
+
           }
         }
         if (Array.isArray(data.activePositions)) {
@@ -2108,21 +1784,7 @@ export class PaperTradingEngine {
             p.signalType = p.signalType ?? "streak";
             p.signalLabel = formatSignalLabel(p.signalType, p.signalLabel);
             this.activePositions.set(p.symbol, p);
-            if (p.side === "LONG") {
-              this.longTracker.registerPosition(p.symbol, {
-                tradeId: p.id,
-                type: p.signalType as any,
-                entryTime: p.entryTime,
-                maxExitTime: p.timeoutAt,
-              });
-            } else {
-              this.unifiedTracker.registerPosition(p.symbol, {
-                tradeId: p.id,
-                type: p.signalType as any,
-                entryTime: p.entryTime,
-                maxExitTime: p.timeoutAt,
-              });
-            }
+
           }
         }
         if (Array.isArray(data.closedPositions)) {
@@ -2136,8 +1798,9 @@ export class PaperTradingEngine {
           });
         }
         if (Array.isArray(data.reboundWatchlist) && data.reboundWatchlist.length > 0) {
-          this.unifiedTracker.restoreReboundWatchlist(data.reboundWatchlist);
+          this.strategyEngine.getWatch("rebound").restoreWatchlist(data.reboundWatchlist);
         }
+        if (data.strategyRuntime) this.strategyEngine.restoreState(data.strategyRuntime);
         if (data.stats) {
           this.stats = data.stats;
         }
@@ -2147,6 +1810,7 @@ export class PaperTradingEngine {
           // One-time migration: old persisted 5x/10x defaults must not override the new 3x policy.
           // Existing position/order notionals remain the historical execution snapshot.
           if ((data as any).leverageDefaultsVersion !== 1) {
+            if (saved.strategies) saved.strategies = saved.strategies.map(s => ({ ...s, exit: { ...s.exit, leverage: 3 } }));
             Object.assign(saved, { leverage: 3, streakLeverage: 3, trendLeverage: 3, longLeverage: 3, klineStatsLeverage: 3 });
             for (const key of ["klineStatsLongConfig", "klineStatsShortConfig", "hourlySuppressionConfig", "wBottomDivergenceConfig"] as const) {
               saved[key] = { ...saved[key], leverage: 3 };
@@ -2181,33 +1845,8 @@ export class PaperTradingEngine {
     this.pendingOrders.clear();
     this.activePositions.clear();
     this.closedPositions = [];
-    this.klineStatsCooldown.clear();
-    this.unifiedTracker = new UnifiedShortStrategyTracker({
-      streakConfig: {
-        ...STREAK_LIVE_DEFAULT_CONFIG,
-        topN: this.config.topN,
-        supportMaPeriods: this.config.supportMaPeriods,
-        ampDivisor: this.config.ampDivisor,
-        holdMinutes: this.config.holdMinutes,
-        exitX: this.config.exitX,
-        exitN: this.config.exitN,
-        exitM: this.config.exitM,
-        ...this.config.streakConfig,
-      },
-      reboundConfig: this.config.reboundConfig,
-      deepReboundConfig: this.config.deepReboundConfig,
-      hourlySuppressionConfig: this.config.hourlySuppressionConfig,
-      preventConflict: true,
-      enableStreak: this.config.enableStreak ?? true,
-      enableRebound: this.config.enableRebound ?? true,
-      enableDeepRebound: this.config.enableDeepRebound ?? true,
-      enableHourlySuppression: this.config.enableHourlySuppression ?? true,
-    });
-    this.longTracker = new UnifiedLongStrategyTracker({
-      wBottomDivergenceConfig: this.config.wBottomDivergenceConfig,
-      preventConflict: true,
-      enableWBottomDivergence: this.config.enableWBottomDivergence ?? true,
-    });
+    this.strategyEngine = new StrategyEngine(this.config.strategies);
+    this.strategyMonitor = [];
     this.account = {
       initialBalanceUsdt: this.config.initialBalanceUsdt,
       balanceUsdt: this.config.initialBalanceUsdt,
@@ -2245,6 +1884,7 @@ export class PaperTradingEngine {
       activePositions: Array.from(this.activePositions.values()),
       stats24h: this.stats24h,
       config: {
+        strategies: this.strategyEngine.getStrategies(),
         factorMining: this.config.factorMining,
         leverage: this.config.leverage,
         streakLeverage: this.config.streakLeverage ?? 3,
@@ -2284,6 +1924,7 @@ export class PaperTradingEngine {
   public getState(): PaperTradingState & { config: PaperStrategyConfig; summary: PaperTradingSummary } {
     this.getStats24h();
     return {
+      strategyMonitor: this.strategyMonitor,
       factorMining: this.getFactorMiningState(),
       account: this.account,
       pendingOrders: Array.from(this.pendingOrders.values()),

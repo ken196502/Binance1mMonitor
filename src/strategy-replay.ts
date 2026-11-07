@@ -1,4 +1,8 @@
-import { computeFeatureVector, evaluateFeatureSpec, type FeatureVector, type KlineStatsStrategySpec } from "./features.ts";
+import { StrategyEngine, type StrategyMatch } from "./strategy-engine.ts";
+import { StrategyFeatureMonitor } from "./strategy-features.ts";
+import { quantPreset } from "./strategy-presets.ts";
+import type { StrategyDefinition } from "./strategy-definition.ts";
+import { computeFeatureVector, type FeatureVector, type KlineStatsStrategySpec } from "./features.ts";
 import type { Candle } from "./macd.ts";
 import { breakevenPrice, calcTradeReturn, orderMargin, summarizeDirections } from "./trading-core.ts";
 
@@ -33,7 +37,7 @@ export function replayStrategies(
   timeIndices: Map<string, Map<number, number>>,
   allTimesSorted: number[],
   framesMap: Map<number, MinuteBoard>,
-  strategies: ReplayStrategy[],
+  inputStrategies: Array<ReplayStrategy | StrategyDefinition>,
   range: { start: number; end: number },
   options: {
     maxPositions?: number;
@@ -44,8 +48,13 @@ export function replayStrategies(
     costs?: { takerFeeBps: number; slippageBps: number };
   } = {},
 ) {
+  const strategies: StrategyDefinition[] = inputStrategies.map(s => "entry" in s ? s : {
+    ...quantPreset(s.side, s), id: s.id, factorManaged: s.id === `kline_stats_${s.side.toLowerCase()}`,
+    exit: { ...quantPreset(s.side, s).exit, leverage: s.leverage ?? options.leverage ?? 3 },
+  });
+  const engine = new StrategyEngine(strategies);
   interface Position {
-    strategy: ReplayStrategy;
+    strategy: StrategyDefinition;
     symbol: string;
     entryTime: number;
     entryPrice: number;
@@ -54,13 +63,13 @@ export function replayStrategies(
     tp1: number;
     tp2: number;
     sl: number;
+    sl2: number;
     st1Done: boolean;
     netPercent: number;
     lastPrice: number;
     lastTime: number;
   }
   const active = new Map<string, Position>();
-  const cooldown = new Map<string, number>();
   const trades: ReplayTrade[] = [];
   let balance = 100;
   let peakEquity = 100;
@@ -99,14 +108,14 @@ export function replayStrategies(
       netPercent: p.netPercent, totalNetPnlUsdt: pnl, isWin: pnl > 0.001, reason, st1Done: p.st1Done,
     });
     active.delete(p.symbol);
-    cooldown.set(p.symbol, time + (p.strategy.cooldownMinutes ?? 20) * MINUTE);
+    engine.recordExit(p.strategy.id, p.symbol, time);
   };
   const processBar = (p: Position, bar: Candle) => {
     const long = p.strategy.side === "LONG";
     p.lastPrice = bar.close;
     p.lastTime = bar.time + MINUTE;
     // At the deadline only the opening price is known; do not use that minute's future range.
-    if (bar.time >= p.entryTime + p.strategy.holdMinutes * MINUTE) {
+    if (bar.time >= p.entryTime + p.strategy.exit.holdMinutes * MINUTE) {
       finish(p, bar.open, bar.time, p.st1Done ? "TP1_TIMEOUT" : "TIMEOUT");
       return;
     }
@@ -120,7 +129,7 @@ export function replayStrategies(
     if (firstThisBar) {
       realize(p, p.tp1, 0.5);
       p.st1Done = true;
-      if (p.strategy.moveSlToEntryAfterTp1 !== false) p.sl = breakevenPrice(p.strategy.side, p.entryPrice, options.costs);
+      p.sl = p.strategy.exit.moveSlToEntryAfterTp1 !== false ? breakevenPrice(p.strategy.side, p.entryPrice, options.costs) : p.sl2;
     }
     if (p.st1Done && (long ? bar.high >= p.tp2 : bar.low <= p.tp2)) {
       finish(p, p.tp2, bar.time + MINUTE, "TP2");
@@ -133,8 +142,24 @@ export function replayStrategies(
   for (const now of allTimesSorted) {
     // Carry only already available boards, including the last pre-range snapshot.
     if (framesMap.has(now)) board = framesMap.get(now)!;
-    if (now < range.start) continue;
     if (now + MINUTE > range.end) break;
+    const matches = new Map<string, StrategyMatch[]>();
+    for (const [symbol, info] of board) {
+      engine.onRank(symbol, info.rank, info.dayChange, now);
+      const bars = candlesMap.get(symbol), index = timeIndices.get(symbol)?.get(now);
+      if (!bars || index === undefined || index < 1 || bars[index - 1].time + MINUTE !== now) continue;
+      const ticker = { symbol, lastPrice: bars[index - 1].close, priceChangePercent: info.dayChange,
+        quoteVolume: 0, highPrice: info.high24h, lowPrice: info.low24h };
+      let fv: FeatureVector | null | undefined;
+      if (options.fvCache) {
+        const key = `${symbol}:${now}:${info.rank}:${info.dayChange}:${info.high24h}:${info.low24h}`;
+        fv = options.fvCache.get(key);
+        if (fv === undefined) { fv = computeFeatureVector(bars, ticker, index - 1, { rank: info.rank }); options.fvCache.set(key, fv); }
+      }
+      const monitor = new StrategyFeatureMonitor(bars, ticker, info.rank, index - 1, fv);
+      matches.set(symbol, engine.evaluate(monitor, now, () => now >= range.start && !active.has(symbol)));
+    }
+    if (now < range.start) continue;
 
     // Mark at this minute's open before sizing; closed-bar extremes are not known yet.
     for (const p of active.values()) {
@@ -143,39 +168,33 @@ export function replayStrategies(
       if (bar) p.lastPrice = bar.open;
     }
     markEquity();
-    for (const strategy of strategies) {
+    // Match live scanning: board order first, then configured strategy priority.
+    for (const [symbol, info] of board) {
       if (active.size >= maxPositions) break;
-      if ([...active.values()].some(p => p.strategy.id === strategy.id)) continue;
-      for (const [symbol, info] of board) {
-        if (active.has(symbol) || (cooldown.get(symbol) ?? 0) > now) continue;
-        const bars = candlesMap.get(symbol);
-        const index = timeIndices.get(symbol)?.get(now);
-        if (!bars || index === undefined || index < 60 || bars[index - 1].time + MINUTE !== now) continue;
-        if (info.rank > (strategy.topN ?? 10) || info.dayChange < (strategy.minDayChange ?? 10)) continue;
-        const key = `${symbol}:${now}:${info.rank}:${info.dayChange}:${info.high24h}:${info.low24h}`;
-        let fv = options.fvCache?.get(key);
-        if (fv === undefined) {
-          fv = computeFeatureVector(bars, {
-            symbol, lastPrice: bars[index - 1].close, priceChangePercent: info.dayChange,
-            quoteVolume: 0, highPrice: info.high24h, lowPrice: info.low24h,
-          }, index - 1, { rank: info.rank });
-          options.fvCache?.set(key, fv);
-        }
-        if (!fv || !evaluateFeatureSpec(strategy.side, fv, strategy).pass) continue;
+      if (active.has(symbol)) continue;
+      for (const strategy of strategies) {
+        if ([...active.values()].some(p => p.strategy.id === strategy.id)) continue;
+        const match = matches.get(symbol)?.find(m => m.strategy.id === strategy.id);
+        if (!match) continue;
+        const bars = candlesMap.get(symbol)!, index = timeIndices.get(symbol)!.get(now)!;
         const margin = orderMargin(equity(), rate);
         const used = [...active.values()].reduce((sum, p) => sum + p.margin, 0);
         if (margin <= 0 || margin > Math.min(balance, equity()) - used + 1e-8) continue;
         const entry = bars[index].open;
         if (!(entry > 0)) continue;
         const sign = strategy.side === "LONG" ? 1 : -1;
+        const exits = strategy.exit;
+        const dynamic = info.dayChange / (exits.exitX ?? 35);
         active.set(symbol, {
           strategy, symbol, entryTime: now, entryPrice: entry, margin,
-          notional: margin * (strategy.leverage ?? options.leverage ?? 3),
-          tp1: entry * (1 + sign * strategy.tp1Percent / 100),
-          tp2: entry * (1 + sign * strategy.tp2Percent / 100),
-          sl: entry * (1 - sign * strategy.stopLossPercent / 100),
+          notional: margin * (strategy.exit.leverage ?? options.leverage ?? 3),
+          tp1: entry * (1 + sign * (exits.tp1Percent ?? dynamic) / 100),
+          tp2: entry * (1 + sign * (exits.tp2Percent ?? dynamic * (exits.exitM ?? 3)) / 100),
+          sl: entry * (1 - sign * (exits.stopLossPercent ?? dynamic) / 100),
+          sl2: entry * (1 - sign * (exits.stopLossPercent ?? dynamic * (exits.exitN ?? 2)) / 100),
           st1Done: false, netPercent: 0, lastPrice: entry, lastTime: now,
         });
+        engine.commit(match, now);
         maxConcurrentPositions = Math.max(maxConcurrentPositions, active.size);
         break;
       }

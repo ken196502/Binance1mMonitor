@@ -1402,3 +1402,24 @@ tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
 .kline-strategy-fields label { display: grid; gap: 4px; min-width: 0; }
 .kline-strategy-fields input, .kline-strategy-fields select { width: 100%; box-sizing: border-box; padding: 7px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
 
+
+/* Shared feature-rule editor for every strategy. */
+.unified-strategy-settings { margin: 16px 0; font-size: 12px; }
+.unified-strategy-settings p { color: var(--text-muted, #94a3b8); line-height: 1.65; }
+.strategy-preset-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 10px 0; }
+.strategy-preset-card > summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.strategy-preset-card h4 { margin: 14px 0 8px; }
+.strategy-preset-card input:not([type="checkbox"]), .strategy-preset-card select { width: 100%; min-width: 0; padding: 6px; box-sizing: border-box; color: var(--text); background: var(--bg, #101821); border: 1px solid var(--border); border-radius: 4px; }
+.feature-rule-group { border-left: 2px solid #406383; padding: 8px; margin: 6px 0; min-width: 0; }
+.feature-rule-group > select { max-width: 150px; }
+.feature-rule-child { display: flex; gap: 6px; align-items: flex-start; margin: 8px 0; }
+.feature-rule-child > :first-child { flex: 1; min-width: 0; }
+.feature-rule { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: rgba(80,130,170,.06); border-radius: 6px; }
+.feature-rule > select, .feature-rule > input { flex: 1 1 72px; max-width: 180px; }
+.feature-rule > .feature-choice { flex: 2 1 190px; }
+.feature-choice { display: flex; flex-wrap: wrap; gap: 5px; align-items: end; }
+.feature-choice > select { flex: 1 1 180px; }
+.feature-choice > label, .feature-rule > label { flex: 0 1 75px; }
+.strategy-card-actions { display: flex; gap: 10px; margin-top: 14px; }
+.strategy-preset-card button { cursor: pointer; padding: 5px 8px; }
+@media (max-width: 600px) { .feature-rule-child { flex-wrap: wrap; } .feature-rule-child > :first-child { flex-basis: 100%; } }
