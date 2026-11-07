@@ -22,10 +22,9 @@ build/
 .DS_Store
 Thumbs.db
 
-# Logs
+# Logs & runtime data (Docker volume)
 logs/
-data/*
-!data/audit/
+data/
 reports/
 *.log
 npm-debug.log*

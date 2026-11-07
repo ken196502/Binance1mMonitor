@@ -7,7 +7,7 @@ import type { Candle } from '../src/macd.ts';
 import { calcTradeReturn } from '../src/trading-core.ts';
 
 // Read-only audit: uses a captured public API response and local archives; never deploys.
-const online = JSON.parse(await readFile('data/audit/online-paper.json', 'utf8'));
+const online = JSON.parse(await readFile('audit/online-paper.json', 'utf8'));
 
 console.log('========================================================================================');
 console.log('🔍【线上模拟盘快照独立核算与审计报告核对】(只读审计)');
@@ -141,7 +141,7 @@ for (const p of closed) {
 }
 const coverage = {onlineStart:new Date(start).toISOString(),onlineEnd:new Date(end).toISOString(),coveredTradeMinutes:covered,expectedTradeMinutes:expected,localSymbols:candles.size,localBars:[...candles.values()].reduce((a,b)=>a+b.length,0)};
 const result = {capturedAt:online.updatedAt,datasetHash,range,strategies,coverage,runs,strategyStats: [...strategyMap.values()]};
-await writeFile('data/audit/local-replay.json',JSON.stringify(result,null,2));
+await writeFile('audit/local-replay.json',JSON.stringify(result,null,2));
 
 console.log('\n📡【数据覆盖率与时序边界说明】:');
 console.log(`   • 线上交易跨度: ${coverage.onlineStart} 至 ${coverage.onlineEnd}`);

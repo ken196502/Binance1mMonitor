@@ -1,6 +1,6 @@
 # macd.subx.fun 审计整改与系统改进实施报告
 
-根据 `data/audit/audit-report.md` 披露的核查结论与缺陷，对系统进行了全面整改与工程修复。
+根据 `audit/audit-report.md` 披露的核查结论与缺陷，对系统进行了全面整改与工程修复。
 
 ---
 

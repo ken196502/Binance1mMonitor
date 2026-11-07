@@ -1,6 +1,6 @@
 {
   "capturedAt": "2026-11-06T05:21:22.226Z",
-  "datasetHash": "cc95bf96189693d3",
+  "datasetHash": "b6dcf775bbc7e879",
   "range": {
     "start": 1792281600000,
     "end": 1792886400000
@@ -47,7 +47,7 @@
     "coveredTradeMinutes": 0,
     "expectedTradeMinutes": 2319,
     "localSymbols": 68,
-    "localBars": 131468
+    "localBars": 132361
   },
   "runs": {
     "量化做空单独": {
