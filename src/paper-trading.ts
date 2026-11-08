@@ -351,6 +351,13 @@ export class PaperTradingEngine {
   private strategyEngine: StrategyEngine;
   private strategyMonitor: StrategyMonitorResult[] = [];
   private factorMiningState: FactorMiningState = emptyFactorState();
+  private entryListeners = new Set<(position: PaperPosition) => void>();
+
+  /** New entries only: loading/resetting paper state must never replay live orders. */
+  public onEntry(listener: (position: PaperPosition) => void): () => void {
+    this.entryListeners.add(listener);
+    return () => { this.entryListeners.delete(listener); };
+  }
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
     this.config = { ...PAPER_DEFAULT_CONFIG, ...config, firstCloseFraction: FIRST_CLOSE_FRACTION };
@@ -1117,6 +1124,10 @@ export class PaperTradingEngine {
     this.activePositions.set(symbol, position);
     this.recalculateStats();
     this.scheduleSave();
+    for (const listener of this.entryListeners) {
+      try { listener(structuredClone(position)); }
+      catch { console.warn("[paper-trading] 新开仓监听器异常，模拟盘继续运行"); }
+    }
 
     // Broadcast Telegram entry notification
     this.notifyEntry(position).catch((e) =>

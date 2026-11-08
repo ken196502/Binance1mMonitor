@@ -44,6 +44,10 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/status") {
       json({ at: new Date().toISOString(), base: "CDP 隔离测试行情（非实盘）", topN: 10,
         highRatio: 0.9, highWindow: 30, gainers: [], losers: [], paperTrading: frozenState?.summary ?? engine.getSummary() });
+    } else if (url.pathname === "/api/live-trading") {
+      json({ enabled: false, configured: false, testnet: false, status: "disabled", reason: null,
+        budgetUsdt: 10, orderUsdt: 10, leverage: 1, maxPositions: 1, walletUsdt: null,
+        lastCheckedAt: null, activeTrade: null, recentTrades: [] });
     } else if (url.pathname === "/api/paper-trading") {
       paperRequests++; json(frozenState ?? engine.getState());
     } else if (url.pathname === "/api/paper-trading/config") {
@@ -180,10 +184,19 @@ try {
     assert.ok(layout.scrollWidth <= layout.clientWidth + 1, JSON.stringify(layout));
   };
   await waitText("待近期样本验证");
+  await waitText("实盘小额测试");
+  await waitText("未启用");
+  assert.equal(await evaluate("document.querySelector('.live-panel input')"), null);
+  await screenshot("desktop-live-disabled");
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
+  await screenshot("mobile-live-disabled");
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
+  checks.push("实盘默认关闭，首轮 10 USDT 上限，桌面和移动端无横向溢出");
   checks.push("首次启动不显示未经验证的生效因子");
   await openSettings();
   assert.equal(await evaluate("document.querySelectorAll('.unified-strategy-settings .strategy-preset-card').length"), 7);
-  for (const [label, value] of [["训练窗口（分钟）", "660"], ["验证窗口（分钟）", "120"], ["留出窗口（分钟）", "120"], ["刷新间隔（分钟）", "15"], ["最长使用时间（分钟）", "120"]]) {
+  for (const [label, value] of [["训练窗口（分钟）", "720"], ["验证窗口（分钟）", "120"], ["留出窗口（分钟）", "120"], ["刷新间隔（分钟）", "15"], ["最长使用时间（分钟）", "120"]]) {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(factorField(label))}).value`), value);
   }
   await assertModalFits(); await screenshot("desktop-settings");

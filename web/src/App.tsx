@@ -4,6 +4,7 @@ import { GroupSection } from "./components/GroupSection";
 import { ChartPanel } from "./components/KlineChart";
 import { Countdown } from "./components/Countdown";
 import { PaperTradingPanel } from "./components/PaperTradingPanel";
+import { LiveTradingPanel } from "./components/LiveTradingPanel";
 import "./App.css";
 
 
@@ -76,6 +77,7 @@ export default function App() {
         </div>
       </header>
 
+      <LiveTradingPanel />
       <PaperTradingPanel
         summary={status?.paperTrading}
         onSelectSymbol={selectSymbol}

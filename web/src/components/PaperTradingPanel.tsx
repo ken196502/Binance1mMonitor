@@ -996,7 +996,7 @@ export function PaperTradingPanel({
 
               <fieldset className="kline-strategy-settings" data-testid="factor-settings">
                 <legend>超短滚动挖掘</legend>
-                <p className="factor-design-note">只验证近期行情适用性，不要求因子长期有效。训练时段 -16:-5 小时 → -4、-3 小时的 120 分钟验证 → -2 和 -1 的 120 分钟留出；后台持续滚动挖掘并替换合格的新组合。</p>
+                <p className="factor-design-note">只验证近期行情适用性，不要求因子长期有效。训练时段 -16:-4 共 12 小时 → -4、-3 小时的 120 分钟验证 → -2 和 -1 的 120 分钟留出；后台持续滚动挖掘并替换合格的新组合。</p>
                 <label><input type="checkbox" checked={factorMiningInput.enabled}
                   onChange={e => setFactorMiningInput({ ...factorMiningInput, enabled: e.target.checked })} /> 建仓后继续挖掘，通过近期验证后自动更新量化多空参数</label>
                 <div className="kline-strategy-fields">
@@ -1010,7 +1010,7 @@ export function PaperTradingPanel({
                     value={factorMiningInput.validForMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, validForMinutes: Number(e.target.value) })} /></label>
                 </div>
                 <p style={{ margin: "6px 0 0 0", color: "var(--text-muted, #94a3b8)", fontSize: "11px" }}>
-                  自动候选持仓 5/10/15 分钟，统一 3x 杠杆。默认训练时段 -16:-5 小时 (660m)，-4、-3 的 120 分钟验证，-2 和 -1 的 120 分钟留出，因子最多使用 2 小时。修改参数或窗口后须重新验证；因子到期停开新仓，已有持仓按建仓规则退出。
+                  自动候选持仓 5/10/15 分钟，统一 3x 杠杆。默认训练时段 -16:-4 共 12 小时 (720m)，-4、-3 的 120 分钟验证，-2 和 -1 的 120 分钟留出，因子最多使用 2 小时。修改参数或窗口后须重新验证；因子到期停开新仓，已有持仓按建仓规则退出。
                 </p>
                 {summary?.factorMining && (
                   <div style={{ marginTop: "6px", fontSize: "11px", color: "var(--text-muted, #94a3b8)", lineHeight: "1.5" }}>

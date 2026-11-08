@@ -53,6 +53,23 @@ body {
   overflow-x: hidden;
 }
 header { margin-bottom: 18px; }
+.live-panel { margin-bottom: 18px; border-color: #725b26; }
+.live-heading, .live-metrics, .live-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.live-heading { justify-content: space-between; }
+.live-heading h2 { font-size: 16px; margin: 0; }
+.live-badge { font-size: 12px; color: var(--amber); margin-left: 8px; }
+.live-metrics { margin-top: 12px; }
+.live-metrics strong { margin-left: 6px; }
+.live-muted { color: var(--muted); font-size: 12px; }
+.live-danger { color: var(--red); overflow-wrap: anywhere; }
+.live-position { display: flex; flex-wrap: wrap; gap: 8px 24px; padding: 12px 0; }
+.live-controls { gap: 8px; margin-top: 12px; }
+.live-controls input { flex: 1 1 240px; min-width: 0; max-width: 460px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 9px; border-radius: 5px; }
+.live-controls button { padding: 8px 12px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); border-radius: 5px; cursor: pointer; }
+.live-controls .live-close { color: var(--red); border-color: #6d3339; }
+.live-controls button:disabled { opacity: 0.45; cursor: default; }
+.live-history { margin-top: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.live-history div { padding: 5px 0; }
 h1 { margin: 0 0 4px; font-size: 20px; display: flex; align-items: center; gap: 10px; }
 .countdown { display: inline-flex; align-items: center; line-height: 0; }
 .countdown .ring { transition: stroke-dashoffset 0.12s linear; }

@@ -115,10 +115,10 @@ npm start
 API 配置示例：
 
 ```json
-{"factorMining":{"enabled":true,"trainingMinutes":660,"validationMinutes":120,"holdoutMinutes":120,"refreshMinutes":15,"validForMinutes":120}}
+{"factorMining":{"enabled":true,"trainingMinutes":720,"validationMinutes":120,"holdoutMinutes":120,"refreshMinutes":15,"validForMinutes":120}}
 ```
 
-所有时间均为整数分钟。训练至少 60 分钟，留出至少 15 分钟，验证窗口可设为 0~4320 分钟，三者总计最多 4320 分钟（72 小时）；刷新间隔至少 15 分钟且小于最长使用时间，最长使用时间为 30~720 分钟。默认训练时段为 -16:-5 小时 (660m)，验证时段为 -4、-3 的 120 分钟，留出时段为 -2 和 -1 的 120 分钟。缺失窗口字段补为默认 660/120/120；要采用完整新默认，可在面板设置或提交上例。非法合并配置整次拒绝。`GET /api/paper-trading` 和 `/api/status` 的账户摘要中含 `factorMining` 状态；完整状态保存于 `data/paper-trading.json`。自动模式下，以下离线工具应用的量化参数也须等待后台验证；关闭自动模式后恢复手动参数开仓，此时不受自动验证与到期门槛约束。
+所有时间均为整数分钟。训练至少 60 分钟，留出至少 15 分钟，验证窗口可设为 0~4320 分钟，三者总计最多 4320 分钟（72 小时）；刷新间隔至少 15 分钟且小于最长使用时间，最长使用时间为 30~720 分钟。默认训练时段为 -16:-4 共 12 小时 (720m)，验证时段为 -4、-3 的 120 分钟，留出时段为 -2 和 -1 的 120 分钟。缺失窗口字段补为默认 720/120/120；要采用完整新默认，可在面板设置或提交上例。非法合并配置整次拒绝。`GET /api/paper-trading` 和 `/api/status` 的账户摘要中含 `factorMining` 状态；完整状态保存于 `data/paper-trading.json`。自动模式下，以下离线工具应用的量化参数也须等待后台验证；关闭自动模式后恢复手动参数开仓，此时不受自动验证与到期门槛约束。
 
 ```bash
 # --window / --divisor 控制前置事件统计的 x 与 N；候选形态按内置网格搜索
@@ -163,6 +163,49 @@ npm run deploy:strategy -- --url https://macd.subx.fun
   }
 }
 ```
+
+## 实盘小额测试（默认关闭）
+
+实盘跟随模拟引擎**启用后新产生的开仓信号**（包括模拟限价单触发成交时的信号），不复制旧持仓、不补追漏单。模拟盘继续独立运行。实盘使用独立的成交记录、退出状态和交易所订单号，不把模拟成交价当作真实成交价。
+
+在 `.env` 配置（仓库中的 key / secret 留空）：
+
+```dotenv
+LIVE_TRADING_ENABLED=false
+LIVE_TRADING_TESTNET=false
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
+LIVE_CONTROL_TOKEN=
+LIVE_MAX_CAPITAL_USDT=10
+LIVE_ORDER_USDT=10
+```
+
+使用 **HMAC API key**，开通合约交易权限；`LIVE_CONTROL_TOKEN` 是自行生成的至少 32 字符随机口令，用于面板操作，与 API secret 不同。可以用 `openssl rand -hex 32` 生成。填写凭证后，显式设置 `LIVE_TRADING_ENABLED=true` 并重启才会开仓。测试网需设置 `LIVE_TRADING_TESTNET=true`，使用 Binance Demo 的独立 key 和独立 `DATA_DIR`。签名请求固定发送至 Binance 官方主网 / Demo 地址，不沿用行情的 `BINANCE_BASE` 或 `FALLBACK_BASE`。
+
+小额测试的约束：
+
+- **首轮总资金与单笔额度默认均为 10 USDT，代码硬上限为 100 USDT**，后续可以在这个硬上限内逐步调整环境变量。请使用专门的合约账户，只放不超过当前总额度的 USDT；单向持仓、单资产模式，关闭自动追加保证金。账户有其他资产、持仓或普通/条件挂单时拒绝开仓。钱包盈利后超过当前上限也会暂停后续开仓，转出超额部分后在面板检查恢复。
+- 固定**逐仓 1 倍、同时最多 1 仓**；单笔默认 10 USDT 名义额度，预留 2% 给费用和价格偏差，实际下单略低于 10 USDT。不继承模拟盘 3 倍杠杆，不自动转账、补充保证金或使用其他币种。账户余额不足时缩小下单；低于交易所最小下单金额则跳过，不凑单。
+- 新开仓使用 **LIMIT IOC**，限制追价；拒绝超过 15 秒的信号、超过 10 秒的盘口、超过 0.5% 的信号价格偏离或盘口价差。IOC 未成交部分立即撤销，部分成交按真实数量管理。成交后的名义金额超过额度会只减仓退出。限价卖单可能以更高价成交，成交后仍需这次额度检查。
+- 交易所侧通过当前 `/fapi/v1/algoOrder` 接口挂 **STOP_MARKET / closePosition** 止损，以标记价格触发；初始整仓止损取模拟 SL1 / SL2 中更紧的幅度。止盈由行情 Tick 驱动，TP1 减半、TP2 结清；不足以分成两份时 TP1 全平。TP1 后可将止损移至开仓价外 0.2%（费用缓冲，并非净收益保证）。超时和主动退出使用 `reduceOnly` 市价单。止损挂单失败或消失时，停止开仓并尝试立即只减仓退出。
+- 不承诺最大净亏损恰好等于 100 美元：这里按 **USDT 钱包与下单额度**限制投入，实际费用、资金费率、滑点及 USDT/USD 汇率仍以交易所为准。不要在该账户同时手动交易或运行其他程序。
+
+面板独立显示实盘状态。输入控制口令后可“暂停开仓”“检查并恢复”“暂停并平仓”；口令仅保存在当前页面内存。**暂停或设置 `LIVE_TRADING_ENABLED=false` 仅阻止新开仓**，保留 key 并重启时仍会管理已有持仓。完全停止服务后，交易所止损保留，程序的止盈/到期退出停止执行。需要退出测试时，先用“暂停并平仓”，确认交易所空仓和无残留挂单后再停止服务或移除 key。
+
+实盘开启或仍有未结持仓时，网页/API 的模拟策略修改和模拟账户重置返回 `423`，防止公开的模拟盘接口改变真实下单行为。后台因子更新仍按原有验证规则运行。修改策略前先结清实盘、关闭实盘并重启。
+
+| API | 用途 |
+| --- | --- |
+| `GET /api/live-trading` | 只读状态和最近交易，不返回 key / secret / 控制口令 |
+| `POST /api/live-trading/pause` | 暂停新开仓，继续管理持仓 |
+| `POST /api/live-trading/resume` | 空仓且账户检查通过后解除暂停/熔断 |
+| `POST /api/live-trading/close` | 暂停并只减仓结清本程序持仓 |
+
+所有实盘 POST 需 `Authorization: Bearer <LIVE_CONTROL_TOKEN>`。接口不提供修改额度、启用实盘或清空实盘账本的功能。
+
+实盘状态保存于 `DATA_DIR/live-trading.json`，下单意图先原子落盘，再发请求。网络超时不重发订单，先按 `clientOrderId` 查询；未确认的开/平仓会保留记录并熔断新开仓。**查询持续返回“订单不存在”也不会自动释放未确认开仓**：应先在 Binance 核对订单和持仓后人工排查，不要直接删除账本重新启动。状态文件损坏、key / 网络不匹配或另一实例持锁时均禁止交易。正常退出会释放 `.lock`，异常终止后的遗留锁需要人工处理；只有确认旧实例已经停止才可移除锁，保留 `.json` 账本。不同机器/不同 `DATA_DIR` 的锁不互通，同一账户只能运行一个实例。Docker 已挂载 `./data:/app/data`，并给正在对账的订单预留 90 秒退出时间，必须保留该目录。
+
+交易所接口参数核对来源：[Binance 官方 TypeScript Futures SDK](https://github.com/binance/binance-connector-js/blob/master/clients/derivatives-trading-usds-futures/src/rest-api/modules/trade-api.ts)。自动测试使用本地模拟交易所，覆盖限额、签名、只减仓、部分成交、请求结果未知、保护单失败和重启恢复；不发送真实订单。运行 `npx tsx --test research/tests/live-trading.test.ts` 可单独复查。
 
 ## Telegram 与 mihomo
 

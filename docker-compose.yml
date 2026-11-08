@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: binance-macd-monitor
     restart: unless-stopped
+    # Give in-flight order reconciliation/protection time to finish before shutdown.
+    stop_grace_period: 90s
     env_file:
       - path: .env
         required: false

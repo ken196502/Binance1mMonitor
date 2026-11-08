@@ -32,6 +32,9 @@ import { enrichRankChanges, type BoardSnapshot } from "./rank.ts";
 import { wsManager, applyTradeToCandles, sanitizeCandles } from "./ws.ts";
 import { buildChartPayload, parseChartQuery } from "./chart.ts";
 import { paperTrading } from "./paper-trading.ts";
+import { LiveTradingEngine, readLiveConfig } from "./live-trading.ts";
+import { handleLiveTradingApi } from "./live-trading-api.ts";
+import type { LiveTradingSummary } from "./live-trading-types.ts";
 import { FactorMiningService } from "./factor-mining-service.ts";
 import { persistFactorBoard, loadRecentCandlesFromDisk, pruneExpiredArchives, DEFAULT_RESEARCH_ROOT } from "./factor-data.ts";
 import type { Row, Status } from "./types.ts";
@@ -83,6 +86,20 @@ export interface SymbolCandleCache {
 
 const candleCache = new Map<string, SymbolCandleCache>();
 const factorMiningService = new FactorMiningService(paperTrading);
+let liveTrading: LiveTradingEngine | null = null;
+let liveSetupError: string | null = null;
+let liveControlToken = "";
+try {
+  const config = readLiveConfig();
+  liveControlToken = config.controlToken;
+  liveTrading = new LiveTradingEngine(config);
+} catch (e) { liveSetupError = e instanceof Error ? e.message : "实盘配置无效"; }
+const liveSummary = (): LiveTradingSummary => liveTrading?.summary() ?? {
+  enabled: false, configured: false, testnet: false, status: "halted", reason: liveSetupError,
+  budgetUsdt: 10, orderUsdt: 10, leverage: 1, maxPositions: 1, walletUsdt: null,
+  lastCheckedAt: null, activeTrade: null, recentTrades: [],
+};
+paperTrading.onEntry(position => { void liveTrading?.onSignal(position); });
 
 // 从 418/451 异常恢复后，对缺乏有效 K 线（<35 根）或因封禁断流数据已过期的标的标记重置冷启动
 onAnomalyRecovered(() => {
@@ -109,6 +126,7 @@ wsManager.onTrade((tick) => {
     currentCandleLow = forming?.low;
   }
   paperTrading.onTick(tick, currentCandleHigh, currentCandleLow);
+  liveTrading?.onTick(tick);
 });
 
 export function getCandleCacheForTest(): Map<string, SymbolCandleCache> {
@@ -563,6 +581,7 @@ async function refresh(): Promise<Status> {
       ...pinned.map((r) => r.symbol),
       ...gainers.map((r) => r.symbol),
       ...activePaperSymbols,
+      ...(liveTrading?.activeSymbols() ?? []),
     ]),
   );
   wsManager.setSymbols(allSymbols);
@@ -934,6 +953,12 @@ const server = http.createServer(async (req, res) => {
   }
   const reqUrl = req.url ?? "/";
   const u = new URL(reqUrl, `http://${req.headers.host ?? "localhost"}`);
+  if (await handleLiveTradingApi(req, res, u.pathname, liveTrading, liveControlToken, liveSummary)) return;
+  if (u.pathname.startsWith("/api/paper-trading") && !["GET", "HEAD", "OPTIONS"].includes(req.method ?? "GET") && (liveSetupError || liveTrading?.protectsStrategyWrites())) {
+    res.writeHead(423, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ error: "实盘启用或尚有未结持仓时，策略修改和模拟账户重置已锁定。请先结清实盘、关闭 LIVE_TRADING_ENABLED 并重启后修改。" }));
+    return;
+  }
 
   if (u.pathname === "/api/paper-trading/reset") {
     if (req.method !== "POST") {
@@ -1048,15 +1073,17 @@ const isMainModule =
   !process.env.NODE_TEST_CONTEXT;
 
 if (isMainModule) {
-  server.once("close", () => factorMiningService.stop());
+  server.once("close", () => { factorMiningService.stop(); void liveTrading?.stop(); });
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => {
+    process.once(signal, async () => {
       factorMiningService.stop();
       paperTrading.saveState();
+      await liveTrading?.stop();
       process.exit(0);
     });
   }
   server.listen(PORT, () => {
+    void liveTrading?.start();
     factorMiningService.start();
     void maybePruneArchives();
     const proxy = process.env.PROXY ?? process.env.BINANCE_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? "(direct)";
