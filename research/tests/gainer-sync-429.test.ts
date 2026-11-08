@@ -16,10 +16,22 @@ function dummyCandles(count = 50) {
   return res;
 }
 
-test('确保涨幅榜先同步；遇到429立即停止并开启已同步标的订阅；解除429后同步跌幅榜并重新订阅全部', async () => {
+test('确保涨幅榜先同步；遇到429立即停止并开启已同步标的订阅；解除429后同步跌幅榜并重新订阅全部', async (t) => {
   resetBackoffForTest();
   resetCandleCacheForTest();
   setCachedCryptoSymbolsForTest(new Set(['BTCUSDT', 'G1USDT', 'L1USDT']));
+  // Observe the subscription transition itself instead of assuming local REST work
+  // always completes within 800ms under the full suite's concurrent CPU/disk load.
+  // This test verifies subscription intent; it must not open a real Binance socket.
+  let subscribed: string[] = [];
+  let firstSubscription: ((symbols: string[]) => void) | undefined;
+  const firstSubscribed = new Promise<string[]>(resolve => { firstSubscription = resolve; });
+  t.mock.method(wsManager, 'setSymbols', (symbols: string[]) => {
+    subscribed = [...symbols];
+    firstSubscription?.([...symbols]);
+    firstSubscription = undefined;
+  });
+  t.mock.method(wsManager, 'getSubscribedSymbols', () => [...subscribed]);
 
   let g1Count = 0;
 
@@ -50,6 +62,7 @@ test('确保涨幅榜先同步；遇到429立即停止并开启已同步标的�
   const port = (server.address() as { port: number }).port;
   const oldBase = process.env.BINANCE_BASE;
   process.env.BINANCE_BASE = `http://127.0.0.1:${port}`;
+  let boardPromise: ReturnType<typeof buildBoards> | undefined;
 
   try {
     const pinned: Ticker24h[] = [
@@ -64,16 +77,14 @@ test('确保涨幅榜先同步；遇到429立即停止并开启已同步标的�
       ],
     };
 
-    const boardPromise = buildBoards(tops, pinned);
-
-    // 等待 BTC 成功，G1 触发 429 并暂停
-    const startWait = Date.now();
-    while (!wsManager.getSubscribedSymbols().includes('BTCUSDT') && Date.now() - startWait < 800) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    boardPromise = buildBoards(tops, pinned);
+    let timer: NodeJS.Timeout | undefined;
+    const subscribedMid = await Promise.race([
+      firstSubscribed,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('等待首次订阅超时')), 10000); }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
 
     // 验证：检测到 429 停止时，立即开启订阅已完成的 BTCUSDT
-    const subscribedMid = wsManager.getSubscribedSymbols();
     assert.ok(subscribedMid.includes('BTCUSDT'), '应当已订阅 BTCUSDT');
     assert.ok(!subscribedMid.includes('G1USDT'), '429 失败的 G1USDT 尚未同步完成，不应在初次订阅中');
     assert.ok(!subscribedMid.includes('L1USDT'), '429 期间不应提前订阅跌幅榜 L1USDT');
@@ -91,6 +102,8 @@ test('确保涨幅榜先同步；遇到429立即停止并开启已同步标的�
     assert.ok(subscribedFinal.includes('BTCUSDT'), '最终应当包含 BTCUSDT');
     assert.ok(subscribedFinal.includes('G1USDT'), '最终应当包含 G1USDT');
   } finally {
+    // Do not restore the production base while background retries are still running.
+    await boardPromise?.catch(() => {});
     resetBackoffForTest();
     resetCandleCacheForTest();
     wsManager.close();

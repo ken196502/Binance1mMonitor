@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { fetch, EnvHttpProxyAgent, ProxyAgent, type Dispatcher } from "undici";
+import { recoverBinanceProxy } from "./proxyNode.ts";
 
 export type Params = Record<string, string | number | boolean>;
 export type TradingRequest = <T>(method: "GET" | "POST" | "DELETE", path: string, params?: Params, signed?: boolean) => Promise<T>;
@@ -11,15 +12,18 @@ export class TradingApiError extends Error {
   }
 }
 
-/** Separate from the market-data client's retries, fallback hosts and proxy rotation. */
+/** Fixed signing hosts; shared proxy recovery, with no automatic mutation retries. */
 export class BinanceTradingClient {
   private offset = 0;
   private dispatcher: Dispatcher | undefined;
+  private retryAfter = 0;
   readonly base: string;
-  constructor(private key: string, private secret: string, testnet = false, private transport = fetch) {
+  constructor(private key: string, private secret: string, testnet = false, private transport = fetch, private recoverProxy = recoverBinanceProxy) {
     this.base = testnet ? "https://demo-fapi.binance.com" : "https://fapi.binance.com";
   }
-  request: TradingRequest = async <T>(method: "GET" | "POST" | "DELETE", path: string, params: Params = {}, signed = true): Promise<T> => {
+  request: TradingRequest = <T>(method: "GET" | "POST" | "DELETE", path: string, params: Params = {}, signed = true) => this.perform<T>(method, path, params, signed, false);
+  private async perform<T>(method: "GET" | "POST" | "DELETE", path: string, params: Params, signed: boolean, retried: boolean): Promise<T> {
+    if (Date.now() < this.retryAfter) throw new Error("交易接口 429 冷静期中，切线后仍等待 Retry-After 再对账");
     if (!/^\/fapi\/v[123]\/[A-Za-z]+(?:\/[A-Za-z]+)?$/.test(path)) throw new Error("非法交易接口路径");
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) query.set(key, String(value));
@@ -44,17 +48,42 @@ export class BinanceTradingClient {
       throw new Error("交易请求未确认（网络异常或超时），须先对账；不会自动重发订单");
     }
     let data: unknown;
-    try { data = await response.json(); } catch { throw new Error("交易接口响应无法解析，须先对账"); }
+    try { data = await response.json(); } catch {
+      if (response.ok) throw new Error("交易接口响应无法解析，须先对账");
+      data = null; // 451 often returns HTML: the HTTP status must still trigger recovery.
+    }
+    if (response.status === 429 || response.status === 451) {
+      if (response.status === 429) {
+        const header = response.headers.get("retry-after");
+        const seconds = header === null ? 60 : Number(header);
+        this.retryAfter = Date.now() + (Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : Math.max(60000, Date.parse(header ?? "") - Date.now()) || 60000);
+      }
+      const node = await this.recoverProxy(response.status, `${this.base}/fapi/v1/ping`, this.dispatcher).catch(() => null);
+      // A read-only 451 request may retry once with a new timestamp/signature.
+      // POST/DELETE always return the original error to the durable order reconciler.
+      if (node && response.status === 451 && method === "GET" && !retried) {
+        await this.dispatcher?.destroy(); this.dispatcher = undefined;
+        return this.perform<T>(method, path, params, signed, true);
+      }
+    }
     if (!response.ok || (typeof (data as { code?: unknown })?.code === "number" && (data as { code: number }).code < 0)) {
       throw new TradingApiError(Number((data as { code?: number })?.code ?? 0), response.status);
     }
     return data as T;
-  };
+  }
   async syncTime() {
-    const start = Date.now();
-    const { serverTime } = await this.request<{ serverTime: number }>("GET", "/fapi/v1/time", {}, false);
-    if (!Number.isFinite(serverTime)) throw new Error("交易所时钟无效");
-    this.offset = Math.round(serverTime - (start + Date.now()) / 2);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const start = Date.now();
+      const { serverTime } = await this.request<{ serverTime: number }>("GET", "/fapi/v1/time", {}, false);
+      const end = Date.now();
+      if (!Number.isFinite(serverTime)) throw new Error("交易所时钟无效");
+      // A 451 retry may include many seconds of proxy probing. That duration is
+      // not the time request's RTT and must never become the signing clock offset.
+      if (end - start > 1500 && attempt < 2) continue;
+      if (end - start > 5000) throw new Error("交易所时钟同步延迟过高，暂停签名交易");
+      this.offset = Math.round(serverTime - (start + end) / 2);
+      return;
+    }
   }
   async close() { await this.dispatcher?.close(); }
 }

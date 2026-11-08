@@ -96,7 +96,7 @@ try {
 } catch (e) { liveSetupError = e instanceof Error ? e.message : "实盘配置无效"; }
 const liveSummary = (): LiveTradingSummary => liveTrading?.summary() ?? {
   enabled: false, configured: false, testnet: false, status: "halted", reason: liveSetupError,
-  budgetUsdt: 10, orderUsdt: 10, leverage: 1, maxPositions: 1, walletUsdt: null,
+  budgetUsdt: 10, marginPercent: 20, nextMarginUsdt: 2, nextNotionalUsdt: 6, nextMaxNotionalUsdt: 10, leverage: 3, shortHoldLeverage: 5, shortHoldMaxMinutes: 10, maxPositions: 1, walletUsdt: null, equityUsdt: null,
   lastCheckedAt: null, activeTrade: null, recentTrades: [],
 };
 paperTrading.onEntry(position => { void liveTrading?.onSignal(position); });

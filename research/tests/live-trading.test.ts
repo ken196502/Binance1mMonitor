@@ -7,7 +7,7 @@ import http from "node:http";
 import { createHmac } from "node:crypto";
 import { Response } from "undici";
 import { BinanceTradingClient, TradingApiError, floorToStep, ceilToStep, type TradingRequest, type Params, type ExchangeOrder, type AlgoOrder } from "../../src/binance-trading.ts";
-import { LiveTradingEngine, readLiveConfig, type LiveConfig } from "../../src/live-trading.ts";
+import { LiveTradingEngine, readLiveConfig, liveLeverageForHoldMinutes, type LiveConfig } from "../../src/live-trading.ts";
 import { handleLiveTradingApi, authorizedLiveControl } from "../../src/live-trading-api.ts";
 import type { PaperPosition } from "../../src/types.ts";
 
@@ -25,7 +25,7 @@ class Exchange {
   failProtection = false;
   timeoutClose = false;
   hideQueries = false;
-  leverage = "1";
+  leverage = "3";
   marginType = "isolated";
   autoAdd = "false";
   minNotional = "5";
@@ -36,7 +36,7 @@ class Exchange {
   request: TradingRequest = async <T>(method: string, endpoint: string, params: Params = {}): Promise<T> => {
     this.calls.push({ method, endpoint, params });
     let result: unknown;
-    if (endpoint === "/fapi/v3/account") result = { canTrade: true, totalWalletBalance: String(this.wallet), availableBalance: String(this.wallet), assets: [{ asset: "USDT", walletBalance: String(this.wallet) }] };
+    if (endpoint === "/fapi/v3/account") result = { canTrade: true, totalWalletBalance: String(this.wallet), totalMarginBalance: String(this.wallet), availableBalance: String(this.wallet), assets: [{ asset: "USDT", walletBalance: String(this.wallet) }] };
     else if (endpoint === "/fapi/v1/positionSide/dual") result = { dualSidePosition: this.hedge };
     else if (endpoint === "/fapi/v1/multiAssetsMargin") result = { multiAssetsMargin: this.multi };
     else if (endpoint === "/fapi/v2/positionRisk") result = [{ symbol: params.symbol ?? "TESTUSDT", positionSide: "BOTH", positionAmt: String(this.amount), entryPrice: String(this.price), markPrice: String(this.price), leverage: this.leverage, marginType: this.marginType, isAutoAddMargin: this.autoAdd }];
@@ -79,12 +79,12 @@ class Exchange {
 }
 
 function signal(ex: Exchange, side: "LONG" | "SHORT" = "LONG"): PaperPosition {
-  return { id: `TESTUSDT-${ex.now}`, symbol: "TESTUSDT", side, entryTime: ex.now, entryPrice: 10, timeoutAt: ex.now + 60000, tp1Percent: 3, tp2Percent: 7, sl1Percent: 5, sl2Percent: 7, moveSlToEntryAfterTp1: true } as PaperPosition;
+  return { id: `TESTUSDT-${ex.now}`, symbol: "TESTUSDT", side, entryTime: ex.now, entryPrice: 10, timeoutAt: ex.now + 15 * 60000, tp1Percent: 3, tp2Percent: 7, sl1Percent: 5, sl2Percent: 7, moveSlToEntryAfterTp1: true } as PaperPosition;
 }
 
 async function setup(t: test.TestContext, overrides: Partial<LiveConfig> = {}, exchange = new Exchange()) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "live-trading-"));
-  const config: LiveConfig = { enabled: true, testnet: true, apiKey: "fake-key", apiSecret: "fake-secret", controlToken: "a".repeat(32), budgetUsdt: 100, orderUsdt: 20, storageFile: path.join(dir, "live.json"), ...overrides };
+  const config: LiveConfig = { enabled: true, testnet: true, apiKey: "fake-key", apiSecret: "fake-secret", controlToken: "a".repeat(32), budgetUsdt: 100, marginPercent: 20, storageFile: path.join(dir, "live.json"), ...overrides };
   const dependencies = { request: exchange.request, syncTime: async () => {}, now: () => exchange.now };
   const engine = new LiveTradingEngine(config, dependencies);
   t.after(async () => { await engine.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -95,9 +95,9 @@ async function setup(t: test.TestContext, overrides: Partial<LiveConfig> = {}, e
 test("live config: disabled and blank by default; hard cap, NaN and invalid switches rejected", () => {
   const config = readLiveConfig({});
   assert.equal(config.enabled, false); assert.equal(config.apiKey, ""); assert.equal(config.apiSecret, "");
-  assert.equal(config.budgetUsdt, 10); assert.equal(config.orderUsdt, 10);
+  assert.equal(config.budgetUsdt, 10); assert.equal(config.marginPercent, 20);
   for (const value of ["101", "Infinity", "NaN", "0", "-1", ""]) assert.throws(() => readLiveConfig({ LIVE_MAX_CAPITAL_USDT: value }));
-  assert.throws(() => readLiveConfig({ LIVE_ORDER_USDT: "101" }));
+  assert.throws(() => readLiveConfig({ LIVE_MARGIN_PERCENT: "21" }));
   assert.throws(() => readLiveConfig({ LIVE_TRADING_ENABLED: "yes" }));
 });
 
@@ -125,14 +125,14 @@ test("funding cap and account isolation reject unsafe accounts before any POST",
     if (mode === "positions") ex.amount = 1;
     if (mode === "orders") ex.externalOrders = [{}];
     if (mode === "auto-add") ex.autoAdd = "true";
-    if (mode === "leverage") ex.leverage = "3";
+    if (mode === "leverage") ex.leverage = "10";
     const { engine } = await setup(t, {}, ex);
     await engine.onSignal(signal(ex));
     assert.equal(ex.entries().length, 0, mode); assert.equal(engine.summary().status, "halted", mode);
   }
 });
 
-test("new entry: durable intent, 1x size, IOC, confirmed exchange protection and no duplicate signal", async t => {
+test("new entry: durable intent, 20% margin at 3x, IOC, confirmed exchange protection and no duplicate signal", async t => {
   const { engine, exchange: ex, config } = await setup(t);
   ex.beforeOrder = p => {
     const saved = JSON.parse(fs.readFileSync(config.storageFile, "utf8"));
@@ -143,7 +143,7 @@ test("new entry: durable intent, 1x size, IOC, confirmed exchange protection and
   assert.equal(ex.entries().length, 1);
   const entry = ex.entries()[0].params;
   assert.equal(entry.timeInForce, "IOC"); assert.equal(entry.side, "BUY");
-  assert.ok(Number(entry.quantity) * Number(entry.price) < 20);
+  assert.ok(Number(entry.quantity) * Number(entry.price) < 60);
   assert.equal(engine.summary().activeTrade?.entryPrice, 10);
   assert.equal(ex.algos.size, 1);
   assert.equal([...ex.algos.values()][0].triggerPrice, "9.5");
@@ -159,17 +159,42 @@ test("minimum notional skips rather than rounds up; stale signals never order", 
   await engine.onSignal(s); assert.equal(ex.entries().length, 0);
 });
 
-test("first trial uses 10 USDT total and an entry below 10 USDT after the reserve", async t => {
+test("first trial uses 10 USDT total, 20% margin, and a 3x entry below 6 USDT", async t => {
   const ex = new Exchange(); ex.wallet = 10;
-  const { engine } = await setup(t, { budgetUsdt: 10, orderUsdt: 10 }, ex);
+  const { engine } = await setup(t, { budgetUsdt: 10, marginPercent: 20 }, ex);
   await engine.onSignal(signal(ex));
   assert.equal(ex.entries().length, 1);
-  assert.ok(Number(ex.entries()[0].params.quantity) * Number(ex.entries()[0].params.price) <= 10 / 1.02);
+  assert.ok(Number(ex.entries()[0].params.quantity) * Number(ex.entries()[0].params.price) <= 6 / 1.02);
   assert.equal(engine.summary().budgetUsdt, 10);
   const tooLarge = new Exchange(); tooLarge.wallet = 10.01;
-  const other = await setup(t, { budgetUsdt: 10, orderUsdt: 10 }, tooLarge);
+  const other = await setup(t, { budgetUsdt: 10, marginPercent: 20 }, tooLarge);
   await other.engine.onSignal(signal(tooLarge));
   assert.equal(tooLarge.entries().length, 0);
+});
+
+test("leverage follows planned duration: up to 10 minutes 5x, longer 3x; margin stays 20%", async t => {
+  assert.equal(liveLeverageForHoldMinutes(10), 5);
+  assert.equal(liveLeverageForHoldMinutes(5), 5);
+  assert.equal(liveLeverageForHoldMinutes(10.01), 3);
+  assert.equal(liveLeverageForHoldMinutes(45), 3);
+  assert.throws(() => liveLeverageForHoldMinutes(NaN));
+  const ex = new Exchange(); ex.wallet = 10; ex.leverage = "5";
+  const { engine } = await setup(t, { budgetUsdt: 10, marginPercent: 20 }, ex);
+  const s = signal(ex); s.timeoutAt = s.entryTime + 10 * 60000;
+  await engine.onSignal(s);
+  assert.equal(ex.entries().length, 1);
+  assert.equal(ex.calls.find(c => c.endpoint === "/fapi/v1/leverage")?.params.leverage, 5);
+  const trade = engine.summary().activeTrade!;
+  assert.equal(trade.leverage, 5); assert.equal(trade.marginBudgetUsdt, 2);
+  assert.ok(trade.initialQuantity * trade.entryPrice <= 10 / 1.02);
+});
+
+test("losses reduce the 20% margin allocation instead of retaining a fixed dollar size", async t => {
+  const ex = new Exchange(); ex.wallet = 9;
+  const { engine } = await setup(t, { budgetUsdt: 10, marginPercent: 20 }, ex);
+  await engine.onSignal(signal(ex));
+  assert.equal(engine.summary().activeTrade?.marginBudgetUsdt, 1.8);
+  assert.ok(engine.summary().activeTrade!.initialQuantity * 10 / 3 <= 1.8);
 });
 
 test("partial entry uses actual quantity and actual price", async t => {
@@ -219,7 +244,7 @@ test("TP1 closes half then protects remainder at breakeven; timeout closes remai
   assert.equal(engine.summary().activeTrade?.firstTargetDone, true);
   assert.ok(engine.summary().activeTrade!.stopPrice >= 10.02);
   assert.equal(ex.algos.size, 1);
-  ex.now += 61000;
+  ex.now += 15 * 60000 + 1000;
   await engine.maintain(); await engine.maintain();
   assert.equal(engine.summary().activeTrade, null);
   assert.equal(ex.exits().length, 2); assert.ok(ex.exits().every(c => c.params.reduceOnly === "true"));
@@ -251,7 +276,7 @@ test("full close uses exchange lot quantity even when local subtraction is sligh
 
 test("disabled after restart still reconciles and closes existing position on timeout", async t => {
   const { engine, exchange: ex, config, dependencies } = await setup(t);
-  await engine.onSignal(signal(ex)); await engine.stop(); ex.now += 61000;
+  await engine.onSignal(signal(ex)); await engine.stop(); ex.now += 15 * 60000 + 1000;
   const restarted = new LiveTradingEngine({ ...config, enabled: false }, dependencies);
   try {
     await restarted.start(false); await restarted.maintain(); await restarted.maintain();
@@ -297,6 +322,56 @@ test("signing uses the exact transmitted body, fixed host, and redacts exchange 
   try {
     await assert.rejects(client.request("POST", "/fapi/v1/order", { symbol: "TESTUSDT" }), e => e instanceof TradingApiError && !e.message.includes("test-secret"));
     assert.equal(count, 1);
+  } finally { await client.close(); }
+});
+
+test("451 HTML on an order rotates the proxy without repeating the order", async () => {
+  let orders = 0, rotations = 0;
+  const client = new BinanceTradingClient("key", "secret", true,
+    (async () => { orders++; return new Response('<html>restricted</html>', { status: 451 }); }) as typeof import('undici').fetch,
+    async (status, probe) => { assert.equal(status, 451); assert.equal(probe, 'https://demo-fapi.binance.com/fapi/v1/ping'); rotations++; return 'JP'; });
+  try {
+    await assert.rejects(client.request('POST', '/fapi/v1/order', { symbol: 'TESTUSDT' }), e => e instanceof TradingApiError && e.status === 451);
+    assert.equal(orders, 1); assert.equal(rotations, 1);
+  } finally { await client.close(); }
+});
+
+test("429 switches proxy but respects Retry-After and never replays a mutation", async () => {
+  let calls = 0, rotations = 0;
+  const client = new BinanceTradingClient("key", "secret", true,
+    (async () => { calls++; return new Response(JSON.stringify({ code: -1003 }), { status: 429, headers: { 'Retry-After': '60' } }); }) as typeof import('undici').fetch,
+    async status => { assert.equal(status, 429); rotations++; return 'SG'; });
+  try {
+    await assert.rejects(client.request('POST', '/fapi/v1/order', { symbol: 'TESTUSDT' }));
+    await assert.rejects(client.request('GET', '/fapi/v1/order', { symbol: 'TESTUSDT' }), /429/);
+    assert.equal(calls, 1); assert.equal(rotations, 1);
+  } finally { await client.close(); }
+});
+
+test("read-only 451 request can retry once after verified proxy recovery", async () => {
+  let calls = 0;
+  const client = new BinanceTradingClient("key", "secret", true,
+    (async () => { calls++; return calls === 1 ? new Response('restricted', { status: 451 }) : new Response(JSON.stringify({ serverTime: Date.now() })); }) as typeof import('undici').fetch,
+    async () => 'JP');
+  try { await client.syncTime(); assert.equal(calls, 2); }
+  finally { await client.close(); }
+});
+
+test("slow proxy recovery is excluded from the signing clock offset", async t => {
+  let now = 1800000000000, calls = 0;
+  t.mock.method(Date, 'now', () => now);
+  const client = new BinanceTradingClient('key', 'secret', true, (async url => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname.endsWith('/time')) {
+      if (++calls === 1) now += 20000;
+      return new Response(JSON.stringify({ serverTime: now }));
+    }
+    assert.equal(Number(parsed.searchParams.get('timestamp')), now);
+    return new Response('{}');
+  }) as typeof import('undici').fetch);
+  try {
+    await client.syncTime(); assert.equal(calls, 2);
+    await client.request('GET', '/fapi/v3/account');
   } finally { await client.close(); }
 });
 

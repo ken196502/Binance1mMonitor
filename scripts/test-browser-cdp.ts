@@ -46,7 +46,7 @@ const server = createServer(async (req, res) => {
         highRatio: 0.9, highWindow: 30, gainers: [], losers: [], paperTrading: frozenState?.summary ?? engine.getSummary() });
     } else if (url.pathname === "/api/live-trading") {
       json({ enabled: false, configured: false, testnet: false, status: "disabled", reason: null,
-        budgetUsdt: 10, orderUsdt: 10, leverage: 1, maxPositions: 1, walletUsdt: null,
+        budgetUsdt: 10, marginPercent: 20, nextMarginUsdt: 2, nextNotionalUsdt: 6, nextMaxNotionalUsdt: 10, leverage: 3, shortHoldLeverage: 5, shortHoldMaxMinutes: 10, maxPositions: 1, walletUsdt: null, equityUsdt: null,
         lastCheckedAt: null, activeTrade: null, recentTrades: [] });
     } else if (url.pathname === "/api/paper-trading") {
       paperRequests++; json(frozenState ?? engine.getState());

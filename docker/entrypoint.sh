@@ -92,7 +92,7 @@ generate_provider_config() {
   # （常见 server: 127.0.0.1 + 443），却根本不通。mihomo 的 fallback 组偶尔会选中
   # 这些死节点，导致所有 Binance 请求 connection refused（面板报 fetch failed）。
   # 这里按名称把它们直接从 provider 里剔除，从根上避免被选中的可能。
-  local exclude_filter="${MIHOMO_EXCLUDE_FILTER:-(?i)(说明|剩余|到期|过期|官网|订阅|流量|套餐|时效|天数|群组|客服|邮箱|公告|重置|续费|防失联|请勿|转发卡)}"
+  local exclude_filter="${MIHOMO_EXCLUDE_FILTER:-(?i)(说明|剩余|到期|过期|官网|订阅|流量|套餐|时效|天数|群组|客服|邮箱|公告|重置|续费|防失联|请勿|转发卡|美国|美國|美西|美东|美東|🇺🇸|United[ -]?States|(^|[^a-z])(US|USA)([^a-z]|$))}"
   local i
 
   {
@@ -166,7 +166,7 @@ generate_provider_config() {
 
     # ACTIVE 是应用真正使用的出口（rules 指向它）。默认走 PROXY（fallback 自动选点）；
     # 但 mihomo 的健康检查只看连通性/延迟、不校验状态码，被 Binance 451 的节点同样会被
-    # 判定 alive，所以 src/proxyNode.ts 会在撞上 451 / 网络错误时用 Clash API 把它切到别的
+    # 判定 alive，所以 src/proxyNode.ts 会在撞上 429 / 451 / 网络错误时用 Clash API 把它切到别的
     # 节点，实现真正的「换地区」。这里把全部节点也列进组里供其切换。
     printf '%s\n' \
       "  # 应用可控的活动出口：默认 PROXY，故障时由 src/proxyNode.ts 切换到具体节点" \
@@ -184,6 +184,7 @@ generate_provider_config() {
       "rules:" \
       "  - DOMAIN-SUFFIX,binance.com,ACTIVE" \
       "  - DOMAIN-SUFFIX,binancefuture.com,ACTIVE" \
+      "  - DOMAIN,www.cloudflare.com,ACTIVE" \
       "  - DOMAIN-SUFFIX,bnbstatic.com,ACTIVE" \
       "  - DOMAIN-SUFFIX,telegram.org,ACTIVE" \
       "  - DOMAIN-SUFFIX,telegram.me,ACTIVE" \
@@ -235,7 +236,7 @@ prepare_mihomo_config() {
 # ---------------------------------------------------------------- 启动 mihomo
 # ACTIVE 组默认走 PROXY（fallback 自动选点）。mihomo 的 select 组有时会把默认值
 # 定在组内第二个条目（MANUAL）上，绕过自动选点；这里显式拨回 PROXY，
-# 之后由 src/proxyNode.ts 在遇到 451 / 网络故障时接管切换。
+# 之后由 src/proxyNode.ts 在遇到 429 / 451 / 网络故障时接管切换。
 reset_active_group() {
   local api="http://$MIHOMO_PROXY_HOST:${MIHOMO_EXTERNAL_CONTROLLER_PORT:-9090}"
   local i

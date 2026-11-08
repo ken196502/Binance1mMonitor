@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import http from 'node:http';
-import { rotateProxyNode, currentProxyNode, markProxyNodeBad, badProxyNodeCount, resetProxyNodesForTest } from '../../src/proxyNode.ts';
+import { Response, type fetch as UndiciFetch } from 'undici';
+import { rotateProxyNode, currentProxyNode, markProxyNodeBad, badProxyNodeCount, resetProxyNodesForTest, isRestrictedProxyName, probeNodeWorks, recoverBinanceProxy, nextProxyCandidates } from '../../src/proxyNode.ts';
 
 /**
  * mihomo 健康检查的回归防线。
@@ -14,6 +15,8 @@ import { rotateProxyNode, currentProxyNode, markProxyNodeBad, badProxyNodeCount,
 type MockState = {
   current: string;
   nodes: string[];
+  clearedConnections?: number;
+  groups?: Record<string, string>;
 };
 
 async function withMockMihomo<T>(state: MockState, fn: () => Promise<T>): Promise<T> {
@@ -21,6 +24,13 @@ async function withMockMihomo<T>(state: MockState, fn: () => Promise<T>): Promis
   const server = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json');
     const name = decodeURIComponent((req.url ?? '').split('/').filter(Boolean)[1] ?? '');
+    if (req.url === '/connections' && req.method === 'DELETE') {
+      state.clearedConnections = (state.clearedConnections ?? 0) + 1;
+      res.writeHead(204).end(); return;
+    }
+    if (req.method === 'GET' && state.groups?.[name]) {
+      res.writeHead(200).end(JSON.stringify({ now: state.groups[name] })); return;
+    }
 
     // GET /providers/proxies
     if (req.url === '/providers/proxies') {
@@ -78,7 +88,8 @@ async function withMockMihomo<T>(state: MockState, fn: () => Promise<T>): Promis
   try {
     return await fn();
   } finally {
-    process.env.MIHOMO_API_URL = oldApi;
+    if (oldApi === undefined) delete process.env.MIHOMO_API_URL;
+    else process.env.MIHOMO_API_URL = oldApi;
     await new Promise<void>((r) => server.close(() => r()));
     resetProxyNodesForTest();
   }
@@ -144,7 +155,8 @@ test('rotation reports failure gracefully when mihomo is unreachable', async () 
     assert.equal(await rotateProxyNode(), null);
     assert.equal(await currentProxyNode(), null);
   } finally {
-    process.env.MIHOMO_API_URL = oldApi;
+    if (oldApi === undefined) delete process.env.MIHOMO_API_URL;
+    else process.env.MIHOMO_API_URL = oldApi;
     resetProxyNodesForTest();
   }
 });
@@ -157,4 +169,45 @@ test('markProxyNodeBad ignores group names', async () => {
   markProxyNodeBad('node-1');
   assert.equal(badProxyNodeCount(), 1);
   resetProxyNodesForTest();
+});
+
+test('US candidates are excluded rather than moved to the end; country tokens do not match Austria', async () => {
+  for (const name of ['US01', '🇺🇸 洛杉矶', '美国01', 'US-node', 'United States 2']) assert.equal(isRestrictedProxyName(name), true);
+  for (const name of ['Austria', 'Australia', 'RUS-1', '日本-1']) assert.equal(isRestrictedProxyName(name), false);
+  await withMockMihomo({ current: 'old', nodes: ['old', 'US01', '🇺🇸美国', 'Japan-1'] }, async () => {
+    assert.equal(await rotateProxyNode(), 'Japan-1');
+    assert.ok((await nextProxyCandidates()).every(n => !isRestrictedProxyName(n)));
+  });
+  await withMockMihomo({ current: 'US01', nodes: ['US01', 'USA-02'] }, async () => {
+    assert.equal(await rotateProxyNode(), null);
+  });
+});
+
+test('real egress probe requires non-US country and a successful Binance response', async () => {
+  for (const [country, status, expected] of [['US', 200, false], ['JP', 200, true], ['SG', 451, false], ['', 200, false]] as const) {
+    const calls: string[] = [];
+    const transport = (async (url: string | URL, options: { headers?: unknown }) => {
+      calls.push(String(url));
+      assert.ok(!JSON.stringify(options.headers).includes('APIKEY'));
+      return String(url).includes('cloudflare.com') ? new Response(`ip=1.2.3.4\nloc=${country}\n`) : new Response('{}', { status });
+    }) as unknown as typeof UndiciFetch;
+    assert.equal(await probeNodeWorks('https://fapi.binance.com/fapi/v1/ping', undefined, transport), expected);
+    assert.equal(calls.length, country === 'US' || !country ? 1 : 2);
+  }
+});
+
+test('429 and 451 recovery share a single verified switch and close stale tunnels', async () => {
+  const state = { current: 'PROXY', nodes: ['JP-old', 'US-bad', 'Japan-new'], groups: { PROXY: 'INNER', INNER: 'JP-old' }, clearedConnections: 0 };
+  await withMockMihomo(state, async () => {
+    assert.equal(await currentProxyNode(), 'JP-old');
+    let probes = 0;
+    const probe = async () => { probes++; assert.equal(state.clearedConnections, 1); return true; };
+    const picked = await Promise.all([
+      recoverBinanceProxy(429, 'https://fapi.binance.com/fapi/v1/ping', undefined, probe),
+      recoverBinanceProxy(451, 'https://fapi.binance.com/fapi/v1/ping', undefined, probe),
+    ]);
+    assert.deepEqual(picked, ['Japan-new', 'Japan-new']);
+    assert.equal(probes, 1); assert.equal(state.clearedConnections, 1);
+    assert.ok(!(await nextProxyCandidates()).includes('JP-old'));
+  });
 });

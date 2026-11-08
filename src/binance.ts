@@ -21,7 +21,7 @@ import {
 } from "undici";
 import type { Candle } from "./macd.ts";
 import { sendTelegramMessage, telegramConfigured, escapeHtml } from "./telegram.ts";
-import { rotateProxyNode, findWorkingNode, currentProxyNode, markProxyNodeBad } from "./proxyNode.ts";
+import { findWorkingNode, currentProxyNode, markProxyNodeBad, recoverBinanceProxy } from "./proxyNode.ts";
 
 // Proxy routing for Binance requests:
 export const PROXY =
@@ -275,7 +275,7 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
   const canFallback = !!fallback && fallback !== base;
   // mihomo 的健康检查只测连通性/延迟，不校验状态码（实测：恒定返回 451 的节点
   // 依然被标为 alive），所以 PROXY 组会停在被 Binance 封禁的节点上，导致整块面板
-  // 长时间报错。这里在撞上 451 / 网络层失败时，先主动探测若干候选节点，挑选真正
+  // 长时间报错。这里在撞上 429 / 451 / 网络层失败时，主动探测候选非美国节点，挑选真正
   // 能 200 命中 Binance 的再继续，避免盲目重试浪费一整轮请求。
   const maxNodeRotations = Number(process.env.PROXY_ROTATE_MAX ?? 3);
   const probeUrl = `${base}/fapi/v1/ping`;
@@ -283,12 +283,6 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt <= maxNodeRotations; attempt++) {
-    if (attempt > 0) {
-      const working = await findWorkingNode(probeUrl, dispatcher);
-      if (!working) break; // mihomo 不可用 / 没有可用节点 → 走下面的常规错误处理
-      console.warn(`[binance] 已更换可用代理节点，重试请求 (第 ${attempt} 次): ${path}`);
-    }
-
     try {
       const r = await undiciFetch(`${base}${path}`, {
         dispatcher,
@@ -296,12 +290,15 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
         signal: AbortSignal.timeout(BINANCE_FETCH_TIMEOUT_MS),
       });
 
-      // 只有「节点」把我们带到被封禁地区时（451）才换节点；429/418 是全局限频，
-      // 换节点无意义，仍交给原有的避让逻辑。
+      // 429 can be tied to a shared proxy IP. Rotate, but keep Retry-After:
+      // account/order-rate limits are not cleared by changing the network path.
+      if (r.status === 429) {
+        await recoverBinanceProxy(429, probeUrl, dispatcher);
+        return handleBinanceResponse(r);
+      }
       if (r.status === 451 && attempt < maxNodeRotations) {
-        markProxyNodeBad(await currentProxyNode());
-        const working = await findWorkingNode(probeUrl, dispatcher);
-        if (working) continue;
+        const working = await recoverBinanceProxy(451, probeUrl, dispatcher);
+        if (working) { await r.arrayBuffer().catch(() => undefined); continue; }
       }
       return handleBinanceResponse(r);
     } catch (e) {
@@ -318,6 +315,7 @@ async function binanceFetch(path: string): Promise<UndiciResponse> {
         });
       }
       if (!isNetworkError(e)) throw e;
+      if (attempt < maxNodeRotations && !(await findWorkingNode(probeUrl, dispatcher))) break;
       // 最后一轮仍失败 → 交由下方抛出，保持原有错误语义
       if (attempt === maxNodeRotations) break;
     }
@@ -391,7 +389,7 @@ async function handleBinanceResponse(r: UndiciResponse): Promise<UndiciResponse>
     // - 对于 418 IP 封禁：若币安明确指定了 banned until 时间戳，必须严格等待至该时间戳（+2s 缓冲）！
     //   绝不能用 Math.min(waitSec, 300) 提前截断，提前重试会导致币安防火墙重置并延长封禁！
     //   若未指定时间戳，默认至少避让 120 秒。
-    // - 对于 429 频控 / 451：按 retryAfter（默认 60s），可限制合理上限。
+    // - 429 切线也不能提前清除账户级限频，完整保留 Retry-After。
     let actualWaitSec: number;
     if (r.status === 418) {
       if (banUntilTimestamp && banUntilTimestamp > Date.now()) {
@@ -399,6 +397,8 @@ async function handleBinanceResponse(r: UndiciResponse): Promise<UndiciResponse>
       } else {
         actualWaitSec = Math.max(waitSec, 120);
       }
+    } else if (r.status === 429) {
+      actualWaitSec = waitSec;
     } else {
       const maxBackoffSec = Number(process.env.MAX_BACKOFF_SECONDS ?? 300);
       actualWaitSec = Math.min(waitSec, maxBackoffSec);

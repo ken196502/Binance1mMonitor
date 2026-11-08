@@ -5,6 +5,8 @@ export interface LiveTrade {
   symbol: string;
   side: "LONG" | "SHORT";
   strategy: string;
+  leverage: 1 | 3 | 5;
+  marginBudgetUsdt: number;
   status: "ENTERING" | "OPEN" | "CLOSED";
   requestedQuantity: string;
   limitPrice: string;
@@ -33,10 +35,16 @@ export interface LiveTradingSummary {
   status: "disabled" | "starting" | "ready" | "paused" | "halted";
   reason: string | null;
   budgetUsdt: number;
-  orderUsdt: number;
-  leverage: 1;
+  marginPercent: number;
+  nextMarginUsdt: number;
+  nextNotionalUsdt: number;
+  nextMaxNotionalUsdt: number;
+  leverage: 3;
+  shortHoldLeverage: 5;
+  shortHoldMaxMinutes: 10;
   maxPositions: 1;
   walletUsdt: number | null;
+  equityUsdt: number | null;
   lastCheckedAt: number | null;
   activeTrade: LiveTrade | null;
   recentTrades: LiveTrade[];

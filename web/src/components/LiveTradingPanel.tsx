@@ -38,20 +38,22 @@ export function LiveTradingPanel() {
   return <section className="live-panel" aria-label="实盘小额测试">
     <div className="live-heading">
       <h2>实盘小额测试 <span className={`live-badge ${state?.status === "halted" ? "live-danger" : ""}`}>{state ? labels[state.status] : "加载中"}</span></h2>
-      <span className="live-muted">{state?.testnet ? "Binance 测试网" : "Binance USDT 合约"} · 逐仓 1× · 最多 1 仓</span>
+      <span className="live-muted">{state?.testnet ? "Binance 测试网" : "Binance USDT 合约"} · 逐仓 · ≤10 分钟 5× / 其余 3× · 最多 1 仓</span>
     </div>
     <div className="live-metrics">
       <span>总资金上限 <strong>{state?.budgetUsdt ?? 10} USDT</strong></span>
-      <span>单笔额度 <strong>{state?.orderUsdt ?? 10} USDT</strong></span>
+      <span>每笔保证金 <strong>{state?.marginPercent ?? 20}% ≈ {(state?.nextMarginUsdt ?? 2).toFixed(2)} USDT</strong></span>
+      <span>名义金额 <strong>≈ {(state?.nextNotionalUsdt ?? 6).toFixed(2)}–{(state?.nextMaxNotionalUsdt ?? 10).toFixed(2)} USDT</strong></span>
       <span>最近开仓检查余额 <strong>{state?.walletUsdt?.toFixed(2) ?? "—"} USDT</strong></span>
       <span>凭证 <strong>{state?.configured ? "已配置" : "待配置 .env"}</strong></span>
     </div>
     {state?.reason && <p className="live-danger" role="status">{state.reason}</p>}
     {!state?.enabled && <p className="live-muted">填写 .env 中的 API key、secret 和控制口令，再设置 LIVE_TRADING_ENABLED=true 并重启。启用后仅跟随新开仓信号。</p>}
     {trade ? <div className="live-position">
-      <strong>{trade.symbol} · {trade.side === "LONG" ? "做多" : "做空"}</strong>
+      <strong>{trade.symbol} · {trade.side === "LONG" ? "做多" : "做空"} · {trade.leverage}×</strong>
       <span>{trade.status === "ENTERING" ? "开仓对账中" : trade.pendingClose ? "平仓对账中" : "持仓中"} · {trade.strategy}</span>
       <span>成交均价 {trade.entryPrice || "待确认"} · 剩余数量 {trade.remainingQuantity}</span>
+      <span>开仓名义金额 {(trade.initialQuantity * trade.entryPrice).toFixed(2)} USDT · 保证金约 {(trade.initialQuantity * trade.entryPrice / trade.leverage).toFixed(2)} USDT</span>
       <span>止损触发价 {trade.stopPrice || "待确认"} · 到期 {new Date(trade.timeoutAt).toLocaleTimeString()}</span>
     </div> : <p className="live-muted">当前无本程序实盘持仓。模拟账户和实盘账户分别记录。</p>}
     {(state?.enabled || trade) && <div className="live-controls">

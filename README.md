@@ -177,16 +177,16 @@ BINANCE_API_KEY=
 BINANCE_API_SECRET=
 LIVE_CONTROL_TOKEN=
 LIVE_MAX_CAPITAL_USDT=10
-LIVE_ORDER_USDT=10
+LIVE_MARGIN_PERCENT=20
 ```
 
 使用 **HMAC API key**，开通合约交易权限；`LIVE_CONTROL_TOKEN` 是自行生成的至少 32 字符随机口令，用于面板操作，与 API secret 不同。可以用 `openssl rand -hex 32` 生成。填写凭证后，显式设置 `LIVE_TRADING_ENABLED=true` 并重启才会开仓。测试网需设置 `LIVE_TRADING_TESTNET=true`，使用 Binance Demo 的独立 key 和独立 `DATA_DIR`。签名请求固定发送至 Binance 官方主网 / Demo 地址，不沿用行情的 `BINANCE_BASE` 或 `FALLBACK_BASE`。
 
 小额测试的约束：
 
-- **首轮总资金与单笔额度默认均为 10 USDT，代码硬上限为 100 USDT**，后续可以在这个硬上限内逐步调整环境变量。请使用专门的合约账户，只放不超过当前总额度的 USDT；单向持仓、单资产模式，关闭自动追加保证金。账户有其他资产、持仓或普通/条件挂单时拒绝开仓。钱包盈利后超过当前上限也会暂停后续开仓，转出超额部分后在面板检查恢复。
-- 固定**逐仓 1 倍、同时最多 1 仓**；单笔默认 10 USDT 名义额度，预留 2% 给费用和价格偏差，实际下单略低于 10 USDT。不继承模拟盘 3 倍杠杆，不自动转账、补充保证金或使用其他币种。账户余额不足时缩小下单；低于交易所最小下单金额则跳过，不凑单。
-- 新开仓使用 **LIMIT IOC**，限制追价；拒绝超过 15 秒的信号、超过 10 秒的盘口、超过 0.5% 的信号价格偏离或盘口价差。IOC 未成交部分立即撤销，部分成交按真实数量管理。成交后的名义金额超过额度会只减仓退出。限价卖单可能以更高价成交，成交后仍需这次额度检查。
+- **总保证金预算默认 10 USDT，每笔按当前权益的 20% 分配保证金，代码总资金硬上限为 100 USDT**，后续可以在这个硬上限内逐步调整环境变量。请使用专门的合约账户，只放不超过当前总额度的 USDT；单向持仓、单资产模式，关闭自动追加保证金。账户有其他资产、持仓或普通/条件挂单时拒绝开仓。钱包盈利后超过当前上限也会暂停后续开仓，转出超额部分后在面板检查恢复。
+- **逐仓，计划持仓时长 ≤10 分钟用 5 倍，超过 10 分钟用 3 倍，同时最多 1 仓**；每笔保证金为当前权益的 20%，以钱包余额、权益和总预算三者的较小值为基数。初始 10 USDT 对应每笔约 **2 USDT 保证金 / 6–10 USDT 名义金额**，再预留 2% 给费用和价格偏差；亏损后会按剩余权益缩小，不是固定下注 2 USDT。杠杆按信号的原计划持仓时长选择并随订单持久化，不会因剩余时间缩短、重启或后续策略调整而加杠杆。不自动转账、补充保证金或使用其他币种。账户余额不足时缩小下单；低于交易所最小下单金额则跳过，不凑单。
+- 新开仓使用 **LIMIT IOC**，限制追价；拒绝超过 15 秒的信号、超过 10 秒的盘口、超过 0.5% 的信号价格偏离或盘口价差。IOC 未成交部分立即撤销，部分成交按真实数量管理。成交后的名义金额除以该笔实际杠杆，超过该笔保证金额度时会只减仓退出。限价卖单可能以更高价成交，成交后仍需这次额度检查。
 - 交易所侧通过当前 `/fapi/v1/algoOrder` 接口挂 **STOP_MARKET / closePosition** 止损，以标记价格触发；初始整仓止损取模拟 SL1 / SL2 中更紧的幅度。止盈由行情 Tick 驱动，TP1 减半、TP2 结清；不足以分成两份时 TP1 全平。TP1 后可将止损移至开仓价外 0.2%（费用缓冲，并非净收益保证）。超时和主动退出使用 `reduceOnly` 市价单。止损挂单失败或消失时，停止开仓并尝试立即只减仓退出。
 - 不承诺最大净亏损恰好等于 100 美元：这里按 **USDT 钱包与下单额度**限制投入，实际费用、资金费率、滑点及 USDT/USD 汇率仍以交易所为准。不要在该账户同时手动交易或运行其他程序。
 
@@ -212,6 +212,10 @@ LIVE_ORDER_USDT=10
 配置 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`、`DASHBOARD_URL` 即可播报行情、挂单、开仓和两阶段平仓。网络请求沿用 `PROXY` / `HTTP(S)_PROXY`。
 
 Docker 保留现有 mihomo 启动、订阅、Binance 健康检查、失败节点回避和线路切换机制。主要参数为 `MIHOMO_SUBSCRIPTION_URL`、`MIHOMO_CONFIG_MODE`、`MIHOMO_PROXY_PORT`；详见 `.env.example` 与 `docker-compose.yml`。
+
+**行情和实盘接口遇到 429 / 451 都调用容器内 mihomo 的控制 API 切线。**候选列表直接排除美国节点标记；通过同一代理请求 `https://www.cloudflare.com/cdn-cgi/trace`，确认有效出口 IP、国家非 US/CA，再验证 Binance `ping` 成功后采用节点。无法验证地区时不视为可用。切换后清理 mihomo 的旧连接，避免 HTTP CONNECT / WebSocket 继续使用旧 IP；WebSocket 按原有机制重连。并发错误合并为一次切线，短时间内不反复切换；429 节点临时避开 5 分钟，仍完整遵守 `Retry-After`，418 保留封禁退避。
+
+实盘切线只恢复网络，**不会自动重发 POST / DELETE 交易请求**；持久化订单号继续用于对账。只读 GET 在 451 切线成功后最多重试一次，并重新生成时间戳和签名。控制接口默认 `http://127.0.0.1:9090`、组名 `ACTIVE`，可通过 `MIHOMO_API_URL` / `MIHOMO_PROXY_GROUP` 修改；自定义配置有控制密码时设置 `MIHOMO_API_SECRET`。生成的容器配置已把出口检查和 Binance 路由至 ACTIVE；挂载自定义配置时应保持这两个域名使用相同代理组。API key 不会发送给出口检查服务。自动测试使用模拟 mihomo 和出口响应，不发送真实交易请求。
 保持挂载 `./data:/app/data` 目录：
 - **持久化 48 小时分钟 K 线与榜单归档**：容器升级、重启时直接从本地秒级恢复，免去全量 REST API 请求（规避 Binance 429 限频）；
 - **宿主机存储与磁盘保护**：每个 UTC 0 点按整天文件清理超过 48 小时的历史归档与信号快照，不进行日内逐行重写，严格保护宿主机磁盘寿命与空间；
@@ -220,5 +224,16 @@ Docker 保留现有 mihomo 启动、订阅、Binance 健康检查、失败节点
 ```bash
 docker compose up -d --build
 ```
+
+Mac 本机测试（Apple Silicon）使用独立的 [docker-compose.local.yml](docker-compose.local.yml)，Docker Desktop 启动后执行：
+
+```bash
+docker compose --env-file /dev/null -f docker-compose.local.yml up -d --build
+docker compose --env-file /dev/null -f docker-compose.local.yml logs -f --tail 100
+# 停止测试，保留独立测试数据卷
+docker compose --env-file /dev/null -f docker-compose.local.yml down
+```
+
+面板位于 **http://localhost:14111**，只绑定本机；不需要 Traefik。测试配置不载入项目 `.env`，固定关闭实盘和 Telegram，交易凭证为空。数据放在独立的 `binance1m-local_monitor-data` Docker 卷，容器包含 mihomo。ARM64 构建固定使用官方 v1.19.32 Release API 下载并校验 SHA-256，规避常规 GitHub 下载地址偶发 504；生产 Dockerfile 的默认下载方式保持兼容，也支持 `MIHOMO_ASSET_URL` / `MIHOMO_SHA256` 构建参数。
 
 核心目录：`src/` 为监控、特征、交易及通知；`src/strategy-replay.ts` 为共用回测，`research/strategy-replay.ts` 为兼容导出；`src/factor-settings.ts` 定义短窗口与默认节奏；`src/factor-mining-service.ts` 调度后台挖掘；`scripts/mine-strategy.ts` 为手动挖掘入口；`web/` 为监控与参数面板。其他研究脚本保留为历史实验入口，见 [研究说明](research/README.md)。

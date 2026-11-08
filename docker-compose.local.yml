@@ -1,0 +1,41 @@
+# Mac 本机测试：独立数据卷，无 Traefik，实盘及 Telegram 固定关闭。
+# docker compose --env-file /dev/null -f docker-compose.local.yml up -d --build
+name: binance1m-local
+
+services:
+  monitor:
+    image: binance1mmonitor:local-test
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 官方 v1.19.32 ARM64 asset；常规 GitHub 下载地址 504 时使用 API/CDN。
+        MIHOMO_VERSION: v1.19.32
+        MIHOMO_ASSET_URL: https://api.github.com/repos/MetaCubeX/mihomo/releases/assets/601415736
+        MIHOMO_SHA256: 9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0
+    restart: "no"
+    stop_grace_period: 90s
+    ports:
+      - "127.0.0.1:14111:4111"
+    environment:
+      PORT: "4111"
+      TZ: Asia/Hong_Kong
+      DATA_DIR: /app/data
+      LIVE_TRADING_ENABLED: "false"
+      LIVE_TRADING_TESTNET: "false"
+      LIVE_MAX_CAPITAL_USDT: "10"
+      LIVE_MARGIN_PERCENT: "20"
+      BINANCE_API_KEY: ""
+      BINANCE_API_SECRET: ""
+      LIVE_CONTROL_TOKEN: ""
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_CHAT_ID: ""
+      MIHOMO_ENABLE: "1"
+      MIHOMO_CONFIG_MODE: provider
+      MIHOMO_SUBSCRIPTION_URL: https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/refs/heads/main/all/clash.yaml
+    volumes:
+      - monitor-data:/app/data
+
+volumes:
+  monitor-data:

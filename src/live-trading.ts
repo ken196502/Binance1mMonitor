@@ -7,6 +7,11 @@ import type { PaperPosition } from "./types.ts";
 import type { LiveTrade, LiveTradingSummary } from "./live-trading-types.ts";
 
 export const LIVE_HARD_CAP_USDT = 100;
+/** Planned holding period, never the shrinking time left on an existing position. */
+export function liveLeverageForHoldMinutes(minutes: number): 3 | 5 {
+  if (!Number.isFinite(minutes) || minutes <= 0) throw new Error("实盘计划持仓时长无效");
+  return minutes <= 10 ? 5 : 3;
+}
 const TERMINAL = new Set(["FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"]);
 const id = (kind: string) => `b1m_${kind}_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
 
@@ -17,7 +22,7 @@ export interface LiveConfig {
   apiSecret: string;
   controlToken: string;
   budgetUsdt: number;
-  orderUsdt: number;
+  marginPercent: number;
   storageFile: string;
 }
 
@@ -30,7 +35,7 @@ export function readLiveConfig(env: NodeJS.ProcessEnv = process.env): LiveConfig
     enabled: bool("LIVE_TRADING_ENABLED"), testnet: bool("LIVE_TRADING_TESTNET"),
     apiKey: env.BINANCE_API_KEY?.trim() ?? "", apiSecret: env.BINANCE_API_SECRET?.trim() ?? "",
     controlToken: env.LIVE_CONTROL_TOKEN?.trim() ?? "",
-    budgetUsdt: Number(env.LIVE_MAX_CAPITAL_USDT ?? 10), orderUsdt: Number(env.LIVE_ORDER_USDT ?? 10),
+    budgetUsdt: Number(env.LIVE_MAX_CAPITAL_USDT ?? 10), marginPercent: Number(env.LIVE_MARGIN_PERCENT ?? 20),
     storageFile: path.resolve(env.DATA_DIR ?? "data", "live-trading.json"),
   };
   validateLiveLimits(config);
@@ -39,7 +44,7 @@ export function readLiveConfig(env: NodeJS.ProcessEnv = process.env): LiveConfig
 
 function validateLiveLimits(c: LiveConfig) {
   if (!Number.isFinite(c.budgetUsdt) || c.budgetUsdt <= 0 || c.budgetUsdt > LIVE_HARD_CAP_USDT) throw new Error("实盘总资金限额必须 > 0 且 ≤ 100 USDT");
-  if (!Number.isFinite(c.orderUsdt) || c.orderUsdt <= 0 || c.orderUsdt > c.budgetUsdt) throw new Error("实盘单笔额度必须 > 0 且 ≤ 总资金限额");
+  if (!Number.isFinite(c.marginPercent) || c.marginPercent <= 0 || c.marginPercent > 20) throw new Error("实盘每笔保证金比例必须 > 0 且 ≤ 20%");
 }
 
 interface SavedState {
@@ -71,6 +76,7 @@ export class LiveTradingEngine {
   private lockOwned = false;
   private brokenStorage = false;
   private wallet: number | null = null;
+  private equity: number | null = null;
   private checkedAt: number | null = null;
   private lastTimeSync = 0;
   private rules = new Map<string, SymbolRules>();
@@ -107,7 +113,11 @@ export class LiveTradingEngine {
   private validateState(s: SavedState) {
     if (s.version !== 1 || typeof s.fingerprint !== "string" || typeof s.paused !== "boolean" || !(s.haltReason === null || typeof s.haltReason === "string") || !Array.isArray(s.seenSignals) || !s.seenSignals.every(x => typeof x === "string") || !Array.isArray(s.history) || !(s.active === null || typeof s.active === "object")) throw new Error("状态格式错误");
     for (const t of [...s.history, ...(s.active ? [s.active] : [])]) {
+      // Previously saved 1x positions retain their original leverage during recovery.
+      t.leverage ??= 1;
+      t.marginBudgetUsdt ??= Number(t.requestedQuantity) * Number(t.limitPrice) * 1.02 / t.leverage;
       if (!t || !/^[A-Z0-9]+USDT$/.test(t.symbol) || !["LONG", "SHORT"].includes(t.side) || !["ENTERING", "OPEN", "CLOSED"].includes(t.status) || !t.entryOrderId?.startsWith("b1m_") || !Array.isArray(t.stopIds) || !t.stopIds.every(x => typeof x === "string" && x.startsWith("b1m_")) || !Array.isArray(t.exits)) throw new Error("持仓格式错误");
+      if (![1, 3, 5].includes(t.leverage) || !Number.isFinite(t.marginBudgetUsdt) || t.marginBudgetUsdt <= 0 || t.marginBudgetUsdt > LIVE_HARD_CAP_USDT) throw new Error("持仓保证金或杠杆无效");
       for (const n of [Number(t.requestedQuantity), Number(t.limitPrice), t.openedAt, t.timeoutAt, t.tp1Percent, t.tp2Percent, t.stopPercent]) if (!Number.isFinite(n) || n <= 0) throw new Error("持仓数值错误");
       for (const n of [t.entryPrice, t.initialQuantity, t.remainingQuantity, t.stopPrice]) if (!Number.isFinite(n) || n < 0) throw new Error("持仓数值错误");
       if (t.pendingClose && (!t.pendingClose.id.startsWith("b1m_") || !Number.isFinite(Number(t.pendingClose.quantity)) || Number(t.pendingClose.quantity) <= 0)) throw new Error("平仓意图错误");
@@ -166,11 +176,11 @@ export class LiveTradingEngine {
       if (!this.config.apiKey || !this.config.apiSecret) throw new Error("请在 .env 配置 BINANCE_API_KEY / BINANCE_API_SECRET");
       if (this.config.enabled && this.config.controlToken.length < 32) throw new Error("LIVE_CONTROL_TOKEN 需至少 32 字符，用于保护实盘控制和策略修改");
       this.acquireLock();
-      await this.syncTime();
-      this.lastTimeSync = this.now();
       this.running = true;
       this.save();
       await this.enqueue(async () => {
+        await this.syncTime();
+        this.lastTimeSync = this.now();
         if (this.state.active) await this.reconcile();
         else await this.checkAccount();
       });
@@ -192,9 +202,14 @@ export class LiveTradingEngine {
 
   summary(): LiveTradingSummary {
     const status = this.state.haltReason ? "halted" : this.starting ? "starting" : !this.config.enabled ? "disabled" : !this.running ? "starting" : this.state.paused ? "paused" : "ready";
+    const nextMarginUsdt = this.orderMargin();
     return structuredClone({ enabled: this.config.enabled, configured: !!(this.config.apiKey && this.config.apiSecret && this.config.controlToken.length >= 32), testnet: this.config.testnet,
-      status, reason: this.state.haltReason, budgetUsdt: this.config.budgetUsdt, orderUsdt: this.config.orderUsdt,
-      leverage: 1, maxPositions: 1, walletUsdt: this.wallet, lastCheckedAt: this.checkedAt, activeTrade: this.state.active, recentTrades: this.state.history.slice(-20).reverse() });
+      status, reason: this.state.haltReason, budgetUsdt: this.config.budgetUsdt, marginPercent: this.config.marginPercent, nextMarginUsdt, nextNotionalUsdt: nextMarginUsdt * 3, nextMaxNotionalUsdt: nextMarginUsdt * 5,
+      leverage: 3, shortHoldLeverage: 5, shortHoldMaxMinutes: 10, maxPositions: 1, walletUsdt: this.wallet, equityUsdt: this.equity, lastCheckedAt: this.checkedAt, activeTrade: this.state.active, recentTrades: this.state.history.slice(-20).reverse() });
+  }
+  private orderMargin() {
+    const capital = Math.max(0, Math.min(this.config.budgetUsdt, this.wallet ?? this.config.budgetUsdt, this.equity ?? this.config.budgetUsdt));
+    return Math.floor(capital * this.config.marginPercent / 100 * 1e8) / 1e8;
   }
   activeSymbols() { return this.state.active ? [this.state.active.symbol] : []; }
   /** Paper mutations can affect live signals, including while the live lane is paused. */
@@ -237,12 +252,12 @@ export class LiveTradingEngine {
   }
 
   private async checkAccount() {
-    const account = await this.request<{ canTrade: boolean; totalWalletBalance: string; availableBalance: string; assets: { asset: string; walletBalance: string }[] }>("GET", "/fapi/v3/account");
+    const account = await this.request<{ canTrade: boolean; totalWalletBalance: string; totalMarginBalance: string; availableBalance: string; assets: { asset: string; walletBalance: string }[] }>("GET", "/fapi/v3/account");
     const mode = await this.request<{ dualSidePosition: boolean }>("GET", "/fapi/v1/positionSide/dual");
     const assetsMode = await this.request<{ multiAssetsMargin: boolean }>("GET", "/fapi/v1/multiAssetsMargin");
-    const wallet = Number(account.totalWalletBalance), available = Number(account.availableBalance);
-    if (!account.canTrade || !Number.isFinite(wallet) || wallet < 0 || !Number.isFinite(available) || !Array.isArray(account.assets)) throw new Error("合约账户不可交易或余额响应无效");
-    this.wallet = wallet; this.checkedAt = this.now();
+    const wallet = Number(account.totalWalletBalance), equity = Number(account.totalMarginBalance), available = Number(account.availableBalance);
+    if (!account.canTrade || !Number.isFinite(wallet) || wallet < 0 || !Number.isFinite(equity) || !Number.isFinite(available) || available < 0 || !Array.isArray(account.assets)) throw new Error("合约账户不可交易或余额响应无效");
+    this.wallet = wallet; this.equity = equity; this.checkedAt = this.now();
     if (mode.dualSidePosition !== false || assetsMode.multiAssetsMargin !== false) throw new Error("小额实盘只支持单向持仓、单资产模式；请在空仓时自行设置");
     if (account.assets.some(a => !Number.isFinite(Number(a.walletBalance)) || (a.asset !== "USDT" && Number(a.walletBalance) !== 0))) throw new Error("请使用仅有 USDT 的独立合约账户测试");
     if (wallet > this.config.budgetUsdt + 1e-8) throw new Error(`合约钱包超过 ${this.config.budgetUsdt} USDT 上限，请使用资金不超过该上限的独立账户`);
@@ -255,7 +270,7 @@ export class LiveTradingEngine {
 
   /** Called only for newly created paper entries. Restored paper positions are never copied. */
   onSignal(signal: PaperPosition): Promise<void> {
-    if (!this.running || !this.config.enabled || this.state.paused || this.state.haltReason || this.state.active || this.entryQueued) return Promise.resolve();
+    if (!this.running || this.starting || !this.config.enabled || this.state.paused || this.state.haltReason || this.state.active || this.entryQueued) return Promise.resolve();
     this.entryQueued = true;
     const copy = structuredClone(signal);
     return this.enqueue(async () => {
@@ -272,7 +287,9 @@ export class LiveTradingEngine {
     if (this.now() - this.lastTimeSync > 60_000) { await this.syncTime(); this.lastTimeSync = this.now(); }
     const available = await this.checkAccount();
     const { lot, market, price, minNotional } = await this.getRules(signal.symbol);
-    const tranche = Math.min(this.config.orderUsdt, this.config.budgetUsdt, available);
+    const leverage = liveLeverageForHoldMinutes((signal.timeoutAt - signal.entryTime) / 60000);
+    const marginBudget = Math.min(this.orderMargin(), available);
+    const tranche = marginBudget * leverage;
     // Reserve 2% for execution drift and fees. Size is always rounded down; no minimum uplift.
     const quote = await this.request<{ bidPrice: string; askPrice: string; time: number }>("GET", "/fapi/v1/ticker/bookTicker", { symbol: signal.symbol }, false);
     const bid = Number(quote.bidPrice), ask = Number(quote.askPrice);
@@ -282,17 +299,18 @@ export class LiveTradingEngine {
     const limit = signal.side === "LONG" ? floorToStep(ask * 1.002, price.tickSize!) : ceilToStep(bid * 0.998, price.tickSize!);
     const quantity = floorToStep(Math.min(tranche / 1.02 / Math.max(ask * 1.002, Number(limit)), Number(lot.maxQty), Number(market.maxQty)), lot.stepSize!);
     if (Number(quantity) < Math.max(Number(lot.minQty), Number(market.minQty)) || Number(quantity) * Math.min(Number(limit), bid) < minNotional) return;
-    if (Number(quantity) * Math.max(ask, Number(limit)) > this.config.budgetUsdt || Number(limit) <= 0) throw new Error("实盘开仓额度越界");
+    if (Number(quantity) * Math.max(ask, Number(limit)) / leverage > marginBudget || marginBudget > this.config.budgetUsdt || Number(limit) <= 0) throw new Error("实盘开仓额度越界");
     // These settings affect only the verified-flat symbol, never an existing position.
     try { await this.request("POST", "/fapi/v1/marginType", { symbol: signal.symbol, marginType: "ISOLATED" }); }
     catch (e) { if (!(e instanceof TradingApiError && e.code === -4046)) throw e; }
-    await this.request("POST", "/fapi/v1/leverage", { symbol: signal.symbol, leverage: 1 });
+    await this.request("POST", "/fapi/v1/leverage", { symbol: signal.symbol, leverage });
     const settings = (await this.positions(signal.symbol)).find(p => p.positionSide === "BOTH");
-    if (!settings || settings.marginType !== "isolated" || Number(settings.leverage) !== 1 || settings.isAutoAddMargin !== "false" || Number(settings.positionAmt) !== 0) throw new Error("逐仓 / 1 倍 / 禁止自动追加保证金校验失败");
+    if (!settings || settings.marginType !== "isolated" || Number(settings.leverage) !== leverage || settings.isAutoAddMargin !== "false" || Number(settings.positionAmt) !== 0) throw new Error(`逐仓 / ${leverage} 倍 / 禁止自动追加保证金校验失败`);
     if (this.now() - signal.entryTime > 15000 || !this.running) return;
     this.state.seenSignals = [...this.state.seenSignals.slice(-999), signal.id];
     this.state.active = {
       id: id("trade"), signalId: signal.id, symbol: signal.symbol, side: signal.side, strategy: signal.signalLabel ?? signal.signalType ?? "策略信号",
+      leverage, marginBudgetUsdt: marginBudget,
       status: "ENTERING", requestedQuantity: quantity, limitPrice: limit, entryOrderId: id("entry"), entryPrice: 0,
       initialQuantity: 0, remainingQuantity: 0, openedAt: this.now(), timeoutAt: signal.timeoutAt,
       tp1Percent: signal.tp1Percent, tp2Percent: signal.tp2Percent, stopPercent: Math.min(signal.sl1Percent, signal.sl2Percent),
@@ -350,7 +368,7 @@ export class LiveTradingEngine {
       const stop = entry * (1 + (t.side === "LONG" ? -1 : 1) * t.stopPercent / 100);
       t.stopPrice = Number(t.side === "LONG" ? ceilToStep(stop, price.tickSize!) : floorToStep(stop, price.tickSize!));
       this.save();
-      if (qty * entry > Math.min(this.config.orderUsdt, this.config.budgetUsdt) || this.now() >= t.timeoutAt) {
+      if (qty * entry / t.leverage > Math.min(t.marginBudgetUsdt, this.config.budgetUsdt) || this.now() >= t.timeoutAt) {
         this.halt(new Error("实际成交超过限额或信号已到期，立即只减仓退出"));
         await this.closeQuantity(qty, "entry-risk", false); return;
       }
@@ -378,7 +396,7 @@ export class LiveTradingEngine {
     const amount = Number(p.positionAmt), qty = Math.abs(amount);
     this.checkedAt = this.now();
     if (qty === 0) { await this.finish(); return; }
-    if ((amount > 0) !== (t.side === "LONG") || qty > t.remainingQuantity + 1e-9 || p.marginType !== "isolated" || Number(p.leverage) !== 1 || p.isAutoAddMargin !== "false") throw new Error("交易所持仓与本地记录或风控设置不符，禁止自动操作其他仓位");
+    if ((amount > 0) !== (t.side === "LONG") || qty > t.remainingQuantity + 1e-9 || p.marginType !== "isolated" || Number(p.leverage) !== t.leverage || p.isAutoAddMargin !== "false") throw new Error("交易所持仓与本地记录或风控设置不符，禁止自动操作其他仓位");
     if (qty !== t.remainingQuantity) {
       const externalReduction = qty < t.remainingQuantity - 1e-9;
       t.remainingQuantity = qty; this.save();
