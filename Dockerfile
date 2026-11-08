@@ -35,8 +35,8 @@ FROM debian:bookworm-slim AS mihomo-fetch
 #   docker build --build-arg MIHOMO_DOWNLOAD_BASE=https://gh-proxy.com/https://github.com/MetaCubeX/mihomo/releases/download .）
 ARG MIHOMO_VERSION=v1.19.32
 ARG MIHOMO_DOWNLOAD_BASE=https://github.com/MetaCubeX/mihomo/releases/download
-ARG MIHOMO_ASSET_URL
-ARG MIHOMO_SHA256
+ARG MIHOMO_ASSET_URL=""
+ARG MIHOMO_SHA256=""
 ARG MIHOMO_GEO_BASE=https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest
 ARG TARGETARCH
 
@@ -52,13 +52,13 @@ RUN set -eux; \
       amd64) ARCH=amd64 ;; \
       arm64) ARCH=arm64 ;; \
       arm)   ARCH=armv7 ;; \
-      *) echo "不支持的架构: ${TARGETARCH}"; exit 1 ;; \
+      *) echo "不支持的架构: ${TARGETARCH:-unknown}"; exit 1 ;; \
     esac; \
     URL="${MIHOMO_ASSET_URL:-${MIHOMO_DOWNLOAD_BASE}/${MIHOMO_VERSION}/mihomo-linux-${ARCH}-${MIHOMO_VERSION}.gz}"; \
     echo "下载 mihomo: ${URL}"; \
     (curl -fsSL --retry 3 --connect-timeout 20 -H 'Accept: application/octet-stream' "$URL" -o /tmp/mihomo.gz) \
       || curl -fsSL --retry 3 --connect-timeout 20 "https://gh-proxy.com/${URL}" -o /tmp/mihomo.gz; \
-    if [ -n "$MIHOMO_SHA256" ]; then printf '%s  /tmp/mihomo.gz\n' "$MIHOMO_SHA256" | sha256sum -c -; fi; \
+    if [ -n "${MIHOMO_SHA256:-}" ]; then printf '%s  /tmp/mihomo.gz\n' "${MIHOMO_SHA256}" | sha256sum -c -; fi; \
     gunzip -c /tmp/mihomo.gz > /usr/local/bin/mihomo; \
     chmod +x /usr/local/bin/mihomo; \
     /usr/local/bin/mihomo -v
