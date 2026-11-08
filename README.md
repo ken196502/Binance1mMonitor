@@ -234,6 +234,6 @@ docker compose --env-file /dev/null -f docker-compose.local.yml logs -f --tail 1
 docker compose --env-file /dev/null -f docker-compose.local.yml down
 ```
 
-面板位于 **http://localhost:14111**，只绑定本机；不需要 Traefik。测试配置不载入项目 `.env`，固定关闭实盘和 Telegram，交易凭证为空。数据放在独立的 `binance1m-local_monitor-data` Docker 卷，容器包含 mihomo。ARM64 构建固定使用官方 v1.19.32 Release API 下载并校验 SHA-256，规避常规 GitHub 下载地址偶发 504；生产 Dockerfile 的默认下载方式保持兼容，也支持 `MIHOMO_ASSET_URL` / `MIHOMO_SHA256` 构建参数。
+面板位于 **http://localhost:14111**，只绑定本机；不需要 Traefik。测试配置不载入项目 `.env`，固定关闭实盘和 Telegram，交易凭证为空。数据放在独立的 `binance1m-local_monitor-data` Docker 卷，容器包含 mihomo。ARM64 构建支持使用官方 v1.19.32 Release API 下载（`MIHOMO_ASSET_URL`），规避常规 GitHub 下载地址偶发 504。
 
 核心目录：`src/` 为监控、特征、交易及通知；`src/strategy-replay.ts` 为共用回测，`research/strategy-replay.ts` 为兼容导出；`src/factor-settings.ts` 定义短窗口与默认节奏；`src/factor-mining-service.ts` 调度后台挖掘；`scripts/mine-strategy.ts` 为手动挖掘入口；`web/` 为监控与参数面板。其他研究脚本保留为历史实验入口，见 [研究说明](research/README.md)。

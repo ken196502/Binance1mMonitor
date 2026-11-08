@@ -13,7 +13,6 @@ services:
         # 官方 v1.19.32 ARM64 asset；常规 GitHub 下载地址 504 时使用 API/CDN。
         MIHOMO_VERSION: v1.19.32
         MIHOMO_ASSET_URL: https://api.github.com/repos/MetaCubeX/mihomo/releases/assets/601415736
-        MIHOMO_SHA256: 9dd862e28b46ff7d775f169cceebc28deccaa0a9e804237d421cd2571e0caba0
     restart: "no"
     stop_grace_period: 90s
     ports:

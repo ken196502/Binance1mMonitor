@@ -36,7 +36,6 @@ FROM debian:bookworm-slim AS mihomo-fetch
 ARG MIHOMO_VERSION=v1.19.32
 ARG MIHOMO_DOWNLOAD_BASE=https://github.com/MetaCubeX/mihomo/releases/download
 ARG MIHOMO_ASSET_URL=""
-ARG MIHOMO_SHA256=""
 ARG MIHOMO_GEO_BASE=https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest
 ARG TARGETARCH
 
@@ -58,7 +57,6 @@ RUN set -eux; \
     echo "下载 mihomo: ${URL}"; \
     (curl -fsSL --retry 3 --connect-timeout 20 -H 'Accept: application/octet-stream' "$URL" -o /tmp/mihomo.gz) \
       || curl -fsSL --retry 3 --connect-timeout 20 "https://gh-proxy.com/${URL}" -o /tmp/mihomo.gz; \
-    if [ -n "${MIHOMO_SHA256:-}" ]; then printf '%s  /tmp/mihomo.gz\n' "${MIHOMO_SHA256}" | sha256sum -c -; fi; \
     gunzip -c /tmp/mihomo.gz > /usr/local/bin/mihomo; \
     chmod +x /usr/local/bin/mihomo; \
     /usr/local/bin/mihomo -v
