@@ -115,10 +115,10 @@ npm start
 API 配置示例：
 
 ```json
-{"factorMining":{"enabled":true,"trainingMinutes":660,"validationMinutes":60,"holdoutMinutes":60,"refreshMinutes":15,"validForMinutes":120}}
+{"factorMining":{"enabled":true,"trainingMinutes":660,"validationMinutes":120,"holdoutMinutes":120,"refreshMinutes":15,"validForMinutes":120}}
 ```
 
-所有时间均为整数分钟。训练至少 60 分钟，留出至少 15 分钟，验证窗口可设为 0~4320 分钟，三者总计最多 4320 分钟（72 小时）；刷新间隔至少 15 分钟且小于最长使用时间，最长使用时间为 30~720 分钟。默认训练时段为 -16:-5 小时 (660m)，验证时段为 -4:-3 小时 (60m)，留出时段为 -2:-1 小时 (60m)。缺失窗口字段补为默认 660/60/60；要采用完整新默认，可在面板设置或提交上例。非法合并配置整次拒绝。`GET /api/paper-trading` 和 `/api/status` 的账户摘要中含 `factorMining` 状态；完整状态保存于 `data/paper-trading.json`。自动模式下，以下离线工具应用的量化参数也须等待后台验证；关闭自动模式后恢复手动参数开仓，此时不受自动验证与到期门槛约束。
+所有时间均为整数分钟。训练至少 60 分钟，留出至少 15 分钟，验证窗口可设为 0~4320 分钟，三者总计最多 4320 分钟（72 小时）；刷新间隔至少 15 分钟且小于最长使用时间，最长使用时间为 30~720 分钟。默认训练时段为 -16:-5 小时 (660m)，验证时段为 -4、-3 的 120 分钟，留出时段为 -2 和 -1 的 120 分钟。缺失窗口字段补为默认 660/120/120；要采用完整新默认，可在面板设置或提交上例。非法合并配置整次拒绝。`GET /api/paper-trading` 和 `/api/status` 的账户摘要中含 `factorMining` 状态；完整状态保存于 `data/paper-trading.json`。自动模式下，以下离线工具应用的量化参数也须等待后台验证；关闭自动模式后恢复手动参数开仓，此时不受自动验证与到期门槛约束。
 
 ```bash
 # --window / --divisor 控制前置事件统计的 x 与 N；候选形态按内置网格搜索

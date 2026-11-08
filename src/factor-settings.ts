@@ -23,8 +23,8 @@ export const DEFAULT_FACTOR_MINING: NormalizedFactorMiningConfig = {
   refreshMinutes: 15,
   validForMinutes: 120, // 因子最多使用 2 小时 (120 分钟)
   trainingMinutes: 660, // 默认 11 小时训练 (-16h ~ -5h)
-  validationMinutes: 60, // 默认 1 小时验证 (-4h ~ -3h)
-  holdoutMinutes: 60, // 默认 1 小时留出 (-2h ~ -1h)
+  validationMinutes: 120, // 默认 120 分钟验证 (-4h ~ -2h, 覆盖 -4, -3 小时)
+  holdoutMinutes: 120, // 默认 120 分钟留出 (-2h ~ 0h, 覆盖 -2 和 -1 小时)
 };
 export function factorWindows(config: Partial<FactorWindows & FactorWindowOptions> = {}): FactorWindows & FactorWindowOptions {
   return {
@@ -107,13 +107,13 @@ export function factorRanges(end: number, config: Partial<FactorWindows & Factor
   const trainStart = trainEnd - windows.trainingMinutes * 60_000;
   const train = { start: trainStart, end: trainEnd };
 
-  // 验证时段：-4h ~ -3h (相对 end，默认 60 分钟)
-  const validationEnd = end - 3 * 3600_000;
+  // 验证时段：-4h ~ -2h (-4, -3 小时的 120 分钟验证)
+  const validationEnd = end - 2 * 3600_000;
   const validationStart = validationEnd - windows.validationMinutes * 60_000;
   const validation = { start: validationStart, end: validationEnd };
 
-  // 留出时段：-2h ~ -1h (相对 end，默认 60 分钟)
-  const holdoutEnd = end - 1 * 3600_000;
+  // 留出时段：-2h ~ 0h (-2 和 -1 的 120 分钟留出)
+  const holdoutEnd = end;
   const holdoutStart = holdoutEnd - windows.holdoutMinutes * 60_000;
   const holdout = { start: holdoutStart, end: holdoutEnd };
 

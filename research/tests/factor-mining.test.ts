@@ -292,14 +292,14 @@ test("worker cancellation terminates the owned process", async () => {
 test("rolling time ranges are short, disjoint, configurable and advance with new data", () => {
   const ranges = factorRanges(now);
   assert.equal((ranges.train.end - ranges.train.start) / M, 660);
-  assert.equal((ranges.validation.end - ranges.validation.start) / M, 60);
-  assert.equal((ranges.holdout.end - ranges.holdout.start) / M, 60);
+  assert.equal((ranges.validation.end - ranges.validation.start) / M, 120);
+  assert.equal((ranges.holdout.end - ranges.holdout.start) / M, 120);
   assert.equal(ranges.train.start, now - 16 * 60 * M);
   assert.equal(ranges.train.end, now - 5 * 60 * M);
   assert.equal(ranges.validation.start, now - 4 * 60 * M);
-  assert.equal(ranges.validation.end, now - 3 * 60 * M);
+  assert.equal(ranges.validation.end, now - 2 * 60 * M);
   assert.equal(ranges.holdout.start, now - 2 * 60 * M);
-  assert.equal(ranges.holdout.end, now - 1 * 60 * M);
+  assert.equal(ranges.holdout.end, now);
   assert.equal(factorRanges(now + 15 * M).train.start - ranges.train.start, 15 * M);
   assert.equal((factorRanges(now, { trainingMinutes: 720 }).train.end - factorRanges(now, { trainingMinutes: 720 }).train.start) / M, 720);
   assert.ok(factorCandidates().every(c => c.holdMinutes <= 15 && c.cooldownMinutes === 3));
@@ -367,7 +367,7 @@ test("window changes invalidate approvals, reach the worker, and prevent stale j
   const service = new FactorMiningService(e, job => { input = job; return new Promise(resolve => { complete = resolve; }); }, () => now);
   const job = service.tick();
   assert.deepEqual(factorWindows(input!.config), factorWindows());
-  e.updateConfig({ factorMining: { ...DEFAULTS, validationMinutes: 120 } });
+  e.updateConfig({ factorMining: { ...DEFAULTS, validationMinutes: 180 } });
   assert.equal(e.factorEntryAllowed("SHORT", now), false);
   complete(result()); await job;
   assert.match(e.getFactorMiningState().lastError!, /已被修改/);
