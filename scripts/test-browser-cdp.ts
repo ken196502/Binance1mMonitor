@@ -183,7 +183,7 @@ try {
   checks.push("首次启动不显示未经验证的生效因子");
   await openSettings();
   assert.equal(await evaluate("document.querySelectorAll('.unified-strategy-settings .strategy-preset-card').length"), 7);
-  for (const [label, value] of [["训练窗口（分钟）", "1440"], ["验证窗口（分钟）", "0"], ["留出窗口（分钟）", "120"], ["刷新间隔（分钟）", "15"], ["最长使用时间（分钟）", "120"]]) {
+  for (const [label, value] of [["训练窗口（分钟）", "660"], ["验证窗口（分钟）", "60"], ["留出窗口（分钟）", "60"], ["刷新间隔（分钟）", "15"], ["最长使用时间（分钟）", "120"]]) {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(factorField(label))}).value`), value);
   }
   await assertModalFits(); await screenshot("desktop-settings");

@@ -26,7 +26,7 @@ import {
   type Candle,
 } from "./macd.ts";
 import { computeFeatureVector, persistClosedCandlesToDisk } from "./features.ts";
-import { TelegramAlerter, isAlertMatch } from "./alert.ts";
+import { isAlertMatch } from "./alert-rule.ts";
 import { telegramConfigured } from "./telegram.ts";
 import { enrichRankChanges, type BoardSnapshot } from "./rank.ts";
 import { wsManager, applyTradeToCandles, sanitizeCandles } from "./ws.ts";
@@ -73,9 +73,6 @@ const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? (KLINE_ROL
 // "High position" = current DEA/DIFF is at/near the highest value in the window.
 const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
 const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in bars
-
-// Telegram alert: 仅播报 24h 涨幅榜满足条件的标的
-const alerter = new TelegramAlerter();
 
 let cache: { at: number; promise: Promise<Status> } | null = null;
 
@@ -601,24 +598,12 @@ async function refresh(): Promise<Status> {
     console.warn(`[paper-trading] 扫描信号异常:`, (err as any)?.message ?? err);
   }
 
-  // Telegram alert runs only on fresh snapshots
-  const { summary: highBull } = await alerter.check({
-    gainers: [...rankedGainers.rankedTop, ...rankedGainers.rankedDropped],
-    pinned: markedPinned,
-  });
-
-  if (highBull.triggered) {
-    console.log(`[tg-alert] 涨幅榜命中阈值(≥${highBull.min}): ${highBull.gainers.count} 个标的`);
-  }
-
   return {
     at: new Date().toISOString(),
     base,
     topN: TOP_N,
     highRatio: HIGH_RATIO,
     highWindow: HIGH_WINDOW,
-    highBull,
-    highBear: highBull,
     gainers: fullGainers,
     losers: [],
     volume: [],

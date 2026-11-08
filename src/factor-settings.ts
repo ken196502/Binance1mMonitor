@@ -22,9 +22,9 @@ export const DEFAULT_FACTOR_MINING: NormalizedFactorMiningConfig = {
   enabled: true,
   refreshMinutes: 15,
   validForMinutes: 120, // 因子最多使用 2 小时 (120 分钟)
-  trainingMinutes: 1440, // 默认滚动 24 小时训练 (1440 分钟)
-  validationMinutes: 0,
-  holdoutMinutes: 120, // 48-24 留出集 2 小时 (120 分钟)
+  trainingMinutes: 660, // 默认 11 小时训练 (-16h ~ -5h)
+  validationMinutes: 60, // 默认 1 小时验证 (-4h ~ -3h)
+  holdoutMinutes: 60, // 默认 1 小时留出 (-2h ~ -1h)
 };
 export function factorWindows(config: Partial<FactorWindows & FactorWindowOptions> = {}): FactorWindows & FactorWindowOptions {
   return {
@@ -75,26 +75,48 @@ export function getHoldoutOffsetMinutes(end: number, maxOffsetMinutes: number): 
 
 export function factorRanges(end: number, config: Partial<FactorWindows & FactorWindowOptions> = {}) {
   const windows = factorWindows(config);
-  const validationEnd = end;
-  const validationStart = validationEnd - windows.validationMinutes * 60_000;
-  const validation = { start: validationStart, end: validationEnd };
 
-  const trainEnd = validationStart;
+  if (config.holdoutPoolHours) {
+    const validationEnd = end;
+    const validationStart = validationEnd - windows.validationMinutes * 60_000;
+    const validation = { start: validationStart, end: validationEnd };
+
+    const trainEnd = validationStart;
+    const trainStart = trainEnd - windows.trainingMinutes * 60_000;
+    const train = { start: trainStart, end: trainEnd };
+
+    const [poolStartHour, poolEndHour] = config.holdoutPoolHours;
+    const poolStart = end - poolStartHour * 60 * 60_000;
+    const poolEnd = end - poolEndHour * 60 * 60_000;
+    const poolDurationMinutes = Math.max(0, Math.floor((poolEnd - poolStart) / 60_000));
+    const maxOffsetMinutes = Math.max(0, poolDurationMinutes - windows.holdoutMinutes);
+    const offsetMinutes = windows.holdoutOffsetMinutes !== undefined
+      ? Math.min(Math.max(0, windows.holdoutOffsetMinutes), maxOffsetMinutes)
+      : getHoldoutOffsetMinutes(end, maxOffsetMinutes);
+    const holdoutStart = poolStart + offsetMinutes * 60_000;
+    const holdoutEnd = holdoutStart + windows.holdoutMinutes * 60_000;
+    const holdout = { start: holdoutStart, end: holdoutEnd };
+
+    const earliestStart = Math.min(poolStart, trainStart);
+    return { train, validation, holdout, earliestStart };
+  }
+
+  // 默认三段固定时段：
+  // 训练时段：-16h ~ -5h (相对 end，默认 660 分钟)
+  const trainEnd = end - 5 * 3600_000;
   const trainStart = trainEnd - windows.trainingMinutes * 60_000;
   const train = { start: trainStart, end: trainEnd };
 
-  const [poolStartHour, poolEndHour] = windows.holdoutPoolHours ?? [48, 24];
-  const poolStart = end - poolStartHour * 60 * 60_000;
-  const poolEnd = end - poolEndHour * 60 * 60_000;
-  const poolDurationMinutes = Math.max(0, Math.floor((poolEnd - poolStart) / 60_000));
-  const maxOffsetMinutes = Math.max(0, poolDurationMinutes - windows.holdoutMinutes);
-  const offsetMinutes = windows.holdoutOffsetMinutes !== undefined
-    ? Math.min(Math.max(0, windows.holdoutOffsetMinutes), maxOffsetMinutes)
-    : getHoldoutOffsetMinutes(end, maxOffsetMinutes);
-  const holdoutStart = poolStart + offsetMinutes * 60_000;
-  const holdoutEnd = holdoutStart + windows.holdoutMinutes * 60_000;
+  // 验证时段：-4h ~ -3h (相对 end，默认 60 分钟)
+  const validationEnd = end - 3 * 3600_000;
+  const validationStart = validationEnd - windows.validationMinutes * 60_000;
+  const validation = { start: validationStart, end: validationEnd };
+
+  // 留出时段：-2h ~ -1h (相对 end，默认 60 分钟)
+  const holdoutEnd = end - 1 * 3600_000;
+  const holdoutStart = holdoutEnd - windows.holdoutMinutes * 60_000;
   const holdout = { start: holdoutStart, end: holdoutEnd };
 
-  const earliestStart = Math.min(poolStart, trainStart);
+  const earliestStart = Math.min(trainStart, validationStart, holdoutStart);
   return { train, validation, holdout, earliestStart };
 }

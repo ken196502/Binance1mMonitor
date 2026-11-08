@@ -291,13 +291,15 @@ test("worker cancellation terminates the owned process", async () => {
 
 test("rolling time ranges are short, disjoint, configurable and advance with new data", () => {
   const ranges = factorRanges(now);
-  assert.equal((ranges.train.end - ranges.train.start) / M, 1440);
-  assert.equal((ranges.validation.end - ranges.validation.start) / M, 0);
-  assert.equal((ranges.holdout.end - ranges.holdout.start) / M, 120);
-  assert.ok(ranges.holdout.start >= now - 48 * 60 * M);
-  assert.ok(ranges.holdout.end <= now - 24 * 60 * M);
-  assert.equal(ranges.train.start, now - 24 * 60 * M);
-  assert.equal(ranges.train.end, now);
+  assert.equal((ranges.train.end - ranges.train.start) / M, 660);
+  assert.equal((ranges.validation.end - ranges.validation.start) / M, 60);
+  assert.equal((ranges.holdout.end - ranges.holdout.start) / M, 60);
+  assert.equal(ranges.train.start, now - 16 * 60 * M);
+  assert.equal(ranges.train.end, now - 5 * 60 * M);
+  assert.equal(ranges.validation.start, now - 4 * 60 * M);
+  assert.equal(ranges.validation.end, now - 3 * 60 * M);
+  assert.equal(ranges.holdout.start, now - 2 * 60 * M);
+  assert.equal(ranges.holdout.end, now - 1 * 60 * M);
   assert.equal(factorRanges(now + 15 * M).train.start - ranges.train.start, 15 * M);
   assert.equal((factorRanges(now, { trainingMinutes: 720 }).train.end - factorRanges(now, { trainingMinutes: 720 }).train.start) / M, 720);
   assert.ok(factorCandidates().every(c => c.holdMinutes <= 15 && c.cooldownMinutes === 3));
