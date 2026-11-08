@@ -1,3 +1,4 @@
+import { DEFAULT_FACTOR_MINING, normalizeFactorMiningConfig } from "../../../src/factor-settings.ts";
 import { StrategySettings } from "./StrategySettings";
 import { validateStrategies, type StrategyDefinition } from "../../../src/strategy-definition.ts";
 import type { StrategyMonitorResult } from "../../../src/strategy-engine.ts";
@@ -175,7 +176,7 @@ export function PaperTradingPanel({
   const [maxPerStrategyInput, setMaxPerStrategyInput] = useState<number>(1);
   const [limitDivisorInput, setLimitDivisorInput] = useState<number>(0);
   const [enableLongsInput, setEnableLongsInput] = useState<boolean>(true);
-  const [factorMiningInput, setFactorMiningInput] = useState({ enabled: true, refreshMinutes: 60, validForMinutes: 720 });
+  const [factorMiningInput, setFactorMiningInput] = useState({ ...DEFAULT_FACTOR_MINING });
   const [monitorResults, setMonitorResults] = useState<StrategyMonitorResult[]>([]);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
@@ -255,11 +256,17 @@ export function PaperTradingPanel({
   }, [propSummary]);
 
   const summary = liveSummary ?? propSummary;
+  const factorUsable = (side: "LONG" | "SHORT") => {
+    const fm = summary?.factorMining;
+    const active = fm?.sides[side].active;
+    return !!active && !!fm?.entryAllowed[side] && Date.now() < Math.min(active.expiresAt,
+      active.dataAsOf + (summary?.config?.factorMining?.validForMinutes ?? DEFAULT_FACTOR_MINING.validForMinutes) * 60_000);
+  };
 
   useEffect(() => {
     if (summary?.config && !showConfigModal) {
       setStrategiesInput(structuredClone(summary.config.strategies ?? []));
-      setFactorMiningInput(summary.config.factorMining ?? { enabled: true, refreshMinutes: 60, validForMinutes: 720 });
+      setFactorMiningInput(normalizeFactorMiningConfig(summary.config.factorMining ?? DEFAULT_FACTOR_MINING));
       setMarginPercentInput(summary.config.marginPercent ?? 20);
       setMaxPositionsInput(summary.config.maxPositions ?? 5);
       setMaxPerStrategyInput(summary.config.maxPositionsPerStrategy ?? 1);
@@ -304,7 +311,7 @@ export function PaperTradingPanel({
 
   const handleResetOptimal = () => {
     setStrategiesInput(structuredClone(summary?.config?.strategies ?? []));
-    setFactorMiningInput(summary?.config?.factorMining ?? { enabled: true, refreshMinutes: 60, validForMinutes: 720 });
+    setFactorMiningInput(normalizeFactorMiningConfig(summary?.config?.factorMining ?? DEFAULT_FACTOR_MINING));
     setMarginPercentInput(summary?.config?.marginPercent ?? 20);
     setMaxPositionsInput(summary?.config?.maxPositions ?? 5);
     setMaxPerStrategyInput(1);
@@ -406,8 +413,8 @@ export function PaperTradingPanel({
                   label = "计算中...";
                   color = "#3498db";
                 } else {
-                  const shortAct = fm.sides.SHORT.active;
-                  const longAct = fm.sides.LONG.active;
+                  const shortAct = factorUsable("SHORT") ? fm.sides.SHORT.active : undefined;
+                  const longAct = factorUsable("LONG") ? fm.sides.LONG.active : undefined;
                   if (shortAct && longAct) {
                     label = `多空生效 (空${shortAct.holdout.winRate.toFixed(0)}%/多${longAct.holdout.winRate.toFixed(0)}%)`;
                     color = "#2ecc71";
@@ -418,7 +425,7 @@ export function PaperTradingPanel({
                     label = `多头生效 (胜率${longAct.holdout.winRate.toFixed(0)}%)`;
                     color = "#2ecc71";
                   } else {
-                    label = "待样本积累";
+                    label = fm.sides.SHORT.active || fm.sides.LONG.active ? "因子失效 · 等待新验证" : "待近期样本验证";
                     color = "#f39c12";
                   }
                 }
@@ -437,10 +444,10 @@ export function PaperTradingPanel({
                   const sideName = side === "LONG" ? "回踩做多 (策略8)" : "破位做空 (策略7)";
                   if (!sideEnabled) {
                     tooltipLines.push(`${sideName}: 策略已关闭`);
-                  } else if (s.active) {
+                  } else if (s.active && factorUsable(side)) {
                     tooltipLines.push(`${sideName}: 验证通过 (留出胜率 ${s.active.holdout.winRate.toFixed(1)}% / ${s.active.holdout.trades}笔 · 到期 ${new Date(s.active.expiresAt).toLocaleTimeString("zh-CN")})`);
                   } else {
-                    tooltipLines.push(`${sideName}: 暂停新开仓 (${s.reason})`);
+                    tooltipLines.push(`${sideName}: 暂停新开仓 (${s.active ? "因子过期、设置已改变或当前未获准入场" : s.reason})`);
                   }
                 });
                 if (fm.nextRunAt) {
@@ -987,29 +994,34 @@ export function PaperTradingPanel({
                 </div>
               </div>
 
-              <fieldset className="kline-strategy-settings">
-                <legend>持续因子挖掘</legend>
+              <fieldset className="kline-strategy-settings" data-testid="factor-settings">
+                <legend>超短滚动挖掘</legend>
+                <p className="factor-design-note">只验证近期行情适用性，不要求因子长期有效。滚动 24 小时训练 → 48-24 留出检验 → 短期使用；后台持续挖掘并替换合格的新组合。</p>
                 <label><input type="checkbox" checked={factorMiningInput.enabled}
                   onChange={e => setFactorMiningInput({ ...factorMiningInput, enabled: e.target.checked })} /> 建仓后继续挖掘，通过近期验证后自动更新量化多空参数</label>
                 <div className="kline-strategy-fields">
-                  <label>刷新间隔（分钟）<input type="number" min={15} max={factorMiningInput.validForMinutes - 1} step={1} required
+                  {([ ["trainingMinutes", "训练窗口（分钟）", 60], ["validationMinutes", "验证窗口（分钟）", 0], ["holdoutMinutes", "留出窗口（分钟）", 15] ] as const).map(([key, label, min]) => <label key={key}>{label}
+                    <input aria-label={label} type="number" min={min} max={4320} step={1} required value={factorMiningInput[key]}
+                      onChange={e => setFactorMiningInput({ ...factorMiningInput, [key]: Number(e.target.value) })} />
+                  </label>)}
+                  <label>刷新间隔（分钟）<input aria-label="刷新间隔（分钟）" type="number" min={15} max={factorMiningInput.validForMinutes - 1} step={1} required
                     value={factorMiningInput.refreshMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, refreshMinutes: Number(e.target.value) })} /></label>
-                  <label>有效期（分钟，最长半天）<input type="number" min={Math.max(30, factorMiningInput.refreshMinutes + 1)} max={720} step={1} required
+                  <label>最长使用时间（分钟）<input aria-label="最长使用时间（分钟）" type="number" min={Math.max(30, factorMiningInput.refreshMinutes + 1)} max={720} step={1} required
                     value={factorMiningInput.validForMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, validForMinutes: Number(e.target.value) })} /></label>
                 </div>
                 <p style={{ margin: "6px 0 0 0", color: "var(--text-muted, #94a3b8)", fontSize: "11px" }}>
-                  自动模式统一使用 3x 杠杆。手动修改量化参数后须重新验证；因子过期时暂停新开仓，已有持仓按建仓规则退出。
+                  自动候选持仓 5/10/15 分钟，统一 3x 杠杆。默认滚动 24 小时训练，用 48-24 小时前的任意 2 小时作为留出集检验，因子最多使用 2 小时。修改参数或窗口后须重新验证；因子到期停开新仓，已有持仓按建仓规则退出。
                 </p>
                 {summary?.factorMining && (
                   <div style={{ marginTop: "6px", fontSize: "11px", color: "var(--text-muted, #94a3b8)", lineHeight: "1.5" }}>
                     <span>当前状态：</span>
                     {config?.factorMining?.enabled ? (
                       <>
-                        <b style={{ color: summary.factorMining.running ? "#3498db" : (summary.factorMining.sides.SHORT.active || summary.factorMining.sides.LONG.active ? "#2ecc71" : "#f39c12") }}>
-                          {summary.factorMining.running ? "后台计算中" : (summary.factorMining.sides.SHORT.active || summary.factorMining.sides.LONG.active ? "因子生效中" : "待样本积累与验证")}
+                        <b style={{ color: summary.factorMining.running ? "#3498db" : (factorUsable("SHORT") || factorUsable("LONG") ? "#2ecc71" : "#f39c12") }}>
+                          {summary.factorMining.running ? "后台计算中" : (factorUsable("SHORT") || factorUsable("LONG") ? "因子短期生效中" : "等待近期验证，暂停量化新仓")}
                         </b>
                         {summary.factorMining.lastError && <span> · {summary.factorMining.lastError}</span>}
-                        {summary.factorMining.nextRunAt && <span> · 下轮调度：{new Date(summary.factorMining.nextRunAt).toLocaleTimeString("zh-CN")}</span>}
+                        {!!summary.factorMining.nextRunAt && <span> · 下轮调度：{new Date(summary.factorMining.nextRunAt).toLocaleTimeString("zh-CN")}</span>}
                       </>
                     ) : (
                       <span>已停用</span>

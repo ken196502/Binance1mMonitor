@@ -1,9 +1,10 @@
+import { normalizeFactorMiningConfig, type FactorMiningConfig } from "./factor-settings.ts";
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { PaperTradingEngine } from "./paper-trading.ts";
 import { MINUTE_MS, factorConfigKey, type FactorMiningResult } from "./factor-policy.ts";
 
-export interface FactorJob { now: number; costs: FactorMiningResult["costs"] }
+export interface FactorJob { now: number; costs: FactorMiningResult["costs"]; config?: FactorMiningConfig; root?: string }
 export function runFactorWorker(job: FactorJob, signal?: AbortSignal): Promise<FactorMiningResult> {
   return new Promise((resolve, reject) => {
     const child = fork(fileURLToPath(new URL("./factor-worker.ts", import.meta.url)), [], {
@@ -66,7 +67,7 @@ export class FactorMiningService {
     const signature = factorConfigKey(config);
     this.engine.setFactorMiningState({ ...state, running: true, lastStartedAt: now, lastError: undefined });
     try {
-      const result = await this.run({ now, costs: { takerFeeBps: config.takerFeeBps, slippageBps: config.slippageBps } }, controller.signal);
+      const result = await this.run({ now, config: normalizeFactorMiningConfig(config.factorMining), costs: { takerFeeBps: config.takerFeeBps, slippageBps: config.slippageBps } }, controller.signal);
       if (controller.signal.aborted) throw new Error("因子挖掘已停止");
       if (signature !== factorConfigKey(this.engine.getConfig())) throw new Error("挖掘期间参数已被修改，等待下轮重新验证");
       this.engine.applyMinedFactors(result, this.clock());

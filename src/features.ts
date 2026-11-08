@@ -5,6 +5,7 @@ import { computeMacd, ema, aggregate1mTo5m, aggregate1mTo15m } from "./macd.ts";
 import type { Ticker24h } from "./binance.ts";
 import { compileFeatureSpec, evaluateRules, readFeaturePath, type FeatureCondition } from "./strategy-rules.ts";
 import { INTERVAL_WINDOWS } from "./strategy-spec.ts";
+import { DEFAULT_RESEARCH_ROOT, DEFAULT_SIGNALS_DIR } from "./factor-data.ts";
 
 export const FEATURE_VERSION = "3.0.0";
 
@@ -623,7 +624,7 @@ export async function appendSignalSnapshot(record: {
 }): Promise<void> {
   try {
     const dateStr = new Date(record.time).toISOString().slice(0, 10).replace(/-/g, "");
-    const dir = path.resolve("data/signals");
+    const dir = DEFAULT_SIGNALS_DIR;
     await mkdir(dir, { recursive: true });
     const file = path.join(dir, `${dateStr}.jsonl`);
     await appendFile(file, JSON.stringify(record) + "\n", "utf8");
@@ -656,14 +657,14 @@ export function persistClosedCandlesToDisk(symbol: string, candles: Candle[]): P
       days.set(day, entries);
     }
     if (!days.size) return;
-    const dir = path.resolve("data/research/live-1m");
+    const dir = path.join(DEFAULT_RESEARCH_ROOT, "live-1m");
     await mkdir(dir, { recursive: true });
     for (const [day, entries] of days) {
       await appendFile(path.join(dir, `${symbol}-${day}.jsonl`), entries.map(e => e.line + "\n").join(""), "utf8");
       for (const entry of entries) seen.set(entry.time, entry.line);
     }
     const newest = Math.max(...seen.keys());
-    for (const time of seen.keys()) if (time < newest - 500 * 60_000) seen.delete(time);
+    for (const time of seen.keys()) if (time < newest - 48 * 3600_000) seen.delete(time);
     archiveSeen.set(symbol, seen);
   }).catch(error => console.warn(`[factor-mining] ${symbol} 行情归档失败:`, error.message));
   archiveQueues.set(symbol, work);

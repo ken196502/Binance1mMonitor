@@ -35,12 +35,14 @@ services:
       # 拉取订阅本身也需要代理时可用宿主机网关上的代理（见下方 extra_hosts）
       - MIHOMO_SUBSCRIPTION_PROXY=${MIHOMO_SUBSCRIPTION_PROXY:-}
       - MIHOMO_PROXY_PORT=${MIHOMO_PROXY_PORT:-7890}
+      # 48小时K线归档保留时长（小时，默认 48，每个 UTC 0点自动清理过期天文件，保护磁盘寿命）
+      - KLINE_RETENTION_HOURS=${KLINE_RETENTION_HOURS:-48}
     # 宿主机网关映射：如需通过宿主机本地代理（如 Clash 端口 7890），
     # 可在 .env 中显式配置 PROXY=http://host.docker.internal:7890（显式设置后 entrypoint 不再指向容器内 mihomo）
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      # 持久化模拟交易账户资产、持仓与历史订单（重启或更新容器不丢失数据）
+      # 持久化模拟交易账户资产、48小时分钟K线归档及因子状态（容器重启或更新秒级启动且免REST限频，每个UTC 0点整天文件清理保护磁盘）
       - ./data:/app/data
       # 可选：挂载你自己的 mihomo 配置（含代理节点），优先级高于 MIHOMO_SUBSCRIPTION_URL
       # - ./docker/mihomo/config.yaml:/etc/mihomo/config.yaml:ro

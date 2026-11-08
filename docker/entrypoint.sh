@@ -320,7 +320,21 @@ shutdown() {
 }
 trap shutdown EXIT
 
+# ------------------------------------------------------------ 检查数据持久化目录与权限
+prepare_data_dir() {
+  local data_dir="${DATA_DIR:-/app/data}"
+  if [ -d "$data_dir" ]; then
+    mkdir -p "$data_dir/research/live-1m" "$data_dir/research/live-boards" "$data_dir/signals" 2>/dev/null || true
+    if [ ! -w "$data_dir" ]; then
+      log "警告: 数据持久化目录 $data_dir 对当前用户不可写 (当前 UID: $(id -u))，请在宿主机检查目录权限 (建议: sudo chown -R 1000:1000 ./data)"
+    fi
+  else
+    mkdir -p "$data_dir/research/live-1m" "$data_dir/research/live-boards" "$data_dir/signals" 2>/dev/null || true
+  fi
+}
+
 # ---------------------------------------------------------------------- main
+prepare_data_dir
 start_mihomo
 configure_proxy_env
 

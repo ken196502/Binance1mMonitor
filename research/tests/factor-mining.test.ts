@@ -1,3 +1,4 @@
+import { DEFAULT_FACTOR_MINING as DEFAULTS, factorRanges, factorWindows } from "../../src/factor-settings.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -38,15 +39,16 @@ test("all new default entries and mined candidates use 3x; manual overrides rema
   assert.equal(PAPER_DEFAULT_CONFIG.wBottomDivergenceConfig?.leverage, 3);
 });
 
-test("factor approvals expire after half a day even without a completed mining job", () => {
+test("only actually validated factors can enter and approvals expire on the short use window", () => {
   const e = engine();
-  assert.equal(e.factorEntryAllowed("SHORT", now), true, "initial deployment has active recent baseline factor");
-  assert.equal(e.factorEntryAllowed("SHORT", now + 720 * M - 1), true);
-  assert.equal(e.factorEntryAllowed("SHORT", now + 720 * M), false, "outdated factor pauses entry");
-  assert.throws(() => e.openPosition({ symbol: "A", entryPrice: 100, entryTime: now + 720 * M, dayChangePercent: 20, signal, signalType: "kline_stats_short" }), /因子/);
-  e.applyMinedFactors(result(now + 720 * M), now + 720 * M);
-  assert.equal(e.factorEntryAllowed("SHORT", now + 720 * M), true);
-  assert.equal(e.factorEntryAllowed("SHORT", now + 1440 * M), false);
+  assert.equal(e.factorEntryAllowed("SHORT", now), false, "preset parameters cannot authorize trading before real validation");
+  e.applyMinedFactors(result(), now);
+  assert.equal(e.factorEntryAllowed("SHORT", now + DEFAULTS.validForMinutes * M - 1), true);
+  assert.equal(e.factorEntryAllowed("SHORT", now + DEFAULTS.validForMinutes * M), false, "outdated factor pauses entry");
+  assert.throws(() => e.openPosition({ symbol: "A", entryPrice: 100, entryTime: now + DEFAULTS.validForMinutes * M, dayChangePercent: 20, signal, signalType: "kline_stats_short" }), /因子/);
+  e.applyMinedFactors(result(now + DEFAULTS.validForMinutes * M), now + DEFAULTS.validForMinutes * M);
+  assert.equal(e.factorEntryAllowed("SHORT", now + DEFAULTS.validForMinutes * M), true);
+  assert.equal(e.factorEntryAllowed("SHORT", now + 2 * DEFAULTS.validForMinutes * M), false);
   assert.equal(e.factorEntryAllowed("LONG", now), false);
   assert.equal(e.getConfig().enableKlineStatsLong, false, "mining must preserve the operator's strategy switches");
   e.updateConfig({ klineStatsShortConfig: { holdMinutes: 30 } });
@@ -94,19 +96,19 @@ test("stale, future, version-mismatched and under-sampled results are rejected a
     (r: FactorMiningResult) => { r.featureVersion = "old"; },
     (r: FactorMiningResult) => { r.costs.takerFeeBps = 10; },
     (r: FactorMiningResult) => { r.sides.SHORT.candidate!.holdout.trades = 0; },
-    (r: FactorMiningResult) => { r.sides.SHORT.candidate!.validation.wilsonLow = 10; },
+    (r: FactorMiningResult) => { r.sides.SHORT.candidate!.validation = { ...metrics(), wilsonLow: 10 }; },
   ]) {
     const r = result(); edit(r);
     assert.throws(() => e.applyMinedFactors(r, now));
     assert.deepEqual(e.getFactorMiningState(), before);
   }
-  const r = result(); r.sides.SHORT.candidate!.validation.avgNetPercent = -0.1;
+  const r = result(); r.sides.SHORT.candidate!.validation = { ...metrics(), avgNetPercent: -0.1 };
   assert.equal(passesFactorCandidate(r.sides.SHORT.candidate!), false, "high win rate alone is insufficient");
   assert.throws(() => e.updateConfig({ leverage: 10, factorMining: { enabled: true, refreshMinutes: 720, validForMinutes: 720 } }));
   assert.equal(e.getConfig().leverage, 3);
 });
 
-test("scheduler mines while fully invested, never overlaps, and continues the next hour", async () => {
+test("scheduler mines while fully invested, never overlaps, and continues the next short refresh cycle", async () => {
   const e = new PaperTradingEngine({ storageFile: null, maxPositions: 1 });
   e.openPosition({ symbol: "A", entryPrice: 100, entryTime: now, dayChangePercent: 20, signal });
   let calls = 0;
@@ -119,7 +121,7 @@ test("scheduler mines while fully invested, never overlaps, and continues the ne
   assert.equal(e.getFactorMiningState().running, true);
   complete(result()); await first;
   await service.tick(); assert.equal(calls, 1);
-  clock += 60 * M;
+  clock += DEFAULTS.refreshMinutes * M;
   const second = service.tick();
   complete(result(clock)); await second;
   assert.equal(calls, 2);
@@ -176,7 +178,7 @@ test("legacy saved defaults migrate once without rewriting existing positions; f
     const again = new PaperTradingEngine({ storageFile: file }); tracked.push(again);
     assert.equal(again.getLeverageForSignal("streak"), 4, "one-time migration preserves subsequent explicit settings");
     assert.equal(again.factorEntryAllowed("SHORT", now), true);
-    assert.equal(again.factorEntryAllowed("SHORT", now + 720 * M), false);
+    assert.equal(again.factorEntryAllowed("SHORT", now + DEFAULTS.validForMinutes * M), false);
   } finally {
     for (const e of tracked) clearTimeout((e as any).saveTimeout);
     await rm(dir, { recursive: true, force: true });
@@ -207,13 +209,12 @@ test("rolling loader excludes forming/future candles and rejects stale archives"
 
 function syntheticData(badHoldout = false): FactorDataset {
   const list: Candle[] = [];
-  // Separate continuous segments keep warmup local to each non-overlapping period.
-  for (const end of [now - 12 * 60 * M, now - 6 * 60 * M, now]) {
-    for (let i = 0; i < 260; i++) {
-      const event = i >= 70 && i % 10 === 0;
-      const loss = badHoldout && end === now && event;
-      list.push({ time: end - (260 - i) * M, open: 100, close: 100, high: event && !loss ? 107 : 100.1, low: loss ? 95 : 99.9, volume: 1 });
-    }
+  const ranges = factorRanges(now);
+  const start = ranges.earliestStart - 500 * M;
+  for (let time = start, i = 0; time < now; time += M, i++) {
+    const event = i >= 70 && i % 5 === 0;
+    const loss = badHoldout && time >= ranges.holdout.start && time < ranges.holdout.end && event;
+    list.push({ time, open: 100, close: 100, high: event && !loss ? 107 : 100.1, low: loss ? 95 : 99.9, volume: 1 });
   }
   const times = list.map(b => b.time);
   return { candles: new Map([["A", list]]), indices: new Map([["A", new Map(times.map((t, i) => [t, i]))]]), times,
@@ -246,9 +247,186 @@ test("real isolated worker starts through tsx and reports missing data without t
   await assert.rejects(runFactorWorker({ now: M, costs: { takerFeeBps: 5, slippageBps: 2 } }), /不足|过期|Invalid/);
 });
 
+test("archive to real worker to scheduler honors short windows and retires under-sampled factors", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "factor-worker-data-"));
+  const e = engine();
+  const config = { ...DEFAULTS, trainingMinutes: 60, validationMinutes: 0, holdoutMinutes: 15, holdoutPoolHours: [2, 1.5] as [number, number] };
+  e.updateConfig({ factorMining: config });
+  const approved = result(); approved.windows = factorWindows(config);
+  e.applyMinedFactors(approved, now);
+  try {
+    await mkdir(path.join(root, "live-1m"));
+    for (const b of [{ ...candle, time: now - 700 * M }, candle]) {
+      const day = new Date(b.time).toISOString().slice(0, 10).replaceAll("-", "");
+      const file = path.join(root, "live-1m", `A-${day}.jsonl`);
+      await writeFile(file, JSON.stringify(b) + "\n", { flag: "a" });
+    }
+    await persistFactorBoard([{ symbol: "A", priceChangePercent: 20, lastPrice: 100, quoteVolume: 1 }], now - 1000, root);
+    assert.equal((await loadFactorDataset(now, root)).candles.get("A")!.length, 2);
+    assert.equal((await loadFactorDataset(now, root, config)).candles.get("A")!.length, 1, "loader trims to configured windows plus warmup");
+    const service = new FactorMiningService(e, async job => {
+      const mined = await runFactorWorker({ ...job, root });
+      assert.deepEqual(mined.windows, factorWindows(config));
+      assert.equal(mined.trials, 216);
+      return mined;
+    }, () => now);
+    await service.tick();
+    assert.equal(e.getFactorMiningState().lastError, undefined, "insufficient samples is a completed rejection, not a worker failure");
+    assert.equal(e.getFactorMiningState().nextRunAt, now + config.refreshMinutes * M);
+    assert.equal(e.getFactorMiningState().sides.SHORT.active, undefined);
+    assert.match(e.getFactorMiningState().sides.SHORT.reason, /样本不足/);
+    assert.equal(e.factorEntryAllowed("SHORT", now), false);
+  } finally {
+    clearTimeout((e as any).saveTimeout);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("worker cancellation terminates the owned process", async () => {
   const controller = new AbortController();
   const work = runFactorWorker({ now, costs: { takerFeeBps: 5, slippageBps: 2 } }, controller.signal);
   controller.abort();
   await assert.rejects(work, /已停止/);
+});
+
+test("rolling time ranges are short, disjoint, configurable and advance with new data", () => {
+  const ranges = factorRanges(now);
+  assert.equal((ranges.train.end - ranges.train.start) / M, 1440);
+  assert.equal((ranges.validation.end - ranges.validation.start) / M, 0);
+  assert.equal((ranges.holdout.end - ranges.holdout.start) / M, 120);
+  assert.ok(ranges.holdout.start >= now - 48 * 60 * M);
+  assert.ok(ranges.holdout.end <= now - 24 * 60 * M);
+  assert.equal(ranges.train.start, now - 24 * 60 * M);
+  assert.equal(ranges.train.end, now);
+  assert.equal(factorRanges(now + 15 * M).train.start - ranges.train.start, 15 * M);
+  assert.equal((factorRanges(now, { trainingMinutes: 720 }).train.end - factorRanges(now, { trainingMinutes: 720 }).train.start) / M, 720);
+  assert.ok(factorCandidates().every(c => c.holdMinutes <= 15 && c.cooldownMinutes === 3));
+  assert.equal(DEFAULTS.refreshMinutes, 15);
+  assert.equal(DEFAULTS.validForMinutes, 120);
+});
+
+test("bad very old regimes do not block a factor validated entirely on the current short window", () => {
+  const good = syntheticData();
+  const old = Array.from({ length: 90 }, (_, i) => ({ ...candle, time: now - (5000 - i) * M, high: 100.1, low: 80 }));
+  const list = [...old, ...good.candles.get("A")!];
+  const data = { ...good, candles: new Map([["A", list]]), times: list.map(b => b.time),
+    indices: new Map([["A", new Map(list.map((b, i) => [b.time, i]))]]) };
+  const selected = mineFactors(data, { takerFeeBps: 5, slippageBps: 2 }, [candidate]);
+  assert.ok(selected.sides.LONG.candidate);
+  assert.deepEqual(selected.windows, factorWindows());
+  assert.deepEqual(selected.sides.LONG.candidate, mineFactors(good, selected.costs, [candidate]).sides.LONG.candidate);
+});
+
+test("rejected factors stay rejected across restarts; no baseline renewal on missing approvals", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "factor-no-baseline-"));
+  const engines: PaperTradingEngine[] = [];
+  try {
+    const file = path.join(dir, "state.json");
+    const e = new PaperTradingEngine({ storageFile: file }); engines.push(e);
+    e.applyMinedFactors(result(), now);
+    const rejected = result(); rejected.sides.SHORT = { reason: "最近留出失败" };
+    e.applyMinedFactors(rejected, now); e.saveState();
+    const restored = new PaperTradingEngine({ storageFile: file }); engines.push(restored);
+    assert.equal(restored.getFactorMiningState().sides.SHORT.active, undefined);
+    assert.equal(restored.factorEntryAllowed("SHORT", now), false);
+    assert.equal(restored.getFactorMiningState().sides.SHORT.reason, "最近留出失败");
+    restored.reset();
+    assert.equal(restored.factorEntryAllowed("SHORT", now), false);
+  } finally {
+    engines.forEach(e => clearTimeout((e as any).saveTimeout));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("restart retains the data-based deadline; a legacy baseline never counts as current evidence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "factor-deadline-"));
+  const engines: PaperTradingEngine[] = [];
+  try {
+    const file = path.join(dir, "state.json");
+    const e = new PaperTradingEngine({ storageFile: file }); engines.push(e);
+    e.applyMinedFactors(result(), now); e.saveState();
+    const expiry = e.getFactorMiningState().sides.SHORT.active!.expiresAt;
+    const restored = new PaperTradingEngine({ storageFile: file }); engines.push(restored);
+    assert.equal(restored.getFactorMiningState().sides.SHORT.active!.expiresAt, expiry);
+    assert.equal(restored.factorEntryAllowed("SHORT", expiry), false);
+    const state = restored.getFactorMiningState(); state.sides.SHORT.active!.revision = "baseline:kline_stats_short:v1";
+    restored.setFactorMiningState(state);
+    assert.equal(restored.factorEntryAllowed("SHORT", now), false);
+  } finally {
+    engines.forEach(e => clearTimeout((e as any).saveTimeout));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("window changes invalidate approvals, reach the worker, and prevent stale job application", async () => {
+  const e = engine(); e.applyMinedFactors(result(), now);
+  let input: import("../../src/factor-mining-service.ts").FactorJob | undefined;
+  let complete!: (r: FactorMiningResult) => void;
+  const service = new FactorMiningService(e, job => { input = job; return new Promise(resolve => { complete = resolve; }); }, () => now);
+  const job = service.tick();
+  assert.deepEqual(factorWindows(input!.config), factorWindows());
+  e.updateConfig({ factorMining: { ...DEFAULTS, validationMinutes: 120 } });
+  assert.equal(e.factorEntryAllowed("SHORT", now), false);
+  complete(result()); await job;
+  assert.match(e.getFactorMiningState().lastError!, /已被修改/);
+  assert.throws(() => e.applyMinedFactors(result(), now), /不匹配/);
+  const matched = result(); matched.windows = factorWindows(e.getConfig().factorMining);
+  e.applyMinedFactors(matched, now);
+  assert.equal(e.factorEntryAllowed("SHORT", now), true);
+  const before = e.getConfig();
+  assert.throws(() => e.updateConfig({ marginPercent: 10, factorMining: { ...DEFAULTS, holdoutMinutes: 0 } }));
+  assert.deepEqual(e.getConfig(), before);
+});
+
+test("merged window limits are validated atomically and stored window preferences survive restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "factor-window-config-"));
+  const engines: PaperTradingEngine[] = [];
+  try {
+    const file = path.join(dir, "state.json");
+    const e = new PaperTradingEngine({ storageFile: file }); engines.push(e);
+    e.updateConfig({ factorMining: { ...DEFAULTS, trainingMinutes: 3900, refreshMinutes: 30, validForMinutes: 120 } });
+    const before = e.getConfig();
+    // The patch alone fits, but together with the retained training window it exceeds 72 h.
+    assert.throws(() => e.updateConfig({ marginPercent: 10, factorMining: {
+      enabled: true, refreshMinutes: 30, validForMinutes: 120, validationMinutes: 400,
+    } }), /72 小时/);
+    assert.deepEqual(e.getConfig(), before);
+    e.saveState();
+    const restored = new PaperTradingEngine({ storageFile: file }); engines.push(restored);
+    assert.deepEqual(restored.getConfig().factorMining, before.factorMining);
+  } finally {
+    engines.forEach(e => clearTimeout((e as any).saveTimeout));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reprocessing the same data never renews its deadline; fresh evidence replaces the revision", () => {
+  const e = engine(); e.applyMinedFactors(result(), now);
+  const first = e.getFactorMiningState().sides.SHORT.active!;
+  e.applyMinedFactors(result(), now + M);
+  assert.equal(e.getFactorMiningState().sides.SHORT.active!.expiresAt, first.expiresAt);
+  const fresh = result(now + 15 * M);
+  fresh.sides.SHORT.candidate!.config.holdMinutes = 5;
+  e.applyMinedFactors(fresh, now + 15 * M);
+  const next = e.getFactorMiningState().sides.SHORT.active!;
+  assert.notEqual(next.revision, first.revision);
+  assert.equal(next.expiresAt, now + (15 + DEFAULTS.validForMinutes) * M);
+  assert.equal(e.getConfig().klineStatsShortConfig!.holdMinutes, 5);
+  assert.equal(e.factorEntryAllowed("SHORT", now + 15 * M), true);
+});
+
+test("expired pending orders are canceled while established positions retain their original exits", () => {
+  const e = engine(); e.applyMinedFactors(result(), now);
+  const p = e.openPosition({ symbol: "A", entryPrice: 100, entryTime: now, dayChangePercent: 20, signal, signalType: "kline_stats_short" });
+  e.updateConfig({ limitExpireMinutes: 120 });
+  // One order per strategy: use a second engine to isolate order expiry from the position quota.
+  const orders = engine(); orders.updateConfig({ limitExpireMinutes: 120 }); orders.applyMinedFactors(result(), now);
+  const order = orders.createPendingOrder({ symbol: "B", basePrice: 100, dayChangePercent: 20, signal, signalType: "kline_stats_short", now });
+  const expiry = orders.getFactorMiningState().sides.SHORT.active!.expiresAt;
+  const frozen = { tp1: p.tp1Price, tp2: p.tp2Price, timeout: p.timeoutAt };
+  orders.onTick({ symbol: "B", price: order.limitPrice, qty: 1, time: expiry });
+  assert.equal(orders.hasPendingOrder("B"), false);
+  assert.equal(orders.hasActivePosition("B"), false);
+  assert.equal(e.factorEntryAllowed("SHORT", expiry), false);
+  assert.deepEqual({ tp1: p.tp1Price, tp2: p.tp2Price, timeout: p.timeoutAt }, frozen);
 });

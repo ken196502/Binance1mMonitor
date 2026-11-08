@@ -39,7 +39,7 @@ export default function App() {
       meta =
         `更新于 ${new Date(status.at).toLocaleTimeString()}` +
         ` · 数据源 ${status.base}` +
-        ` · 规则：连阳涨幅达标 + 无MA支撑 + 近30根1m绿柱>80%` +
+        ` · 规则：统一特征监控 + 条件与参数组合` +
         ` · 每分钟轮询（对齐1m收盘）`;
     }
   }

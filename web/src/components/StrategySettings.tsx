@@ -74,7 +74,7 @@ function RuleEditor({ value, onChange }: { value: FeatureRule; onChange: (v: Fea
     {typeof operand === "boolean" && <select aria-label="是否满足" value={String(operand)} onChange={e => patch({ value: e.target.value === "true" })}><option value="true">是</option><option value="false">否</option></select>}
     {typeof operand === "string" && <input aria-label="状态值" value={operand} onChange={e => patch({ value: e.target.value })} />}
     {Array.isArray(operand) && <input aria-label="状态列表，逗号分隔" value={operand.join(",")} onChange={e => patch({ value: e.target.value.split(",").map(s => s.trim()) })} />}
-    {operand && typeof operand === "object" && !Array.isArray(operand) && <>
+    {operand !== null && typeof operand === "object" && !Array.isArray(operand) && <>
       <FeatureInput value={operand.field} onChange={field => patch({ value: { ...operand, field } })} />
       <label>乘以<input aria-label="特征倍数" type="number" step="any" required value={operand.scale ?? 1} onChange={e => patch({ value: { ...operand, scale: Number(e.target.value) } })} /></label>
     </>}

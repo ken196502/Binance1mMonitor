@@ -1,3 +1,4 @@
+import { normalizeFactorMiningConfig, factorWindows, factorWindowKey } from "./factor-settings.ts";
 import { all, rule, ref, evaluateRules } from "./strategy-rules.ts";
 import { StrategyEngine, type StrategyMatch, type StrategyMonitorResult } from "./strategy-engine.ts";
 import { StrategyFeatureMonitor } from "./strategy-features.ts";
@@ -7,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { validateStrategySpec } from "./strategy-spec.ts";
 import {
-  createBaselineFactor, DEFAULT_FACTOR_MINING, FACTOR_POLICY_VERSION, FACTOR_MAX_DATA_AGE_MS, MINUTE_MS,
+  DEFAULT_FACTOR_MINING, FACTOR_POLICY_VERSION, FACTOR_MAX_DATA_AGE_MS, MINUTE_MS,
   emptyFactorState, initialFactorMiningState, factorConfigKey, passesFactorCandidate, validateFactorMiningConfig,
   type FactorMiningConfig, type FactorMiningState, type FactorMiningResult, type FactorSide,
 } from "./factor-policy.ts";
@@ -105,7 +106,7 @@ export interface PaperStrategyConfig {
   factorMining?: FactorMiningConfig;
 }
 
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(process.cwd(), "data");
 const STATE_FILE = path.join(DATA_DIR, "paper-trading.json");
 
 export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
@@ -353,7 +354,7 @@ export class PaperTradingEngine {
 
   constructor(config: Partial<PaperStrategyConfig> = {}) {
     this.config = { ...PAPER_DEFAULT_CONFIG, ...config, firstCloseFraction: FIRST_CLOSE_FRACTION };
-    this.config.factorMining = { ...DEFAULT_FACTOR_MINING, ...config.factorMining };
+    this.config.factorMining = normalizeFactorMiningConfig({ ...DEFAULT_FACTOR_MINING, ...config.factorMining });
     validateFactorMiningConfig(this.config.factorMining);
     if (config.marginUsdt !== undefined && config.marginRate === undefined && config.marginPercent === undefined) {
       const initBal = this.config.initialBalanceUsdt || 100;
@@ -415,12 +416,13 @@ export class PaperTradingEngine {
     const sideState = this.factorMiningState.sides[side];
     const active = sideState?.active;
     const config = side === "LONG" ? this.config.klineStatsLongConfig : this.config.klineStatsShortConfig;
-    if (!config || !active) return false;
+    if (!config || !active || active.revision.startsWith("baseline:") || !passesFactorCandidate(active)) return false;
     const definition = this.config.strategies?.find(s => s.id === `kline_stats_${side.toLowerCase()}`);
     const validated = quantPreset(side, active.config);
     if (!definition || JSON.stringify(definition.entry) !== JSON.stringify(validated.entry) ||
         JSON.stringify(definition.exit) !== JSON.stringify(validated.exit)) return false;
-    return active.featureVersion === FEATURE_VERSION && active.policyVersion === FACTOR_POLICY_VERSION &&
+    return factorWindowKey(active.windows) === factorWindowKey(this.config.factorMining) &&
+      active.featureVersion === FEATURE_VERSION && active.policyVersion === FACTOR_POLICY_VERSION &&
       active.dataAsOf <= now && now < Math.min(active.expiresAt, active.dataAsOf + this.config.factorMining.validForMinutes * MINUTE_MS) &&
       active.costs.takerFeeBps === this.config.takerFeeBps && active.costs.slippageBps === this.config.slippageBps &&
       factorConfigKey(active.config) === factorConfigKey(config ?? {});
@@ -428,7 +430,7 @@ export class PaperTradingEngine {
 
   public applyMinedFactors(result: FactorMiningResult, now = Date.now()): void {
     if (!this.config.factorMining?.enabled) return;
-    if (result.featureVersion !== FEATURE_VERSION || result.policyVersion !== FACTOR_POLICY_VERSION ||
+    if (factorWindowKey(result.windows) !== factorWindowKey(this.config.factorMining) || result.featureVersion !== FEATURE_VERSION || result.policyVersion !== FACTOR_POLICY_VERSION ||
       !Number.isFinite(result.dataAsOf) || result.dataAsOf > now || now - result.dataAsOf > FACTOR_MAX_DATA_AGE_MS ||
       result.costs.takerFeeBps !== this.config.takerFeeBps || result.costs.slippageBps !== this.config.slippageBps) {
       throw new Error("因子结果版本、费用或数据时效不匹配");
@@ -450,6 +452,7 @@ export class PaperTradingEngine {
         if (side === "LONG") this.config.klineStatsLongConfig = config;
         else this.config.klineStatsShortConfig = config;
         this.factorMiningState.sides[side].active = {
+          windows: factorWindows(result.windows),
           ...structuredClone(candidate), revision: `${result.datasetHash}:${candidate.id}:${result.dataAsOf}`,
           dataAsOf: result.dataAsOf, expiresAt: result.dataAsOf + this.config.factorMining.validForMinutes * MINUTE_MS,
           featureVersion: result.featureVersion, policyVersion: result.policyVersion, costs: { ...result.costs },
@@ -560,6 +563,8 @@ export class PaperTradingEngine {
   public updateConfig(updates: Partial<PaperStrategyConfig>): PaperStrategyConfig {
     if (!updates || typeof updates !== "object" || Array.isArray(updates)) throw new Error("配置必须是对象");
     if (updates.factorMining !== undefined) validateFactorMiningConfig(updates.factorMining);
+    const nextFactorMining = updates.factorMining === undefined ? undefined
+      : normalizeFactorMiningConfig({ ...this.config.factorMining, ...updates.factorMining });
     const proposed = { ...this.config, ...updates };
     for (const key of ["streakConfig", "reboundConfig", "deepReboundConfig", "hourlySuppressionConfig", "wBottomDivergenceConfig", "klineStatsShortConfig", "klineStatsLongConfig"] as const) {
       if (updates[key] !== undefined) {
@@ -606,7 +611,13 @@ export class PaperTradingEngine {
       if (value !== undefined && (!Number.isFinite(value) || value < 0 || value >= 1000)) throw new Error(`${key} 必须在 0 ~ 1000 bps 之间`);
     }
     if (updates.factorMining !== undefined) {
-      this.config.factorMining = { ...updates.factorMining };
+      const previous = this.config.factorMining;
+      this.config.factorMining = nextFactorMining!;
+      if (this.config.factorMining.enabled) {
+        const next = (this.factorMiningState.lastCompletedAt ?? 0) + this.config.factorMining.refreshMinutes * MINUTE_MS;
+        this.factorMiningState.nextRunAt = previous?.enabled
+          ? Math.min(this.factorMiningState.nextRunAt ?? 0, next) : 0;
+      }
       if (!this.config.factorMining.enabled) {
         this.factorMiningState.sides.SHORT = { reason: "因子自动更新已关闭" };
         this.factorMiningState.sides.LONG = { reason: "因子自动更新已关闭" };
@@ -1824,12 +1835,6 @@ export class PaperTradingEngine {
           this.factorMiningState = { ...data.factorMining, running: false,
             nextRunAt: data.factorMining.running ? 0 : data.factorMining.nextRunAt };
         }
-        if (!this.factorMiningState.sides.SHORT?.active) {
-          this.factorMiningState.sides.SHORT = {
-            active: createBaselineFactor("SHORT", { takerFeeBps: this.config.takerFeeBps, slippageBps: this.config.slippageBps }),
-            reason: "近期基准策略生效中",
-          };
-        }
         console.log(
           `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
         );
@@ -1858,7 +1863,7 @@ export class PaperTradingEngine {
     };
     this.stats = this.computeStatsForPositions([]);
     this.stats24h = this.computeStatsForPositions([]);
-    this.factorMiningState = initialFactorMiningState({ takerFeeBps: this.config.takerFeeBps, slippageBps: this.config.slippageBps });
+    this.factorMiningState = initialFactorMiningState();
     this.saveState();
     console.log(`[paper-trading] 🔄 模拟交易账户、活跃持仓、挂单与历史明细已全部重置为初始状态 (100 USDT)`);
   }

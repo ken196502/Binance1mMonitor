@@ -1,10 +1,26 @@
+import { factorRanges, type FactorWindows } from "./factor-settings.ts";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Candle } from "./macd.ts";
 import type { Ticker24h } from "./binance.ts";
 import type { MinuteBoard } from "./strategy-replay.ts";
-import { FACTOR_LOOKBACK_MINUTES, FACTOR_MAX_DATA_AGE_MS, MINUTE_MS } from "./factor-policy.ts";
+import { FACTOR_MAX_DATA_AGE_MS, MINUTE_MS } from "./factor-policy.ts";
+
+export const DEFAULT_KLINE_RETENTION_HOURS = 48;
+export const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve("data");
+export const DEFAULT_RESEARCH_ROOT = process.env.RESEARCH_DATA_DIR
+  ? path.resolve(process.env.RESEARCH_DATA_DIR)
+  : path.join(DATA_DIR, "research");
+export const DEFAULT_SIGNALS_DIR = process.env.SIGNALS_DATA_DIR
+  ? path.resolve(process.env.SIGNALS_DATA_DIR)
+  : path.join(DATA_DIR, "signals");
+
+export interface PruneResult {
+  deletedFiles: string[];
+  trimmedFiles: string[];
+  prunedLines: number;
+}
 
 export interface FactorDataset {
   candles: Map<string, Candle[]>;
@@ -17,7 +33,7 @@ export interface FactorDataset {
 export interface BoardSnapshot { observedAt: number; tickers: Ticker24h[] }
 
 /** Archive the actual monitored board, including symbols without minute history. */
-export async function persistFactorBoard(tickers: Ticker24h[], observedAt: number, root = "data/research"): Promise<void> {
+export async function persistFactorBoard(tickers: Ticker24h[], observedAt: number, root = DEFAULT_RESEARCH_ROOT): Promise<void> {
   const dir = path.join(root, "live-boards");
   await mkdir(dir, { recursive: true });
   const day = new Date(observedAt).toISOString().slice(0, 10).replaceAll("-", "");
@@ -70,9 +86,9 @@ async function readRecentLines(dir: string, from: number, until: number): Promis
   return rows;
 }
 
-export async function loadFactorDataset(now: number, root = "data/research"): Promise<FactorDataset> {
+export async function loadFactorDataset(now: number, root = DEFAULT_RESEARCH_ROOT, windows?: Partial<FactorWindows>): Promise<FactorDataset> {
   const cutoff = Math.floor(now / MINUTE_MS) * MINUTE_MS;
-  const from = cutoff - (FACTOR_LOOKBACK_MINUTES + 500) * MINUTE_MS;
+  const from = factorRanges(cutoff, windows).earliestStart - 500 * MINUTE_MS;
   const [rawCandles, rawBoards] = await Promise.all([
     readRecentLines(path.join(root, "live-1m"), from, cutoff),
     readRecentLines(path.join(root, "live-boards"), from, cutoff),
@@ -110,3 +126,101 @@ export async function loadFactorDataset(now: number, root = "data/research"): Pr
   for (const [time, board] of boards) hash.update(JSON.stringify([time, [...board]]));
   return { candles, indices, times, boards, dataAsOf, datasetHash: hash.digest("hex").slice(0, 16) };
 }
+
+export async function pruneExpiredArchives(
+  root = DEFAULT_RESEARCH_ROOT,
+  retentionHours = DEFAULT_KLINE_RETENTION_HOURS,
+  now = Date.now(),
+  extraDirs: string[] = [DEFAULT_SIGNALS_DIR],
+): Promise<PruneResult> {
+  const retentionMs = retentionHours * 3600_000;
+  const cutoffTime = now - retentionMs;
+  const cutoffDay = new Date(cutoffTime).toISOString().slice(0, 10).replaceAll("-", "");
+
+  const result: PruneResult = {
+    deletedFiles: [],
+    trimmedFiles: [],
+    prunedLines: 0,
+  };
+
+  const targets = [
+    { dir: path.join(root, "live-1m") },
+    { dir: path.join(root, "live-boards") },
+    ...extraDirs.map((dir) => ({ dir })),
+  ];
+
+  for (const { dir } of targets) {
+    let files: string[];
+    try {
+      files = await readdir(dir);
+    } catch (e: any) {
+      if (e.code === "ENOENT") continue;
+      throw e;
+    }
+
+    for (const file of files) {
+      const match = file.match(/^(?:([A-Z0-9]+)-)?(\d{8})\.jsonl$/);
+      if (!match) continue;
+      const fileDay = match[2];
+      const filePath = path.join(dir, file);
+
+      // 仅整天文件清理：早于 cutoffDay 的完整天文件直接删除，不在日内做逐行重写，保护磁盘寿命
+      if (fileDay < cutoffDay) {
+        try {
+          await unlink(filePath);
+          result.deletedFiles.push(filePath);
+        } catch {}
+      }
+    }
+  }
+
+  return result;
+}
+
+export async function loadRecentCandlesFromDisk(
+  symbol: string,
+  from: number,
+  until = Date.now(),
+  root = DEFAULT_RESEARCH_ROOT,
+): Promise<Candle[]> {
+  const dir = path.join(root, "live-1m");
+  let files: string[];
+  try {
+    files = await readdir(dir);
+  } catch (error: any) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+  const firstDay = new Date(from).toISOString().slice(0, 10).replaceAll("-", "");
+  const lastDay = new Date(until).toISOString().slice(0, 10).replaceAll("-", "");
+  const matchingFiles = files
+    .filter(f => {
+      const match = f.match(new RegExp(`^${symbol}-(\\d{8})\\.jsonl$`));
+      return match && match[1] >= firstDay && match[1] <= lastDay;
+    })
+    .sort();
+
+  const candles: Candle[] = [];
+  const seenTimes = new Set<number>();
+  for (const file of matchingFiles) {
+    try {
+      const content = await readFile(path.join(dir, file), "utf8");
+      const lines = content.split("\n");
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const c = JSON.parse(line) as Candle;
+          if (c.time >= from && c.time <= until && !seenTimes.has(c.time) &&
+            [c.time, c.open, c.high, c.low, c.close, c.volume].every(Number.isFinite) &&
+            c.low > 0 && c.high >= Math.max(c.open, c.close) && c.low <= Math.min(c.open, c.close)) {
+            seenTimes.add(c.time);
+            candles.push(c);
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+  candles.sort((a, b) => a.time - b.time);
+  return candles;
+}
+

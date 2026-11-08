@@ -17,7 +17,8 @@
     "mine:setup": "uv venv --python 3.12 .venv-gpu && uv pip install --python .venv-gpu/bin/python -r research/gpu/requirements.txt",
     "mine:peak-rebound": "tsx --env-file-if-exists=.env research/peak-rebound-miner.ts",
     "mine:strategy": "tsx scripts/mine-strategy.ts",
-    "deploy:strategy": "tsx scripts/deploy-strategy.ts"
+    "deploy:strategy": "tsx scripts/deploy-strategy.ts",
+    "test:browser": "npm run build && tsx scripts/test-browser-cdp.ts"
   },
   "dependencies": {
     "@esbuild/linux-arm64": "^0.28.2",

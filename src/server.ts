@@ -33,7 +33,7 @@ import { wsManager, applyTradeToCandles, sanitizeCandles } from "./ws.ts";
 import { buildChartPayload, parseChartQuery } from "./chart.ts";
 import { paperTrading } from "./paper-trading.ts";
 import { FactorMiningService } from "./factor-mining-service.ts";
-import { persistFactorBoard } from "./factor-data.ts";
+import { persistFactorBoard, loadRecentCandlesFromDisk, pruneExpiredArchives, DEFAULT_RESEARCH_ROOT } from "./factor-data.ts";
 import type { Row, Status } from "./types.ts";
 
 // Directory the built React frontend is emitted to (web/dist). In dev you run
@@ -65,9 +65,11 @@ export function getNextMinuteDelay(now = Date.now(), offsetMs = ALIGN_OFFSET_MS)
   }
   return Math.max(50, target - now);
 }
+const KLINE_RETENTION_HOURS = Number(process.env.KLINE_RETENTION_HOURS ?? 48);
+const KLINE_ROLLING_HOURS = Number(process.env.KLINE_ROLLING_HOURS ?? 48);
 const KLINE_LIMIT = Number(process.env.KLINE_LIMIT ?? 100);
 const KLINE_INIT_LIMIT = Number(process.env.KLINE_INIT_LIMIT ?? 501); // 冷启动拉取 500 根已收盘 + 1 根形成中 K 线 (用于 15m MA20, MA60, 30 根绿柱与 MACD 预热)
-const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? 501); // 滚动存储 500 根已收盘 + 1 根形成中 K 线
+const KLINE_ROLLING_LIMIT = Number(process.env.KLINE_ROLLING_LIMIT ?? (KLINE_ROLLING_HOURS * 60 + 1)); // 默认滚动保存 48 小时 (2880 根已收盘 + 1 根形成中 K 线)
 // "High position" = current DEA/DIFF is at/near the highest value in the window.
 const HIGH_RATIO = Number(process.env.HIGH_RATIO ?? 0.8); // within 80% of the window peak
 const HIGH_WINDOW = Number(process.env.HIGH_WINDOW ?? 100); // observation window in bars
@@ -154,10 +156,38 @@ async function fetchRowData(t: Ticker24h, options: FetchRowOptions = {}): Promis
       candleCache.set(t.symbol, symCache);
     }
 
+    const isTestEnv = process.env.NODE_ENV === "test" || !!process.env.BINANCE_BASE;
+    const now = Date.now();
+    // 首次冷启动优先从本地已归档的 48 小时 1m 数据中恢复，极大减少对 Binance REST API 请求的压力
+    if (!isTestEnv && !symCache.initialized && symCache.candles1m.length === 0) {
+      try {
+        const localCandles = await loadRecentCandlesFromDisk(t.symbol, now - KLINE_ROLLING_HOURS * 3600_000, now);
+        if (localCandles.length > 0) {
+          symCache.candles1m = localCandles.slice(-KLINE_ROLLING_LIMIT);
+        }
+      } catch (err) {
+        console.warn(`[kline] 从本地读取 ${t.symbol} 48h 缓存失败，回退 REST:`, (err as any)?.message ?? err);
+      }
+    }
+
+    const lastCandle = symCache.candles1m[symCache.candles1m.length - 1];
+    const isFresh = lastCandle && (now - lastCandle.time <= 2 * 60_000);
+    const hasEnough = symCache.candles1m.length >= 35;
+
+    if (!symCache.initialized && hasEnough && isFresh) {
+      symCache.initialized = true;
+      console.log(`[kline] ${t.symbol} 本地命中 ${symCache.candles1m.length} 根 48h 1m K 线，直接就绪 (免 REST 请求)`);
+    }
+
     const isFirstRun = !symCache.initialized;
-    // 如果已经完成冷启动且本地 K 线充足，跳过 REST K 线请求，优先使用 WS 实时维持的 K 线
-    const needRestKline = allowRestKline && (isFirstRun || symCache.candles1m.length < 35);
-    const fetchLimit = klineLimit ?? (isFirstRun ? KLINE_INIT_LIMIT : KLINE_LIMIT);
+    // 如果已经完成冷启动且本地 K 线充足且新鲜，跳过 REST K 线请求，优先使用 WS 实时维持的 K 线
+    const needRestKline = allowRestKline && (isFirstRun || !hasEnough || !isFresh);
+
+    // 如果只需要修补很小的分钟缺口，按缺口计算拉取数量，最大不超过 KLINE_INIT_LIMIT
+    const gapBars = lastCandle && now > lastCandle.time
+      ? Math.max(10, Math.ceil((now - lastCandle.time) / 60_000) + 2)
+      : (isFirstRun ? KLINE_INIT_LIMIT : KLINE_LIMIT);
+    const fetchLimit = klineLimit ?? Math.min(gapBars, KLINE_INIT_LIMIT);
 
     let candles1mRes: Candle[] = [];
     if (needRestKline) {
@@ -177,7 +207,16 @@ async function fetchRowData(t: Ticker24h, options: FetchRowOptions = {}): Promis
 
     // 1m 保存：每次更新保存，若偶发网络异常则回退使用已保存的 1m 序列
     if (candles1mRes.length > 0) {
-      symCache.candles1m = candles1mRes;
+      if (symCache.candles1m.length > 0) {
+        const candleMap = new Map<number, Candle>();
+        for (const c of symCache.candles1m) candleMap.set(c.time, c);
+        for (const c of candles1mRes) candleMap.set(c.time, c);
+        symCache.candles1m = Array.from(candleMap.values())
+          .sort((a, b) => a.time - b.time)
+          .slice(-KLINE_ROLLING_LIMIT);
+      } else {
+        symCache.candles1m = candles1mRes.slice(-KLINE_ROLLING_LIMIT);
+      }
     }
     const candles = symCache.candles1m;
 
@@ -706,6 +745,26 @@ async function serveKlines(u: URL, res: http.ServerResponse): Promise<void> {
   }
 }
 
+let lastPrunedUtcDay = "";
+function resetPruneStateForTest(): void {
+  lastPrunedUtcDay = "";
+}
+
+async function maybePruneArchives(now = Date.now(), root = DEFAULT_RESEARCH_ROOT): Promise<void> {
+  const currentUtcDay = new Date(now).toISOString().slice(0, 10).replaceAll("-", "");
+  // 仅在首次启动或跨越每个 UTC 00:00 时执行一次整天文件清理，保护磁盘不被频繁读写
+  if (lastPrunedUtcDay === currentUtcDay) return;
+  lastPrunedUtcDay = currentUtcDay;
+  try {
+    const pruneRes = await pruneExpiredArchives(root, KLINE_RETENTION_HOURS, now);
+    if (pruneRes.deletedFiles.length > 0) {
+      console.log(`[storage] UTC 0点归档清理: 删除了 ${pruneRes.deletedFiles.length} 个过期日文件`);
+    }
+  } catch (err: any) {
+    console.warn(`[storage] 清理过期归档失败:`, err?.message ?? err);
+  }
+}
+
 // Background polling loop: keeps checking and alerting even if no browser client is connected.
 let isPolling = false;
 let pollTimer: NodeJS.Timeout | null = null;
@@ -714,6 +773,7 @@ async function pollLoop() {
   if (isPolling) return;
   isPolling = true;
   try {
+    void maybePruneArchives();
     paperTrading.checkTimeouts();
     const backoff = getBackoffStatus();
     if (backoff.active) {
@@ -1013,6 +1073,7 @@ if (isMainModule) {
   }
   server.listen(PORT, () => {
     factorMiningService.start();
+    void maybePruneArchives();
     const proxy = process.env.PROXY ?? process.env.BINANCE_PROXY ?? process.env.HTTPS_PROXY ?? process.env.HTTP_PROXY ?? "(direct)";
     console.log(`Binance 1m MACD monitor (u本位合约) → http://localhost:${PORT}`);
     console.log(
@@ -1036,4 +1097,8 @@ export {
   wsManager,
   getStatus,
   pollLoop,
+  maybePruneArchives,
+  resetPruneStateForTest,
+  KLINE_ROLLING_LIMIT,
+  KLINE_RETENTION_HOURS,
 };
