@@ -67,6 +67,8 @@ export class StrategyFeatureMonitor {
         case "resist": return bar.high >= value && bar.close < value;
         case "breakout": return bar.open <= value && bar.close > value;
         case "breakdown": return bar.open >= value && bar.close < value;
+        case "close_below": return bar.close < value;
+        case "close_above": return bar.close > value;
         case "biasPct": return (bar.close - value) / value * 100;
         case "biasRatio": return (bar.close - value) / value * 100 / (Math.abs(this.ticker.priceChangePercent) || 1);
         case "slope2": case "slope3": {
@@ -82,6 +84,23 @@ export class StrategyFeatureMonitor {
     }
     if (["dif", "dea", "hist"].includes(field)) return this.macd[field as "dif" | "dea" | "hist"][idx];
     if (field === "deaSlope") return this.macd.dea[idx] - this.macd.dea[idx - 1];
+    if (field === "difLevel" || field === "diff1mLevel") {
+      const difArr = this.macd.dif;
+      const lookback = Math.min(30, idx);
+      let maxDif = -Infinity;
+      let minDif = Infinity;
+      for (let k = Math.max(0, idx - lookback); k <= idx; k++) {
+        const d = difArr[k] ?? 0;
+        if (d > maxDif) maxDif = d;
+        if (d < minDif) minDif = d;
+      }
+      const curDif = difArr[idx] ?? 0;
+      const difRange = maxDif - minDif;
+      const difPos = difRange > 0 ? (curDif - minDif) / difRange : 0.5;
+      if ((curDif > 0 && maxDif > 0 && curDif >= 0.8 * maxDif) || difPos >= 0.8) return "high";
+      if ((curDif < 0 && minDif < 0 && curDif <= 0.8 * minDif) || difPos <= 0.2) return "low";
+      return "mid";
+    }
     if (kind === "greenRatio") {
       if (this.bars.length < n) return undefined;
       return this.macd.hist.slice(-n).filter(v => v > 0).length / n;

@@ -734,76 +734,88 @@ export async function main() {
   // 生成待挖掘的多头与空头策略候选集 (因果前驱分流: 多头蓄势起爆 / 空头冲高力竭)
   const candidates: MiningStrategyCandidate[] = [];
 
-  const longWindows = isQuick ? [5] : [5, 10, 15];
+  const longWindows = isQuick ? [15] : [15, 30];
   const longDivs = isQuick ? [6, 8] : [6, 8, 10];
   const longMaReqs = isQuick
-    ? (["MA10_SUPPORT", "MA20_SUPPORT"] as const)
-    : (["MA10_SUPPORT", "MA20_SUPPORT", "MA_BULLISH_STACK", "MA_FRESH_BULL", "MA10_BREAKOUT"] as const);
+    ? (["MA10_SUPPORT", "MA20_SUPPORT", "MA10_BREAKOUT", "MA10_CLOSE_ABOVE"] as const)
+    : (["MA10_SUPPORT", "MA20_SUPPORT", "MA_BULLISH_STACK", "MA_FRESH_BULL", "MA10_BREAKOUT", "MA10_CLOSE_ABOVE"] as const);
   const longMacdReqs = isQuick
-    ? (["GREEN_RATIO_15_50", "GOLDEN_CROSS_RECENT", "HIST_EXPANDING"] as const)
-    : (["GREEN_RATIO_15_50", "GREEN_RATIO_20_50", "GOLDEN_CROSS_RECENT", "TF5M_CONFIRM", "HIST_EXPANDING"] as const);
-  const longHolds = isQuick ? [20, 30] : [15, 20, 30, 45];
+    ? (["DIF_LOW_LEVEL", "GOLDEN_CROSS_RECENT", "HIST_EXPANDING"] as const)
+    : (["DIF_LOW_LEVEL", "GREEN_RATIO_15_50", "GOLDEN_CROSS_RECENT", "TF5M_CONFIRM", "HIST_EXPANDING"] as const);
+  const longCandleReqs = isQuick
+    ? (["LOWER_SHADOW_HAMMER", "BULLISH_BAR", "NONE"] as const)
+    : (["LOWER_SHADOW_HAMMER", "BULLISH_BAR", "NONE"] as const);
+  const longHolds = isQuick ? [15, 30] : [15, 20, 30, 45];
 
   for (const window of longWindows) {
     for (const div of longDivs) {
       for (const maReq of longMaReqs) {
         for (const macdReq of longMacdReqs) {
-          for (const hold of longHolds) {
-            candidates.push({
-              id: `LONG_W${window}_D${div}_${maReq}_${macdReq}_H${hold}`,
-              name: `多头起爆: ${window}m蓄势(<24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + 持仓${hold}m`,
-              side: "LONG",
-              leverage: 3,
-              intervalWindow: window,
-              ampDivisor: div,
-              maRequirement: maReq,
-              macdRequirement: macdReq,
-              holdMinutes: hold,
-              tp1Percent: 2.5,
-              tp2Percent: 5.0,
-              stopLossPercent: 3.0,
-              cooldownMinutes: 20,
-              topN: 10,
-              minDayChange: 10,
-            });
+          for (const candleReq of longCandleReqs) {
+            for (const hold of longHolds) {
+              candidates.push({
+                id: `LONG_W${window}_D${div}_${maReq}_${macdReq}_${candleReq}_H${hold}`,
+                name: `多头起爆: ${window}m蓄势(<24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + ${candleReq} + 持仓${hold}m`,
+                side: "LONG",
+                leverage: 3,
+                intervalWindow: window,
+                ampDivisor: div,
+                maRequirement: maReq,
+                macdRequirement: macdReq,
+                candleRequirement: candleReq,
+                holdMinutes: hold,
+                tp1Percent: 2.5,
+                tp2Percent: 5.0,
+                stopLossPercent: 3.0,
+                cooldownMinutes: 20,
+                topN: 10,
+                minDayChange: 10,
+              });
+            }
           }
         }
       }
     }
   }
 
-  const shortWindows = isQuick ? [3, 5] : [3, 5, 10];
+  const shortWindows = isQuick ? [15] : [15, 30];
   const shortDivs = isQuick ? [8, 10] : [8, 10, 12];
   const shortMaReqs = isQuick
-    ? (["MA10_BREAKDOWN", "MA60_RESIST"] as const)
-    : (["MA60_RESIST", "MA20_RESIST", "MA10_BREAKDOWN", "MA_BEARISH_STACK"] as const);
+    ? (["MA10_BREAKDOWN", "MA20_BREAKDOWN", "MA20_RESIST", "MA10_CLOSE_BELOW"] as const)
+    : (["MA10_BREAKDOWN", "MA20_BREAKDOWN", "MA60_RESIST", "MA20_RESIST", "MA10_CLOSE_BELOW", "MA_BEARISH_STACK"] as const);
   const shortMacdReqs = isQuick
-    ? (["GREEN_RATIO_30_80", "HIST_WEAKENING", "DEATH_CROSS_RECENT"] as const)
-    : (["GREEN_RATIO_15_70", "GREEN_RATIO_30_80", "HIST_WEAKENING", "DEATH_CROSS_RECENT", "TF5M_CONFIRM", "TOP_DIVERGENCE"] as const);
-  const shortHolds = isQuick ? [15, 25] : [15, 20, 30, 45];
+    ? (["DIF_HIGH_LEVEL", "HIST_WEAKENING", "DEATH_CROSS_RECENT"] as const)
+    : (["DIF_HIGH_LEVEL", "GREEN_RATIO_15_70", "HIST_WEAKENING", "DEATH_CROSS_RECENT", "TF5M_CONFIRM", "TOP_DIVERGENCE"] as const);
+  const shortCandleReqs = isQuick
+    ? (["UPPER_SHADOW_PINBAR", "BEARISH_BAR", "NONE"] as const)
+    : (["UPPER_SHADOW_PINBAR", "BEARISH_BAR", "NONE"] as const);
+  const shortHolds = isQuick ? [15, 30] : [15, 20, 30, 45];
 
   for (const window of shortWindows) {
     for (const div of shortDivs) {
       for (const maReq of shortMaReqs) {
         for (const macdReq of shortMacdReqs) {
-          for (const hold of shortHolds) {
-            candidates.push({
-              id: `SHORT_W${window}_D${div}_${maReq}_${macdReq}_H${hold}`,
-              name: `空头摸顶: ${window}m冲高(>=24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + 持仓${hold}m`,
-              side: "SHORT",
-              leverage: 3,
-              intervalWindow: window,
-              ampDivisor: div,
-              maRequirement: maReq,
-              macdRequirement: macdReq,
-              holdMinutes: hold,
-              tp1Percent: 2.5,
-              tp2Percent: 5.0,
-              stopLossPercent: 3.5,
-              cooldownMinutes: 20,
-              topN: 10,
-              minDayChange: 10,
-            });
+          for (const candleReq of shortCandleReqs) {
+            for (const hold of shortHolds) {
+              candidates.push({
+                id: `SHORT_W${window}_D${div}_${maReq}_${macdReq}_${candleReq}_H${hold}`,
+                name: `空头摸顶: ${window}m冲高(>=24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + ${candleReq} + 持仓${hold}m`,
+                side: "SHORT",
+                leverage: 3,
+                intervalWindow: window,
+                ampDivisor: div,
+                maRequirement: maReq,
+                macdRequirement: macdReq,
+                candleRequirement: candleReq,
+                holdMinutes: hold,
+                tp1Percent: 2.5,
+                tp2Percent: 5.0,
+                stopLossPercent: 3.5,
+                cooldownMinutes: 20,
+                topN: 10,
+                minDayChange: 10,
+              });
+            }
           }
         }
       }
@@ -863,6 +875,7 @@ export async function main() {
 
   for (const tq of trainQualified) {
     const valMetrics = valMetricsMap.get(tq.candidate.id)!;
+    console.log(`[Validation Check] ${tq.candidate.name}: valTrades=${valMetrics.trades}, valWinRate=${valMetrics.winRate.toFixed(1)}%, valNet=${valMetrics.totalNet.toFixed(2)}%`);
     if (valMetrics.trades < minValTrades) continue;
 
     // 参数稳健性计算 (邻域得分)

@@ -75,6 +75,25 @@ test("legacy quant shorthand and generic engine agree over all MA/MACD requireme
   }
 });
 
+test("candleRequirement micro patterns evaluate consistently in quant preset and feature spec", async () => {
+  const { CANDLE_REQUIREMENTS } = await import("../../src/strategy-spec.ts");
+  const { quantPreset } = await import("../../src/strategy-presets.ts");
+  const list = bars(151);
+  list[list.length - 2] = {
+    ...list[list.length - 2],
+    open: 100, high: 110, low: 98, close: 101,
+  };
+  const fv = computeFeatureVector(list, ticker, list.length - 2, { rank: 2 })!;
+  for (const side of ["LONG", "SHORT"] as const) {
+    for (const candleRequirement of CANDLE_REQUIREMENTS) {
+      const spec = { topN: 5, minDayChange: 10, intervalWindow: 5, ampDivisor: 1, maRequirement: "NONE" as const, macdRequirement: "NONE" as const, candleRequirement };
+      const monitor = new StrategyFeatureMonitor(list, ticker, 2);
+      const matches = new StrategyEngine([quantPreset(side, spec)]).evaluate(monitor, now);
+      assert.equal(matches.length > 0, evaluateFeatureSpec(side, fv, spec).pass, `${side} ${candleRequirement}`);
+    }
+  }
+});
+
 test("W-bottom is derived from pivot, bounce and optional confirmation parameters without hidden rank/day caps", () => {
   const list = bars();
   list[64].low = 95;

@@ -1,4 +1,4 @@
-import type { MA_REQUIREMENTS, MACD_REQUIREMENTS } from "./strategy-spec.ts";
+import type { MA_REQUIREMENTS, MACD_REQUIREMENTS, CANDLE_REQUIREMENTS } from "./strategy-spec.ts";
 import type { LiveTradingSummary } from "./live-trading-types.ts";
 // Shared type definitions for both the Node backend (server.ts) and the React
 // frontend (web/). This module is type-only — no runtime side effects — so it is
@@ -119,6 +119,7 @@ export interface KlineStatsStrategyLiveConfig {
   ampDivisor: number;          // 冲高涨幅 >= 24h 涨幅 / ampDivisor (如 8, 10, 12)
   maRequirement: typeof MA_REQUIREMENTS[number];
   macdRequirement: typeof MACD_REQUIREMENTS[number];
+  candleRequirement?: typeof CANDLE_REQUIREMENTS[number]; // 微观 K 线形态 (如长上影Pinbar/长下影Hammer/阴阳实体)
   holdMinutes: number;         // 持仓分钟数 (如 15m, 30m, 45m)
   tp1Percent: number;          // TP1 止盈 % (如 3.0%)
   tp2Percent: number;          // TP2 止盈 % (如 7.0%)

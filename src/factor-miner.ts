@@ -75,17 +75,36 @@ export function factorMetrics(trades: ReplayTrade[]): FactorMetrics {
 export function factorCandidates(): ReplayStrategy[] {
   const candidates: ReplayStrategy[] = [];
   for (const side of ["LONG", "SHORT"] as const) {
-    for (const intervalWindow of [3, 5, 10]) for (const ampDivisor of [8, 10]) {
-      const mas = side === "LONG" ? ["MA10_SUPPORT", "MA20_SUPPORT"] : ["MA10_BREAKDOWN", "MA60_RESIST"];
-      const macds = side === "LONG" ? ["GREEN_RATIO_15_50", "GOLDEN_CROSS_RECENT", "HIST_EXPANDING"] : ["GREEN_RATIO_30_80", "DEATH_CROSS_RECENT", "HIST_WEAKENING"];
-      for (const maRequirement of mas) for (const macdRequirement of macds) for (const holdMinutes of [5, 10, 15]) {
-        candidates.push({
-          id: `${side}:${intervalWindow}:${ampDivisor}:${maRequirement}:${macdRequirement}:${holdMinutes}`,
-          side, intervalWindow, ampDivisor, maRequirement, macdRequirement, holdMinutes,
-          topN: 10, minDayChange: 10, tp1Percent: 2.5, tp2Percent: 5,
-          stopLossPercent: side === "LONG" ? 3 : 3.5, cooldownMinutes: 3,
-          moveSlToEntryAfterTp1: true, leverage: 3,
-        });
+    for (const intervalWindow of [15, 30]) for (const ampDivisor of [8, 10]) {
+      // 监控 ovcl (Open, High/Vol, Close, Low) vs maN 的核心交互形态
+      const mas = side === "LONG"
+        ? ["MA10_SUPPORT", "MA20_SUPPORT", "MA10_BREAKOUT", "MA10_CLOSE_ABOVE"] as const
+        : ["MA10_BREAKDOWN", "MA20_BREAKDOWN", "MA20_RESIST", "MA10_CLOSE_BELOW"] as const;
+
+      // 短周期 DIF 周期高低位 + MACD 关键形态
+      const macds = side === "LONG"
+        ? ["DIF_LOW_LEVEL", "GOLDEN_CROSS_RECENT", "HIST_EXPANDING"] as const
+        : ["DIF_HIGH_LEVEL", "DEATH_CROSS_RECENT", "HIST_WEAKENING"] as const;
+
+      // 微观 K 线形态 (长上影冲高回落/长下影探底回升/阴阳实体确认)
+      const candles = side === "LONG"
+        ? ["LOWER_SHADOW_HAMMER", "BULLISH_BAR", "NONE"] as const
+        : ["UPPER_SHADOW_PINBAR", "BEARISH_BAR", "NONE"] as const;
+
+      for (const maRequirement of mas) {
+        for (const macdRequirement of macds) {
+          for (const candleRequirement of candles) {
+            for (const holdMinutes of [10, 15]) {
+              candidates.push({
+                id: `${side}:${intervalWindow}:${ampDivisor}:${maRequirement}:${macdRequirement}:${candleRequirement}:${holdMinutes}`,
+                side, intervalWindow, ampDivisor, maRequirement, macdRequirement, candleRequirement, holdMinutes,
+                topN: 10, minDayChange: 10, tp1Percent: 2.5, tp2Percent: 5,
+                stopLossPercent: side === "LONG" ? 3 : 3.5, cooldownMinutes: 3,
+                moveSlToEntryAfterTp1: true, leverage: 3,
+              });
+            }
+          }
+        }
       }
     }
   }

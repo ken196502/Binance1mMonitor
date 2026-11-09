@@ -267,7 +267,7 @@ test("archive to real worker to scheduler honors short windows and retires under
     const service = new FactorMiningService(e, async job => {
       const mined = await runFactorWorker({ ...job, root });
       assert.deepEqual(mined.windows, factorWindows(config));
-      assert.equal(mined.trials, 216);
+      assert.equal(mined.trials, 576);
       return mined;
     }, () => now);
     await service.tick();

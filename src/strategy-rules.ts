@@ -66,6 +66,7 @@ export const FEATURE_FIELDS = [
   "support.3", "support.7", "support.15", "stack", "stack3Bars", "maStreak", "aboveCount", "relativeBias30",
   "dif", "dea", "hist", "difPct", "deaPct", "histSlope", "deaSlope", "greenRatio.20", "greenStreak", "redStreak",
   "goldenCrossAgo", "deathCrossAgo", "histPeakAgo", "deaPeakAgo", "topDivergence", "bottomDivergence",
+  "difLevel", "diff1mLevel",
   "tf5m.macdHist", "tf5m.macdHistSlope", "tf5m.stack", "tf5m.closeVsMa20",
   "tf15m.macdHist", "tf15m.macdHistSlope", "tf15m.stack", "tf15m.closeVsMa20",
   "deaPeak.30.ago", "deaPeak.30.value", "streak.0.up", "streak.1.up", "streak.0.count",
@@ -77,7 +78,7 @@ export function isFeatureField(field: string): boolean {
   if ((FEATURE_FIELDS as readonly string[]).includes(field)) return true;
   const patterns = [
     /^(surge|surgeRatio|drop|dropRatio|range|closeChange|greenRatio)\.(\d+)$/,
-    /^ma\.(\d+)\.(value|slope2|slope3|support|resist|breakout|breakdown|biasPct|biasRatio|emaValue)$/,
+    /^ma\.(\d+)\.(value|slope2|slope3|support|resist|breakout|breakdown|biasPct|biasRatio|emaValue|close_below|close_above)$/,
     /^support\.(\d+)$/, /^streak\.(\d+)\.(up|count)$/,
     /^deaPeak\.(\d+)\.(ago|value)$/,
     /^pivot(High|Low)\.(\d+)\.(\d+)\.(price|hist|dif|time|bounce|ratio)$/,
@@ -111,12 +112,12 @@ export function validateRules(value: unknown, depth = 0): asserts value is Featu
 /** Compile the old quant shorthand into exactly the same rule tree as every other preset. */
 export function compileFeatureSpec(side: "LONG" | "SHORT", spec: {
   topN?: number; minDayChange?: number; intervalWindow?: number; ampDivisor?: number;
-  maRequirement?: string; macdRequirement?: string; rules?: FeatureCondition[];
+  maRequirement?: string; macdRequirement?: string; candleRequirement?: string; rules?: FeatureCondition[];
 }): FeatureRule {
   const rules: FeatureRule[] = [rule("rank", "<=", spec.topN ?? 10), rule("dayChange", ">=", spec.minDayChange ?? 10),
     rule(`surgeRatio.${spec.intervalWindow ?? 5}`, side === "SHORT" ? ">=" : "<=", 1 / (spec.ampDivisor ?? 8))];
   const ma = spec.maRequirement ?? "NONE";
-  const match = /^MA(10|20|30|60)_(SUPPORT|RESIST|BREAKOUT|BREAKDOWN)$/.exec(ma);
+  const match = /^MA(10|20|30|60)_(SUPPORT|RESIST|BREAKOUT|BREAKDOWN|CLOSE_BELOW|CLOSE_ABOVE)$/.exec(ma);
   if (match) rules.push(rule(`ma.${match[1]}.${match[2].toLowerCase()}`, "==", true));
   else if (ma === "MA_BULLISH_STACK" || ma === "MA_BEARISH_STACK") rules.push(rule("stack", "in", ma === "MA_BULLISH_STACK" ? ["bull_full", "bull_short"] : ["bear_full", "bear_short"]));
   else if (/^MA_(FRESH|SUSTAINED)_(BULL|BEAR)$/.test(ma)) rules.push(rule("stack3Bars", "==", ma.slice(3).toLowerCase()));
@@ -133,8 +134,24 @@ export function compileFeatureSpec(side: "LONG" | "SHORT", spec: {
       HIST_EXPANDING: all(rule("histSlope", ">", 0), rule("hist", ">", 0)), DEATH_CROSS_RECENT: rule("deathCrossAgo", "<=", 3),
       GOLDEN_CROSS_RECENT: rule("goldenCrossAgo", "<=", 3), TOP_DIVERGENCE: rule("topDivergence", "==", true), BOTTOM_DIVERGENCE: rule("bottomDivergence", "==", true),
       TF5M_CONFIRM: any(rule("tf5m.macdHistSlope", side === "SHORT" ? "<" : ">", 0), rule("tf5m.macdHist", side === "SHORT" ? "<" : ">", 0)),
+      DIF_HIGH_LEVEL: rule("difLevel", "==", "high"),
+      DIF_LOW_LEVEL: rule("difLevel", "==", "low"),
+      DIF_CROSS_ZERO_DOWN: rule("dif", "<", 0),
+      DIF_CROSS_ZERO_UP: rule("dif", ">", 0),
     };
     if (macd !== "NONE") rules.push(requirements[macd] ?? rule("invalid", "==", true));
+  }
+  const candle = spec.candleRequirement ?? "NONE";
+  if (candle === "UPPER_SHADOW_PINBAR") {
+    rules.push(any(rule("upperRangeRatio", ">=", 0.35), rule("upperWick", ">=", 0.35), rule("upperShadowRatio", ">=", 1.2)));
+  } else if (candle === "BEARISH_BAR") {
+    rules.push(rule("price.close", "<", ref("price.open")));
+  } else if (candle === "LOWER_SHADOW_HAMMER") {
+    rules.push(any(rule("lowerWick", ">=", 0.3), rule("lowerWick", ">=", ref("body"))));
+  } else if (candle === "BULLISH_BAR") {
+    rules.push(rule("price.close", ">", ref("price.open")));
+  } else if (candle !== "NONE") {
+    rules.push(rule("invalid", "==", true));
   }
   if (spec.rules) rules.push(...spec.rules);
   return all(...rules);

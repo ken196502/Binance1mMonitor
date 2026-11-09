@@ -39,6 +39,8 @@ export interface MaFeatureItem {
   resist: boolean;
   breakout: boolean;
   breakdown: boolean;
+  close_below: boolean;
+  close_above: boolean;
 }
 
 export interface MultiTfFeature {
@@ -52,6 +54,7 @@ export interface FeatureVector {
   version: string;
   time: number;
   close: number;
+  price: { open: number; high: number; low: number; close: number };
 
   // A. 区间涨跌幅
   surge: Record<number, number>;      // (当前 high - 窗口最低 low) / 窗口最低 low * 100
@@ -95,6 +98,8 @@ export interface FeatureVector {
   deaPeakAgo: number;                 // DEA 在本轮中的峰值距今根数
   topDivergence: boolean;             // 价格新高而 DEA 或柱体未创新高
   bottomDivergence: boolean;          // 价格新低而 DEA 或柱体未创新低
+  difLevel?: "high" | "mid" | "low";  // 短周期 DIF 相对高低位 (30 根窗口)
+  difPos?: number;                    // 短周期 DIF 在波段中的归一化位置 (0~1)
 
   // 多周期（由 1m 聚合）
   tf5m: MultiTfFeature;
@@ -112,6 +117,7 @@ export interface KlineStatsStrategySpec {
   ampDivisor?: number;
   maRequirement?: string;
   macdRequirement?: string;
+  candleRequirement?: string;
   rules?: FeatureRuleCondition[];
   holdMinutes?: number;
   tp1Percent?: number;
@@ -346,6 +352,8 @@ export function computeFeatureVector(
     const resist = high >= val && close < val;
     const breakout = open <= val && close > val;
     const breakdown = open >= val && close < val;
+    const close_below = close < val;
+    const close_above = close > val;
 
     if (close > val) aboveCount++;
 
@@ -359,6 +367,8 @@ export function computeFeatureVector(
       resist,
       breakout,
       breakdown,
+      close_below,
+      close_above,
     };
   }
 
@@ -542,6 +552,21 @@ export function computeFeatureVector(
     }
   }
 
+  // 短周期 DIF 相对高低位 (30 根窗口)
+  const difLookback = Math.min(30, curSubIdx);
+  let maxDif = -Infinity;
+  let minDif = Infinity;
+  for (let k = Math.max(0, curSubIdx - difLookback); k <= curSubIdx; k++) {
+    const d = difArr[k] ?? 0;
+    if (d > maxDif) maxDif = d;
+    if (d < minDif) minDif = d;
+  }
+  const difRange = maxDif - minDif;
+  const difPos = difRange > 0 ? (dif - minDif) / difRange : 0.5;
+  const difLevel = (dif > 0 && maxDif > 0 && dif >= 0.8 * maxDif) || difPos >= 0.8 ? "high"
+    : (dif < 0 && minDif < 0 && dif <= 0.8 * minDif) || difPos <= 0.2 ? "low"
+    : "mid";
+
   // 多周期 (5m / 15m)
   const tf5m = computeTfFeature(subCandles, 5 * 60 * 1000);
   const tf15m = computeTfFeature(subCandles, 15 * 60 * 1000);
@@ -550,6 +575,7 @@ export function computeFeatureVector(
     version: FEATURE_VERSION,
     time: bar.time,
     close,
+    price: { open, high, low, close },
     surge,
     drop,
     closeChange,
@@ -573,6 +599,8 @@ export function computeFeatureVector(
     hist,
     difPct,
     deaPct,
+    difLevel,
+    difPos,
     greenRatio,
     greenStreak,
     redStreak,
