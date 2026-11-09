@@ -66,6 +66,9 @@ export class FactorMiningService {
     const controller = this.controller = new AbortController();
     const signature = factorConfigKey(config);
     this.engine.setFactorMiningState({ ...state, running: true, lastStartedAt: now, lastError: undefined });
+    this.engine.notifyFactorMiningStarted?.(config.factorMining)?.catch(e =>
+      console.error(`[factor-mining] TG 播报 [训练开始] 失败:`, e)
+    );
     try {
       const result = await this.run({ now, config: normalizeFactorMiningConfig(config.factorMining), costs: { takerFeeBps: config.takerFeeBps, slippageBps: config.slippageBps } }, controller.signal);
       if (controller.signal.aborted) throw new Error("因子挖掘已停止");

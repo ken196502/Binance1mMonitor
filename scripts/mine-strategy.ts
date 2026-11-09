@@ -27,6 +27,7 @@ import type { PaperStrategyConfig } from "../src/paper-trading.ts";
 
 import { replayStrategies } from "../research/strategy-replay.ts";
 export { calcTradeReturn } from "../src/trading-core.ts";
+import { sendTelegramMessage, telegramConfigured, escapeHtml } from "../src/telegram.ts";
 
 const MINUTE = 60_000;
 
@@ -599,6 +600,17 @@ export async function main() {
   console.log(`🚀【24h 涨幅榜量化统计与特征挖掘系统 V2.0】${isQuick ? "(快速模式)" : "(完整多阶段验证模式)"}`);
   console.log(`⚙️ 撮合规则: ${isOptimistic ? "乐观撮合 (先 TP1 后 SL)" : "保守撮合 (先 SL 后 TP1，极端价成交)"}`);
   console.log("==================================================================");
+
+  if (telegramConfigured()) {
+    const msg = [
+      `🧠 <b>[量化模型] 开始运行全量历史策略挖掘与参数训练</b>`,
+      `• <b>运行模式</b>: ${isQuick ? "快速模式 (--quick)" : "完整多阶段验证模式"} (${isOptimistic ? "乐观撮合" : "保守撮合"})`,
+      `• <b>前置窗口</b>: ${precursorWindow}m (振幅除数: ${precursorDivisor})`,
+      `• <b>目标输出</b>: <code>${outputPath}</code>`,
+      `• <b>开始时间</b>: ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })} (UTC+8)`,
+    ].join("\n");
+    await sendTelegramMessage(msg);
+  }
 
   console.log("正在载入历史行情数据与 24h 榜单快照...");
   const hourly = await loadDataset(path.resolve("data/research/hourly-168h"));
@@ -1205,6 +1217,22 @@ ${shortRanked
   console.log("🎯 下一步：执行部署校验与热更新");
   console.log("   npm run deploy:strategy -- --url http://127.0.0.1:4111");
   console.log("==================================================================");
+
+  if (telegramConfigured()) {
+    const lines = [
+      `✅ <b>[量化模型] 离线策略挖掘与参数训练完成！</b>`,
+      `• <b>输出配置</b>: <code>${outputPath}</code>`,
+      `• <b>回测总表现</b>: 最终净资产 <b>${portfolioResult.finalBalance.toFixed(2)} USDT</b> (+${portfolioResult.roiPct.toFixed(1)}%) | 胜率 <b>${portfolioResult.winRate.toFixed(1)}%</b> (${portfolioResult.totalTrades}笔)`,
+    ];
+    if (bestShortRes) {
+      lines.push(`• <b>最优空头</b>: ${escapeHtml(bestShortRes.candidate.name)} (验证胜率 ${bestShortRes.valMetrics.winRate.toFixed(1)}%, PF ${Number.isFinite(bestShortRes.valMetrics.pf) ? bestShortRes.valMetrics.pf.toFixed(2) : "∞"}) [${bestShortRes.meetsDeploymentThreshold ? "达标 ✅" : "未达标 ❌"}]`);
+    }
+    if (bestLongRes) {
+      lines.push(`• <b>最优多头</b>: ${escapeHtml(bestLongRes.candidate.name)} (验证胜率 ${bestLongRes.valMetrics.winRate.toFixed(1)}%, PF ${Number.isFinite(bestLongRes.valMetrics.pf) ? bestLongRes.valMetrics.pf.toFixed(2) : "∞"}) [${bestLongRes.meetsDeploymentThreshold ? "达标 ✅" : "未达标 ❌"}]`);
+    }
+    lines.push(`• <b>下一步</b>: 可通过 <code>npm run deploy:strategy</code> 一键热部署至实盘/模拟服务。`);
+    await sendTelegramMessage(lines.join("\n"));
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

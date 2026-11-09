@@ -20,7 +20,7 @@ import {
   FEATURE_VERSION,
 } from "./features.ts";
 import { breakevenPrice, calcTradeReturn, FIRST_CLOSE_FRACTION, DEFAULT_MAX_POSITIONS, DEFAULT_MAX_PER_STRATEGY, orderMargin, summarizeDirections } from "./trading-core.ts";
-import { sendTelegramMessage, telegramConfigured } from "./telegram.ts";
+import { sendTelegramMessage, telegramConfigured, escapeHtml } from "./telegram.ts";
 import {
   STREAK_LIVE_DEFAULT_CONFIG,
   DUAL_SPEED_DEEP_REBOUND_CONFIG,
@@ -450,10 +450,12 @@ export class PaperTradingEngine {
         if (!passesFactorCandidate(candidate)) throw new Error(`${side} 因子未达到验证门槛`);
       }
     }
+    const appliedSides: ("LONG" | "SHORT")[] = [];
     for (const side of ["LONG", "SHORT"] as const) {
       const { candidate, reason } = result.sides[side];
       this.factorMiningState.sides[side] = { reason };
       if (candidate) {
+        appliedSides.push(side);
         const config = structuredClone(candidate.config);
         // Replace, rather than merge, so obsolete optional rules cannot survive validation.
         if (side === "LONG") this.config.klineStatsLongConfig = config;
@@ -475,6 +477,11 @@ export class PaperTradingEngine {
     // A limit order belongs to its original factor; never fill it after that factor is retired.
     this.cancelRetiredFactorOrders(now);
     this.scheduleSave();
+    if (appliedSides.length > 0) {
+      this.notifyMinedFactorsApplied(result, appliedSides, now).catch(e =>
+        console.error(`[paper-trading] TG 播报 [应用新因子参数] 失败:`, e)
+      );
+    }
   }
 
   private factorOrderAllowed(order: PaperPendingOrder, now: number): boolean {
@@ -567,7 +574,7 @@ export class PaperTradingEngine {
     return match ? this.paperSignal(match) : null;
   }
 
-  public updateConfig(updates: Partial<PaperStrategyConfig>): PaperStrategyConfig {
+  public updateConfig(updates: Partial<PaperStrategyConfig>, options?: { skipNotify?: boolean }): PaperStrategyConfig {
     if (!updates || typeof updates !== "object" || Array.isArray(updates)) throw new Error("配置必须是对象");
     if (updates.factorMining !== undefined) validateFactorMiningConfig(updates.factorMining);
     const nextFactorMining = updates.factorMining === undefined ? undefined
@@ -807,6 +814,11 @@ export class PaperTradingEngine {
     );
 
     this.scheduleSave();
+    if (!options?.skipNotify) {
+      this.notifyManualConfigApplied(updates).catch(e =>
+        console.error(`[paper-trading] TG 播报 [手动应用策略参数] 失败:`, e)
+      );
+    }
     return this.getConfig();
   }
 
@@ -1738,6 +1750,189 @@ export class PaperTradingEngine {
     await this.sendTg(msg, `订单结清 ${pos.symbol}`);
   }
 
+  public async notifyFactorMiningStarted(jobConfig?: FactorMiningConfig): Promise<void> {
+    if (!telegramConfigured()) {
+      return;
+    }
+    const fm = {
+      ...DEFAULT_FACTOR_MINING,
+      ...this.config.factorMining,
+      ...jobConfig,
+    };
+    const trainMin = fm.trainingMinutes ?? 720;
+    const valMin = fm.validationMinutes ?? 120;
+    const holdMin = fm.holdoutMinutes ?? 120;
+    const totalMin = trainMin + valMin + holdMin;
+    const takerBps = this.config.takerFeeBps ?? 5;
+    const slipBps = this.config.slippageBps ?? 5;
+    const timeStr = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+
+    const msg = [
+      `🧠 <b>[量化策略] 开始新一轮因子模型训练与参数挖掘</b>`,
+      `• <b>触发时间</b>: ${timeStr} (UTC+8)`,
+      `• <b>数据窗口</b>: 回溯 <b>${(totalMin / 60).toFixed(1)}h</b> (${totalMin}分钟)`,
+      `   - 训练集 (Train): 最近 <b>${trainMin}m</b> (~${(trainMin / 60).toFixed(1)}h)`,
+      `   - 验证集 (Validation): <b>${valMin}m</b> (~${(valMin / 60).toFixed(1)}h)`,
+      `   - 留出集 (Holdout): <b>${holdMin}m</b> (~${(holdMin / 60).toFixed(1)}h)`,
+      `• <b>模拟成本</b>: 手续费 <b>${takerBps} bps</b> | 滑点 <b>${slipBps} bps</b>`,
+      `• <b>搜索空间</b>: 多空全形态网格遍历 (MA均线/MACD/窗口振幅/持仓周期)`,
+      `• <b>调度机制</b>: 每 <b>${fm.refreshMinutes ?? 60}m</b> 周期训练，模型最长有效 <b>${fm.validForMinutes ?? 120}m</b>`,
+      `• <b>执行状态</b>: 后台子进程独立计算，训练完成并通过严格验证后自动生效。`,
+    ].join("\n");
+
+    await this.sendTg(msg, "量化因子开始训练");
+  }
+
+  private async notifyMinedFactorsApplied(
+    result: FactorMiningResult,
+    appliedSides: ("LONG" | "SHORT")[],
+    now: number,
+  ): Promise<void> {
+    if (!telegramConfigured()) {
+      return;
+    }
+    const validMinutes = this.config.factorMining?.validForMinutes ?? 120;
+    const expiresAt = now + validMinutes * MINUTE_MS;
+    const expireTimeStr = new Date(expiresAt).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+    const sideLabels = appliedSides.map(s => s === "LONG" ? "做多 (LONG)" : "做空 (SHORT)").join(" & ");
+
+    const lines: string[] = [
+      `🎯 <b>[量化策略] 新一轮模型参数已通过验证并成功应用生效！</b>`,
+      `• <b>生效方向</b>: <b>${sideLabels}</b>`,
+      `• <b>模型有效期</b>: <b>${validMinutes} 分钟</b> (至 <b>${expireTimeStr}</b> 止)`,
+    ];
+
+    for (const side of appliedSides) {
+      const c = result.sides[side].candidate!;
+      const dirStr = side === "LONG" ? "🟢 做多" : "🔴 做空";
+      const cfg = c.config;
+      const trainPf = c.train.profitFactor != null && Number.isFinite(c.train.profitFactor) ? c.train.profitFactor.toFixed(2) : "∞";
+      const holdPf = c.holdout.profitFactor != null && Number.isFinite(c.holdout.profitFactor) ? c.holdout.profitFactor.toFixed(2) : "∞";
+
+      lines.push(
+        ``,
+        `<b>【${dirStr} 策略新参数】</b>`,
+        `• <b>形态特征</b>: 均线 <code>${escapeHtml(cfg.maRequirement)}</code> | MACD <code>${escapeHtml(cfg.macdRequirement)}</code>`,
+        `• <b>入场条件</b>: 前置窗口 <b>${cfg.intervalWindow}m</b> | 振幅门槛 <b>24h/${cfg.ampDivisor}</b>`,
+        `• <b>止盈止损</b>: 阶段一 <b>+${cfg.tp1Percent.toFixed(1)}%</b> / 阶段二 <b>+${cfg.tp2Percent.toFixed(1)}%</b> | 止损 <b>-${cfg.stopLossPercent.toFixed(1)}%</b>`,
+        `• <b>持仓杠杆</b>: <b>${cfg.holdMinutes}分钟</b>超时平仓 | <b>${cfg.leverage}x</b> 杠杆${cfg.moveSlToEntryAfterTp1 ? " (TP1后保本)" : ""}`,
+        `• <b>回测战绩</b>:`,
+        `   - 训练集 (Train): <b>${c.train.trades}笔</b> | 胜率 <b>${c.train.winRate.toFixed(1)}%</b> | PF <b>${trainPf}</b> | 净利 <b>${c.train.netPercent >= 0 ? "+" : ""}${c.train.netPercent.toFixed(2)}%</b>`,
+      );
+
+      if (c.validation) {
+        const valPf = c.validation.profitFactor != null && Number.isFinite(c.validation.profitFactor) ? c.validation.profitFactor.toFixed(2) : "∞";
+        lines.push(
+          `   - 验证集 (Val): <b>${c.validation.trades}笔</b> | 胜率 <b>${c.validation.winRate.toFixed(1)}%</b> | PF <b>${valPf}</b> | Wilson <b>${c.validation.wilsonLow.toFixed(1)}%</b>`,
+        );
+      }
+
+      lines.push(
+        `   - 留出集 (Holdout): <b>${c.holdout.trades}笔</b> | 胜率 <b>${c.holdout.winRate.toFixed(1)}%</b> | PF <b>${holdPf}</b> | Wilson <b>${c.holdout.wilsonLow.toFixed(1)}%</b>`,
+      );
+    }
+
+    for (const side of ["LONG", "SHORT"] as const) {
+      if (!appliedSides.includes(side)) {
+        const dirStr = side === "LONG" ? "做多" : "做空";
+        lines.push(
+          ``,
+          `• <b>${dirStr}方向状态</b>: 未更新 (${escapeHtml(result.sides[side].reason)})`,
+        );
+      }
+    }
+
+    lines.push(
+      ``,
+      `• <b>执行状态</b>: 策略引擎已热加载新参数，后续符合形态的标的将按新规则触发入场挂单/开仓。`,
+    );
+
+    await this.sendTg(lines.join("\n"), "应用新策略参数 (量化因子)");
+  }
+
+  private async notifyManualConfigApplied(
+    updates: Partial<PaperStrategyConfig>,
+  ): Promise<void> {
+    if (!telegramConfigured()) {
+      return;
+    }
+    const timeStr = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+    const changes: string[] = [];
+
+    if (updates.klineStatsShortConfig) {
+      const sc = updates.klineStatsShortConfig;
+      changes.push(`• <b>量化做空参数</b>: 窗口 ${sc.intervalWindow ?? "-"}m | 振幅 24h/${sc.ampDivisor ?? "-"} | 均线 ${escapeHtml(sc.maRequirement ?? "-")} | MACD ${escapeHtml(sc.macdRequirement ?? "-")} | TP1 +${sc.tp1Percent}% / TP2 +${sc.tp2Percent}% / SL -${sc.stopLossPercent}%`);
+    }
+    if (updates.klineStatsLongConfig) {
+      const lc = updates.klineStatsLongConfig;
+      changes.push(`• <b>量化做多参数</b>: 窗口 ${lc.intervalWindow ?? "-"}m | 振幅 24h/${lc.ampDivisor ?? "-"} | 均线 ${escapeHtml(lc.maRequirement ?? "-")} | MACD ${escapeHtml(lc.macdRequirement ?? "-")} | TP1 +${lc.tp1Percent}% / TP2 +${lc.tp2Percent}% / SL -${lc.stopLossPercent}%`);
+    }
+    if (updates.strategies) {
+      const enabledList = updates.strategies.filter(s => s.enabled).map(s => escapeHtml(s.label || s.id));
+      changes.push(`• <b>生效策略 (${enabledList.length}个)</b>: ${enabledList.join(", ") || "无"}`);
+    }
+    const levParts: string[] = [];
+    if (updates.klineStatsLeverage != null) levParts.push(`量化特征 ${updates.klineStatsLeverage}x`);
+    if (updates.streakLeverage != null) levParts.push(`闪击 ${updates.streakLeverage}x`);
+    if (updates.longLeverage != null) levParts.push(`做多 ${updates.longLeverage}x`);
+    if (updates.trendLeverage != null) levParts.push(`顺势 ${updates.trendLeverage}x`);
+    if (updates.leverage != null) levParts.push(`默认 ${updates.leverage}x`);
+    if (levParts.length > 0) {
+      changes.push(`• <b>杠杆调整</b>: ${levParts.join(" | ")}`);
+    }
+    if (updates.marginPercent != null || updates.marginRate != null || updates.maxPositions != null || updates.maxPositionsPerStrategy != null) {
+      const mPct = updates.marginPercent ?? (updates.marginRate ? updates.marginRate * 100 : undefined);
+      const parts: string[] = [];
+      if (mPct != null) parts.push(`单笔保证金 ${mPct}%`);
+      if (updates.maxPositions != null) parts.push(`最大持仓 ${updates.maxPositions} 笔`);
+      if (updates.maxPositionsPerStrategy != null) parts.push(`每策略至多 ${updates.maxPositionsPerStrategy} 笔`);
+      changes.push(`• <b>风控调整</b>: ${parts.join(" | ")}`);
+    }
+
+    const switches: string[] = [];
+    for (const [key, label] of [
+      ["enableStreak", "新高闪击"],
+      ["enableRebound", "首次跌10%反弹"],
+      ["enableDeepRebound", "跌20%+超跌"],
+      ["enableHourlySuppression", "小时线压制"],
+      ["enableLongs", "做多总开关"],
+      ["enableWBottomDivergence", "W底背离做多"],
+      ["enableKlineStatsShort", "量化特征做空"],
+      ["enableKlineStatsLong", "量化特征做多"],
+    ] as const) {
+      if ((updates as any)[key] !== undefined) {
+        switches.push(`${label}: <b>${(updates as any)[key] ? "开启 ✅" : "关闭 ❌"}</b>`);
+      }
+    }
+    if (switches.length > 0) {
+      changes.push(`• <b>策略启闭</b>: ${switches.join(" | ")}`);
+    }
+
+    if (updates.factorMining) {
+      const fm = updates.factorMining;
+      const parts: string[] = [];
+      if (fm.enabled !== undefined) parts.push(`自动训练: <b>${fm.enabled ? "开启 ✅" : "关闭 ❌"}</b>`);
+      if (fm.refreshMinutes) parts.push(`刷新周期 ${fm.refreshMinutes}m`);
+      if (fm.validForMinutes) parts.push(`模型有效期 ${fm.validForMinutes}m`);
+      if (parts.length > 0) {
+        changes.push(`• <b>因子挖掘调度</b>: ${parts.join(" | ")}`);
+      }
+    }
+
+    if (changes.length === 0) {
+      return;
+    }
+
+    const msg = [
+      `⚙️ <b>[策略管理] 已应用新策略参数 (手动/API配置)</b>`,
+      `• <b>生效时间</b>: ${timeStr} (UTC+8)`,
+      ...changes,
+      `• <b>执行状态</b>: 策略参数已实时热加载生效并落盘持久化。`,
+    ].join("\n");
+
+    await this.sendTg(msg, "应用新策略参数 (手动配置)");
+  }
+
   // --- Persistence ---
   private scheduleSave(): void {
     if (!this.config.storageFile) return;
@@ -1840,7 +2035,7 @@ export class PaperTradingEngine {
           }
           const rate = Math.min(0.2, saved.marginPercent != null ? saved.marginPercent / 100 : saved.marginRate ?? 0.2);
           this.updateConfig({ ...saved, marginRate: rate, marginPercent: rate * 100,
-            maxPositions: Math.min(5, saved.maxPositions ?? 5), maxPositionsPerStrategy: 1, firstCloseFraction: FIRST_CLOSE_FRACTION });
+            maxPositions: Math.min(5, saved.maxPositions ?? 5), maxPositionsPerStrategy: 1, firstCloseFraction: FIRST_CLOSE_FRACTION }, { skipNotify: true });
         }
         if (data.factorMining?.sides?.LONG && data.factorMining?.sides?.SHORT) {
           this.factorMiningState = { ...data.factorMining, running: false,
