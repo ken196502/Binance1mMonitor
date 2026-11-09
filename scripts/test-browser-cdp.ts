@@ -184,6 +184,7 @@ try {
     assert.ok(layout.scrollWidth <= layout.clientWidth + 1, JSON.stringify(layout));
   };
   await waitText("待近期样本验证");
+  await click(".trading-mode-badge");
   await waitText("实盘小额测试");
   await waitText("未启用");
   assert.equal(await evaluate("document.querySelector('.live-panel input')"), null);
@@ -192,6 +193,7 @@ try {
   assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
   await screenshot("mobile-live-disabled");
   await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
+  await click(".live-modal-close");
   checks.push("实盘默认关闭，首轮 10 USDT 上限，桌面和移动端无横向溢出");
   checks.push("首次启动不显示未经验证的生效因子");
   await openSettings();

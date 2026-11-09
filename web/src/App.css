@@ -53,6 +53,215 @@ body {
   overflow-x: hidden;
 }
 header { margin-bottom: 18px; }
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.trading-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  border: 1px solid transparent;
+}
+.trading-mode-badge:hover {
+  filter: brightness(1.15);
+  transform: translateY(-1px);
+}
+.trading-mode-badge:active {
+  transform: translateY(0);
+}
+.trading-mode-paper {
+  background: rgba(56, 139, 253, 0.12);
+  border-color: rgba(56, 139, 253, 0.35);
+  color: #79c0ff;
+}
+.trading-mode-live {
+  background: rgba(245, 166, 35, 0.12);
+  border-color: rgba(245, 166, 35, 0.4);
+  color: #f5a623;
+}
+.trading-mode-live.is-halted {
+  background: rgba(255, 77, 79, 0.15);
+  border-color: rgba(255, 77, 79, 0.45);
+  color: #ff7b72;
+}
+.trading-mode-badge .badge-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.trading-mode-badge .badge-dot.dot-green {
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(46, 204, 113, 0.6);
+}
+.trading-mode-badge .badge-dot.dot-amber {
+  background: var(--amber);
+  box-shadow: 0 0 6px rgba(245, 166, 35, 0.6);
+}
+.trading-mode-badge .badge-dot.dot-red {
+  background: var(--red);
+  box-shadow: 0 0 6px rgba(255, 77, 79, 0.6);
+}
+.trading-mode-badge .badge-dot.dot-blue {
+  background: #58a6ff;
+  box-shadow: 0 0 6px rgba(88, 166, 255, 0.6);
+}
+.trading-mode-badge .badge-mode-label {
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+.trading-mode-badge .badge-divider {
+  opacity: 0.4;
+  margin: 0 1px;
+}
+.trading-mode-badge .badge-status-label {
+  font-size: 11px;
+  opacity: 0.9;
+}
+.trading-mode-badge .badge-action-hint {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  transition: all 0.15s ease;
+}
+.trading-mode-badge:hover .badge-action-hint {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* Live Trading Modal Popup */
+.live-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(5px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: fadeIn 0.15s ease-out;
+}
+.live-modal-content {
+  background: var(--panel);
+  border: 1px solid #725b26;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 640px;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 20px 24px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+  color: var(--text);
+  position: relative;
+  box-sizing: border-box;
+}
+.live-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.live-modal-header h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.live-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+.live-modal-close:hover {
+  color: #fff;
+  background: var(--panel2);
+}
+.live-guide-card {
+  background: rgba(245, 166, 35, 0.06);
+  border: 1px dashed rgba(245, 166, 35, 0.35);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 14px 0;
+  font-size: 12px;
+}
+.live-guide-card h4 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--amber);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.live-guide-steps p {
+  margin: 6px 0 2px;
+  color: var(--text);
+}
+.live-guide-steps pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 10px;
+  font-family: monospace;
+  font-size: 11px;
+  color: #79c0ff;
+  margin: 3px 0 8px;
+  overflow-x: auto;
+}
+.live-guide-tip {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.live-guide-enabled {
+  background: rgba(46, 204, 113, 0.1);
+  border: 1px solid rgba(46, 204, 113, 0.3);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 12px 0;
+  font-size: 12px;
+  color: var(--green);
+}
+.badge-paper-desc {
+  font-size: 11px;
+  font-weight: normal;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(56, 139, 253, 0.12);
+  border: 1px solid rgba(56, 139, 253, 0.3);
+  color: #79c0ff;
+  margin-left: 8px;
+  vertical-align: middle;
+}
 .live-panel { margin-bottom: 18px; border-color: #725b26; }
 .live-heading, .live-metrics, .live-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
 .live-heading { justify-content: space-between; }

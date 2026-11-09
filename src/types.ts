@@ -1,4 +1,5 @@
 import type { MA_REQUIREMENTS, MACD_REQUIREMENTS } from "./strategy-spec.ts";
+import type { LiveTradingSummary } from "./live-trading-types.ts";
 // Shared type definitions for both the Node backend (server.ts) and the React
 // frontend (web/). This module is type-only — no runtime side effects — so it is
 // safe to import from the browser bundle. Keeps the Status/Row contract in one
@@ -347,6 +348,7 @@ export interface Status {
   losers: Row[];
   volume?: Row[];
   paperTrading?: PaperTradingSummary;
+  liveTrading?: LiveTradingSummary;
   error?: string;
 }
 

@@ -552,6 +552,7 @@ async function refresh(): Promise<Status> {
       losers: [],
       volume: [],
       paperTrading: paperTrading.getSummary(),
+      liveTrading: liveSummary(),
     };
   }
 
@@ -627,6 +628,7 @@ async function refresh(): Promise<Status> {
     losers: [],
     volume: [],
     paperTrading: paperTrading.getSummary(),
+    liveTrading: liveSummary(),
   };
 }
 
@@ -662,6 +664,7 @@ async function getStatus(): Promise<Status> {
           ...lastKnownStatus,
           at: new Date().toISOString(),
           paperTrading: paperTrading.getSummary(),
+          liveTrading: liveSummary(),
           error: errorMsg,
         };
       }
@@ -675,6 +678,7 @@ async function getStatus(): Promise<Status> {
         losers: [],
         volume: [],
         paperTrading: paperTrading.getSummary(),
+        liveTrading: liveSummary(),
         error: errorMsg,
       };
     });
@@ -903,6 +907,7 @@ const server = http.createServer(async (req, res) => {
               resolve({
                 ...lastKnownStatus!,
                 paperTrading: paperTrading.getSummary(),
+                liveTrading: liveSummary(),
               });
             }, 2500),
           ),
@@ -917,6 +922,7 @@ const server = http.createServer(async (req, res) => {
                 resolve({
                   ...lastKnownStatus,
                   paperTrading: paperTrading.getSummary(),
+                  liveTrading: liveSummary(),
                 });
               } else {
                 resolve({
@@ -929,6 +935,7 @@ const server = http.createServer(async (req, res) => {
                   losers: [],
                   volume: [],
                   paperTrading: paperTrading.getSummary(),
+                  liveTrading: liveSummary(),
                   error: "服务启动中，正在同步币安数据...",
                 });
               }
@@ -939,6 +946,7 @@ const server = http.createServer(async (req, res) => {
       const responseStatus: Status = {
         ...status,
         paperTrading: paperTrading.getSummary(),
+        liveTrading: liveSummary(),
       };
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
       res.end(JSON.stringify(responseStatus));
@@ -947,6 +955,7 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({
         error: e instanceof Error ? e.message : String(e),
         paperTrading: paperTrading.getSummary(),
+        liveTrading: liveSummary(),
       }));
     }
     return;

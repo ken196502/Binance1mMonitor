@@ -228,7 +228,7 @@ export function PaperTradingPanel({
     }
   };
 
-  // 挂载时立即拉取，并以 3 秒高频间隔后台轮询模拟实盘最新状态
+  // 挂载时立即拉取，并以 3 秒高频间隔后台轮询模拟交易最新状态
   useEffect(() => {
     let active = true;
     fetchLive();
@@ -390,11 +390,14 @@ export function PaperTradingPanel({
   const isLimitEntry = (config?.limitDivisor ?? 0) > 0;
 
   return (
-    <section className="paper-trading-section">
+    <section id="paper-trading-panel" className="paper-trading-section">
       <div className="paper-header">
         <div className="paper-title-wrap">
           <h2 style={{ margin: 0 }}>
-            <span>⚡ 模拟实盘交易</span>
+            <span>⚡ 模拟交易</span>
+            <span className="badge-paper-desc" title="模拟交易基于本地引擎实时撮合，使用虚拟 100 USDT 资金，不消耗任何真实资产">
+              纯策略模拟 · 虚拟盘
+            </span>
             <span className="badge-leverage" title={config?.strategies?.map(s => `${s.label} ${s.exit.leverage ?? 3}x`).join(" · ")}>
               策略独立杠杆 · 仓位 {marginPercent}% (约 {marginUsdt}U) · 限仓 {maxPositions}
             </span>
@@ -1055,7 +1058,7 @@ export function PaperTradingPanel({
                   className="btn-config-save"
                   disabled={isSavingConfig}
                 >
-                  {isSavingConfig ? "保存中…" : "保存并应用到模拟实盘"}
+                  {isSavingConfig ? "保存中…" : "保存并应用到模拟交易"}
                 </button>
               </div>
             </form>
