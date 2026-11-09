@@ -1024,6 +1024,76 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (u.pathname === "/api/paper-trading/mining" || u.pathname === "/api/factor-mining") {
+    const state = paperTrading.getFactorMiningState();
+    const config = paperTrading.getConfig().factorMining;
+    const now = Date.now();
+
+    const history = state.history ?? [];
+    const successfulRuns = history.filter(h => h.status === "success");
+    const durations = successfulRuns.map(h => h.durationMs);
+
+    const avgDurationMs = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : null;
+    const maxDurationMs = durations.length > 0 ? Math.max(...durations) : null;
+    const minDurationMs = durations.length > 0 ? Math.min(...durations) : null;
+
+    const currentElapsedMs = state.running && state.lastStartedAt ? Math.max(0, now - state.lastStartedAt) : null;
+
+    const payload = {
+      ok: true,
+      now,
+      timestamp: new Date(now).toISOString(),
+      benchmark: {
+        timeoutLimitSec: 600,
+        timeoutLimitMs: 600_000,
+        timeoutLimitNote: "10分钟硬超时看门狗保护机制",
+        typicalDurationSec: "5~30s",
+        assessment: maxDurationMs !== null
+          ? `历史最大耗时 ${(maxDurationMs / 1000).toFixed(2)}s，仅占 10 分钟看门狗上限的 ${((maxDurationMs / 600_000) * 100).toFixed(1)}%，10分钟绰绰有余`
+          : "等待首次训练完成以评估耗时与10分钟上限的占比",
+      },
+      service: {
+        enabled: config?.enabled ?? true,
+        running: state.running,
+        currentElapsedMs,
+        currentElapsedSec: currentElapsedMs !== null ? `${(currentElapsedMs / 1000).toFixed(2)}s` : null,
+        refreshMinutes: config?.refreshMinutes ?? 60,
+        validForMinutes: config?.validForMinutes ?? 120,
+        lastStartedAt: state.lastStartedAt ?? null,
+        lastStartedTime: state.lastStartedAt ? new Date(state.lastStartedAt).toISOString() : null,
+        lastCompletedAt: state.lastCompletedAt ?? null,
+        lastCompletedTime: state.lastCompletedAt ? new Date(state.lastCompletedAt).toISOString() : null,
+        lastDurationMs: state.lastDurationMs ?? null,
+        lastDurationSec: state.lastDurationSec ?? null,
+        lastTimeoutUsagePercent: state.lastDurationMs ? `${((state.lastDurationMs / 600_000) * 100).toFixed(1)}%` : null,
+        nextRunAt: state.nextRunAt ?? null,
+        nextRunTime: state.nextRunAt ? new Date(state.nextRunAt).toISOString() : null,
+        nextRunCountdownSec: state.nextRunAt ? Math.max(0, Math.round((state.nextRunAt - now) / 1000)) : null,
+        lastError: state.lastError ?? null,
+      },
+      performanceStats: {
+        totalRecordedRuns: history.length,
+        successfulRuns: successfulRuns.length,
+        failedRuns: history.filter(h => h.status === "failed").length,
+        avgDurationMs,
+        avgDurationSec: avgDurationMs !== null ? `${(avgDurationMs / 1000).toFixed(2)}s` : null,
+        maxDurationMs,
+        maxDurationSec: maxDurationMs !== null ? `${(maxDurationMs / 1000).toFixed(2)}s` : null,
+        minDurationMs,
+        minDurationSec: minDurationMs !== null ? `${(minDurationMs / 1000).toFixed(2)}s` : null,
+      },
+      sides: state.sides,
+      history: [...history].reverse(),
+    };
+
+    res.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify(payload, null, 2));
+    return;
+  }
+
   if (u.pathname === "/api/paper-trading") {
     if (req.method === "POST") {
       paperTrading.reset();

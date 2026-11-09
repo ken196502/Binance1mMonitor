@@ -25,6 +25,21 @@ test("real server exposes safe live status and locks every paper mutation while 
     }
   }
   assert.equal((await fetch(`${url}/api/paper-trading/config`)).status, 200);
+  const factorMiningRes = await fetch(`${url}/api/factor-mining`);
+  assert.equal(factorMiningRes.status, 200);
+  const factorMiningJson = await factorMiningRes.json();
+  assert.equal(factorMiningJson.ok, true);
+  assert.equal(factorMiningJson.benchmark.timeoutLimitSec, 600);
+  assert.match(factorMiningJson.benchmark.timeoutLimitNote, /10分钟/);
+  assert.ok(Array.isArray(factorMiningJson.history));
+  assert.equal(factorMiningJson.service.running, false);
+
+  const paperMiningRes = await fetch(`${url}/api/paper-trading/mining`);
+  assert.equal(paperMiningRes.status, 200);
+  const paperMiningJson = await paperMiningRes.json();
+  assert.equal(paperMiningJson.ok, true);
+  assert.equal(paperMiningJson.benchmark.timeoutLimitSec, 600);
+
   assert.equal((await fetch(`${url}/api/live-trading/close`, { method: "POST" })).status, 401);
   assert.equal((await fetch(`${url}/api/live-trading/close`)).status, 405);
   assert.equal(fs.existsSync(path.join(dir, "live-trading.json")), false);

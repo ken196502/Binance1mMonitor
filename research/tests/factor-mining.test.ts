@@ -432,3 +432,42 @@ test("expired pending orders are canceled while established positions retain the
   assert.equal(e.factorEntryAllowed("SHORT", expiry), false);
   assert.deepEqual({ tp1: p.tp1Price, tp2: p.tp2Price, timeout: p.timeoutAt }, frozen);
 });
+
+test("FactorMiningService records duration metrics and history for success and failure", async () => {
+  const e = engine();
+  let clock = now;
+  const service = new FactorMiningService(e, async () => {
+    clock += 12_340; // 12.34s compute time
+    const res = result(clock);
+    res.trials = 450;
+    res.timings = { loadDatasetMs: 1200, mineFactorsMs: 11140, totalWorkerMs: 12340 };
+    return res;
+  }, () => clock);
+
+  await service.tick();
+  const state1 = e.getFactorMiningState();
+  assert.equal(state1.lastDurationMs, 12_340);
+  assert.equal(state1.lastDurationSec, "12.34s");
+  assert.equal(state1.history?.length, 1);
+  assert.equal(state1.history[0].status, "success");
+  assert.equal(state1.history[0].durationMs, 12_340);
+  assert.equal(state1.history[0].trials, 450);
+  assert.equal(state1.history[0].timeoutUsagePercent, "2.1%");
+  assert.deepEqual(state1.history[0].appliedSides, ["SHORT"]);
+
+  // Test failure recording
+  clock += DEFAULTS.refreshMinutes * M;
+  const failService = new FactorMiningService(e, async () => {
+    clock += 5_000;
+    throw new Error("worker crashed test error");
+  }, () => clock);
+
+  await failService.tick();
+  const state2 = e.getFactorMiningState();
+  assert.equal(state2.lastDurationMs, 5_000);
+  assert.equal(state2.lastDurationSec, "5.00s");
+  assert.equal(state2.lastError, "worker crashed test error");
+  assert.equal(state2.history?.length, 2);
+  assert.equal(state2.history[1].status, "failed");
+  assert.equal(state2.history[1].error, "worker crashed test error");
+});

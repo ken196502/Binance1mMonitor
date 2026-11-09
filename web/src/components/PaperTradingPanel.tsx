@@ -1023,6 +1023,7 @@ export function PaperTradingPanel({
                         <b style={{ color: summary.factorMining.running ? "#3498db" : (factorUsable("SHORT") || factorUsable("LONG") ? "#2ecc71" : "#f39c12") }}>
                           {summary.factorMining.running ? "后台计算中" : (factorUsable("SHORT") || factorUsable("LONG") ? "因子短期生效中" : "等待近期验证，暂停量化新仓")}
                         </b>
+                        {summary.factorMining.lastDurationSec && <span> · 上次耗时: {summary.factorMining.lastDurationSec}</span>}
                         {summary.factorMining.lastError && <span> · {summary.factorMining.lastError}</span>}
                         {!!summary.factorMining.nextRunAt && <span> · 下轮调度：{new Date(summary.factorMining.nextRunAt).toLocaleTimeString("zh-CN")}</span>}
                       </>

@@ -2,7 +2,7 @@ import { normalizeFactorMiningConfig, type FactorMiningConfig } from "./factor-s
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { PaperTradingEngine } from "./paper-trading.ts";
-import { MINUTE_MS, factorConfigKey, type FactorMiningResult } from "./factor-policy.ts";
+import { MINUTE_MS, factorConfigKey, type FactorMiningResult, type FactorMiningRunRecord } from "./factor-policy.ts";
 
 export interface FactorJob { now: number; costs: FactorMiningResult["costs"]; config?: FactorMiningConfig; root?: string }
 export function runFactorWorker(job: FactorJob, signal?: AbortSignal): Promise<FactorMiningResult> {
@@ -66,6 +66,7 @@ export class FactorMiningService {
     const controller = this.controller = new AbortController();
     const signature = factorConfigKey(config);
     this.engine.setFactorMiningState({ ...state, running: true, lastStartedAt: now, lastError: undefined });
+    console.log(`[factor-mining] ⏳ [${new Date(now).toISOString()}] 开始新一轮因子模型训练与参数挖掘 (调度周期: 每 ${config.factorMining.refreshMinutes} 分钟, 10分钟超时看门狗监控中)...`);
     const notification = this.engine.notifyFactorMiningStarted?.(config.factorMining)?.catch(e =>
       console.error(`[factor-mining] TG 播报 [训练开始] 失败:`, e)
     );
@@ -77,13 +78,78 @@ export class FactorMiningService {
       if (signature !== factorConfigKey(this.engine.getConfig())) throw new Error("挖掘期间参数已被修改，等待下轮重新验证");
       this.engine.applyMinedFactors(result, this.clock());
       const completed = this.clock();
-      this.engine.setFactorMiningState({ ...this.engine.getFactorMiningState(), running: false,
-        lastCompletedAt: completed, nextRunAt: completed + config.factorMining.refreshMinutes * MINUTE_MS });
+      const durationMs = Math.max(0, completed - now);
+      const durationSec = (durationMs / 1000).toFixed(2) + "s";
+      const timeoutUsagePercent = ((durationMs / (10 * MINUTE_MS)) * 100).toFixed(1) + "%";
+      const appliedSides = (["LONG", "SHORT"] as const).filter(s => !!result.sides[s]?.candidate);
+      const appliedStrategies = result.strategies
+        ? Object.entries(result.strategies).filter(([_, info]) => !!info.candidate).map(([id]) => id)
+        : [];
+      const record: FactorMiningRunRecord = {
+        id: String(now),
+        startedAt: now,
+        completedAt: completed,
+        durationMs,
+        durationSec,
+        timeoutUsagePercent,
+        trials: result.trials,
+        status: "success",
+        appliedSides,
+        appliedStrategies,
+        timings: result.timings,
+      };
+      const currentState = this.engine.getFactorMiningState();
+      const history = [...(currentState.history ?? []), record].slice(-20);
+      this.engine.setFactorMiningState({
+        ...currentState,
+        running: false,
+        lastCompletedAt: completed,
+        lastDurationMs: durationMs,
+        lastDurationSec: durationSec,
+        nextRunAt: completed + config.factorMining.refreshMinutes * MINUTE_MS,
+        history,
+      });
+
+      const sidesSummary = `做多: ${result.sides.LONG.candidate ? "达标" : "未达标(" + result.sides.LONG.reason + ")"}, 做空: ${result.sides.SHORT.candidate ? "达标" : "未达标(" + result.sides.SHORT.reason + ")"}`;
+      const strategySummary = result.strategies
+        ? ` | 预设策略达标: ${appliedStrategies.length > 0 ? appliedStrategies.join(", ") : "无"}`
+        : "";
+      const timingsSummary = result.timings
+        ? ` [数据加载: ${result.timings.loadDatasetMs ?? 0}ms, 挖掘计算: ${result.timings.mineFactorsMs ?? 0}ms]`
+        : "";
+      console.log(`[factor-mining] ✅ [${new Date(completed).toISOString()}] 训练挖掘完成！总耗时: ${durationSec} (${durationMs}ms, 仅占10m看门狗 ${timeoutUsagePercent}) | 候选集: ${result.trials} 组${timingsSummary} | ${sidesSummary}${strategySummary}`);
     } catch (error) {
+      const completed = this.clock();
+      const durationMs = Math.max(0, completed - now);
+      const durationSec = (durationMs / 1000).toFixed(2) + "s";
+      const timeoutUsagePercent = ((durationMs / (10 * MINUTE_MS)) * 100).toFixed(1) + "%";
       const message = error instanceof Error ? error.message : String(error);
-      this.engine.setFactorMiningState({ ...this.engine.getFactorMiningState(), running: false, lastError: message,
-        nextRunAt: this.clock() + 15 * MINUTE_MS });
-      console.warn(`[factor-mining] ${message}`);
+      const record: FactorMiningRunRecord = {
+        id: String(now),
+        startedAt: now,
+        completedAt: completed,
+        durationMs,
+        durationSec,
+        timeoutUsagePercent,
+        trials: 0,
+        status: controller.signal.aborted ? "aborted" : "failed",
+        error: message,
+        appliedSides: [],
+        appliedStrategies: [],
+      };
+      const currentState = this.engine.getFactorMiningState();
+      const history = [...(currentState.history ?? []), record].slice(-20);
+      this.engine.setFactorMiningState({
+        ...currentState,
+        running: false,
+        lastCompletedAt: completed,
+        lastDurationMs: durationMs,
+        lastDurationSec: durationSec,
+        lastError: message,
+        nextRunAt: this.clock() + 15 * MINUTE_MS,
+        history,
+      });
+      console.warn(`[factor-mining] ❌ [${new Date(completed).toISOString()}] 训练挖掘异常 (已耗时: ${durationSec}, 看门狗占用: ${timeoutUsagePercent}): ${message}`);
     } finally {
       this.running = false;
       this.controller = undefined;

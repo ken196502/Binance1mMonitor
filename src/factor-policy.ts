@@ -44,6 +44,11 @@ export interface FactorMiningResult {
   costs: { takerFeeBps: number; slippageBps: number };
   sides: Record<FactorSide, { candidate?: FactorCandidate; reason: string }>;
   strategies?: Record<string, { candidate?: StrategyMiningCandidate; reason: string }>;
+  timings?: {
+    loadDatasetMs?: number;
+    mineFactorsMs?: number;
+    totalWorkerMs?: number;
+  };
 }
 export interface ActiveFactor extends FactorCandidate {
   windows?: FactorWindows;
@@ -54,14 +59,35 @@ export interface ActiveFactor extends FactorCandidate {
   policyVersion: number;
   costs: { takerFeeBps: number; slippageBps: number };
 }
+export interface FactorMiningRunRecord {
+  id: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  durationSec: string;
+  timeoutUsagePercent: string;
+  trials: number;
+  status: "success" | "failed" | "aborted";
+  error?: string;
+  appliedSides: string[];
+  appliedStrategies: string[];
+  timings?: {
+    loadDatasetMs?: number;
+    mineFactorsMs?: number;
+    totalWorkerMs?: number;
+  };
+}
 export interface FactorMiningState {
   running: boolean;
   lastStartedAt?: number;
   lastCompletedAt?: number;
+  lastDurationMs?: number;
+  lastDurationSec?: string;
   nextRunAt?: number;
   lastError?: string;
   datasetHash?: string;
   sides: Record<FactorSide, { active?: ActiveFactor; reason: string }>;
+  history?: FactorMiningRunRecord[];
 }
 export const BASELINE_SHORT_CONFIG: KlineStatsStrategyLiveConfig = {
   topN: 10,
@@ -102,6 +128,7 @@ export const initialFactorMiningState = (): FactorMiningState => ({
     SHORT: { reason: "等待近期行情挖掘与验证" },
     LONG: { reason: "等待近期行情挖掘与验证" },
   },
+  history: [],
 });
 export const emptyFactorState = initialFactorMiningState;
 
