@@ -50,6 +50,7 @@ import type {
   PaperSignalLabel,
   PaperExitParams,
   KlineStatsStrategyLiveConfig,
+  StrategyFault,
 } from "./types.ts";
 import type { Ticker24h } from "./binance.ts";
 import type { TradeTick } from "./ws.ts";
@@ -351,6 +352,7 @@ export class PaperTradingEngine {
   private strategyEngine: StrategyEngine;
   private strategyMonitor: StrategyMonitorResult[] = [];
   private factorMiningState: FactorMiningState = emptyFactorState();
+  private strategyFaults = new Map<string, StrategyFault>();
   private entryListeners = new Set<(position: PaperPosition) => void>();
 
   /** New entries only: loading/resetting paper state must never replay live orders. */
@@ -472,6 +474,45 @@ export class PaperTradingEngine {
       const candidate = s.id === "kline_stats_long" ? result.sides.LONG.candidate : s.id === "kline_stats_short" ? result.sides.SHORT.candidate : undefined;
       return candidate ? { ...quantPreset(s.side, candidate.config), enabled: s.enabled } : s;
     });
+
+    if (result.sides.LONG.candidate) this.strategyFaults.delete("kline_stats_long");
+    if (result.sides.SHORT.candidate) this.strategyFaults.delete("kline_stats_short");
+
+    if (result.strategies) {
+      for (const [strategyId, info] of Object.entries(result.strategies)) {
+        if (info.candidate) {
+          const config = structuredClone(info.candidate.config);
+          if (strategyId === "streak") this.config.streakConfig = { ...this.config.streakConfig, ...config };
+          else if (strategyId === "hourly_suppression") this.config.hourlySuppressionConfig = { ...this.config.hourlySuppressionConfig, ...config };
+          else if (strategyId === "deep_rebound") this.config.deepReboundConfig = { ...this.config.deepReboundConfig, ...config };
+          else if (strategyId === "rebound") this.config.reboundConfig = { ...this.config.reboundConfig, ...config };
+          else if (strategyId === "w_bottom_divergence") this.config.wBottomDivergenceConfig = { ...this.config.wBottomDivergenceConfig, ...config };
+
+          const presets = buildStrategyPresets(this.config);
+          const updatedDef = presets.find(p => p.id === strategyId);
+          if (updatedDef) {
+            this.config.strategies = (this.config.strategies ?? []).map(s => s.id === strategyId ? { ...updatedDef, enabled: s.enabled } : s);
+          }
+
+          const wasFaulted = this.strategyFaults.has(strategyId);
+          if (wasFaulted) {
+            this.strategyFaults.delete(strategyId);
+            const label = formatSignalLabel(strategyId as PaperSignalType);
+            console.log(`[paper-trading] 🎉 策略 [${label}] 重新挖掘出达标参数并恢复交易 (留出胜率 ${info.candidate.holdout?.winRate.toFixed(1) ?? "100"}%)`);
+            if (telegramConfigured()) {
+              const text = `🎉 <b>策略挖掘达标并恢复交易</b>: [${escapeHtml(label)}]\n` +
+                `• <b>状态</b>: 已通过近期行情回测验证并更新参数\n` +
+                `• <b>留出集战绩</b>: ${info.candidate.holdout.trades}笔 | 胜率 ${info.candidate.holdout.winRate.toFixed(1)}% | 净利 +${info.candidate.holdout.netPercent.toFixed(2)}%\n` +
+                `• <b>权限</b>: 停用状态已解除，恢复正常开仓`;
+              sendTelegramMessage(text).catch(e => console.warn("[paper-trading] 发送恢复通知异常:", (e as any)?.message ?? e));
+            }
+          }
+        } else if (this.strategyFaults.has(strategyId)) {
+          const label = formatSignalLabel(strategyId as PaperSignalType);
+          console.log(`[paper-trading] ⏸️ 策略 [${label}] 处于停用中，本轮未挖掘出达标参数 (${info.reason})，继续保持停用`);
+        }
+      }
+    }
     this.strategyEngine.setStrategies(this.config.strategies);
     this.factorMiningState.datasetHash = result.datasetHash;
     // A limit order belongs to its original factor; never fill it after that factor is retired.
@@ -538,7 +579,112 @@ export class PaperTradingEngine {
     return orderMargin(this.account.equityUsdt, rate);
   }
 
+  public isStrategyFaulted(strategyId?: string): boolean {
+    if (!strategyId) return false;
+    return this.strategyFaults.has(strategyId);
+  }
+
+  public getStrategyFaults(): StrategyFault[] {
+    return Array.from(this.strategyFaults.values());
+  }
+
+  public clearStrategyFault(strategyId: string): void {
+    if (this.strategyFaults.delete(strategyId)) {
+      this.scheduleSave();
+    }
+  }
+
+  public stopStrategy(
+    strategyId: string,
+    reason: string,
+    recentTradesCount: number,
+    consecutiveLosses: number,
+    winRate: number,
+    netPnlUsdt: number,
+  ): void {
+    const fault: StrategyFault = {
+      strategyId,
+      stoppedAt: Date.now(),
+      reason,
+      recentTradesCount,
+      consecutiveLosses,
+      winRate,
+      netPnlUsdt,
+    };
+    this.strategyFaults.set(strategyId, fault);
+    this.scheduleSave();
+
+    for (const order of this.pendingOrders.values()) {
+      if (order.signalType === strategyId) {
+        this.cancelPendingOrder(order.symbol, "策略表现不佳已停用，等待挖掘新参数");
+      }
+    }
+
+    const label = formatSignalLabel(strategyId as PaperSignalType);
+    console.warn(
+      `[paper-trading] 🛑 策略 [${label}] 表现不佳已停用: ${reason}。不设时间冷静期，等待后台挖掘系统重新验证并更新参数`,
+    );
+
+    if (telegramConfigured()) {
+      const text =
+        `🛑 <b>策略表现不佳已停用</b>: [${escapeHtml(label)}]\n` +
+        `• <b>停用原因</b>: ${escapeHtml(reason)}\n` +
+        `• <b>风控规则</b>: 有问题即停，<b>不设时间冷静期</b>\n` +
+        `• <b>恢复条件</b>: 须等待后台挖掘系统在近 48h 行情中回测验证出新达标参数，方可自动更新并解除停用`;
+      sendTelegramMessage(text).catch((e) =>
+        console.warn("[paper-trading] 发送停用通知异常:", (e as any)?.message ?? e),
+      );
+    }
+  }
+
+  private checkStrategyHealth(pos: PaperPosition): void {
+    const strategyId = pos.signalType ?? "streak";
+    if (this.strategyFaults.has(strategyId)) return;
+
+    const stratPositions = this.closedPositions.filter(
+      (p) => (p.signalType ?? "streak") === strategyId,
+    );
+    if (!stratPositions.length) return;
+
+    let consecutiveLosses = 0;
+    for (const p of stratPositions) {
+      if (p.totalNetPnlUsdt < -0.001) {
+        consecutiveLosses++;
+      } else {
+        break;
+      }
+    }
+
+    const windowTrades = stratPositions.slice(0, 5);
+    const windowCount = windowTrades.length;
+    const windowWins = windowTrades.filter((p) => p.totalNetPnlUsdt > 0.001).length;
+    const windowWinRate = windowCount > 0 ? (windowWins / windowCount) * 100 : 0;
+    const windowNetPnl = windowTrades.reduce((sum, p) => sum + p.totalNetPnlUsdt, 0);
+
+    let faultReason: string | null = null;
+    if (consecutiveLosses >= 2) {
+      faultReason = `连续亏损 ${consecutiveLosses} 笔 (近 ${windowCount} 笔累计亏损 ${windowNetPnl.toFixed(2)} USDT)`;
+    } else if (windowCount >= 3 && windowWinRate < 50 && windowNetPnl < 0) {
+      faultReason = `近 ${windowCount} 笔胜率仅 ${windowWinRate.toFixed(1)}% 且净亏损 (${windowNetPnl.toFixed(2)} USDT)`;
+    }
+
+    if (faultReason) {
+      this.stopStrategy(
+        strategyId,
+        faultReason,
+        windowCount,
+        consecutiveLosses,
+        windowWinRate,
+        windowNetPnl,
+      );
+    }
+  }
+
   private assertCapacity(symbol: string, signalType: PaperSignalType, now = Date.now()): void {
+    if (this.isStrategyFaulted(signalType)) {
+      const fault = this.strategyFaults.get(signalType)!;
+      throw new Error(`策略 ${signalType} 因表现不佳已停用 (${fault.reason})，等待挖掘新参数`);
+    }
     if (["kline_stats_long", "kline_stats_short"].includes(signalType) && !this.factorEntryAllowed(signalType === "kline_stats_long" ? "LONG" : "SHORT", now)) {
       throw new Error("量化因子尚未通过近期验证或已过期，暂停新开仓");
     }
@@ -568,6 +714,7 @@ export class PaperTradingEngine {
 
   /** Compatibility entry point; uses the same definition and evaluator as onScan/replay. */
   public checkKlineStatsSignal(side: "SHORT" | "LONG", symbol: string, dayChangePercent: number, rank: number, candles: Candle[], now = Date.now(), ticker?: Ticker24h) {
+    if (this.isStrategyFaulted(`kline_stats_${side.toLowerCase()}`)) return null;
     if (!this.factorEntryAllowed(side, now)) return null;
     const monitor = new StrategyFeatureMonitor(candles, { ...ticker, symbol, priceChangePercent: dayChangePercent, lastPrice: candles.at(-2)?.close ?? 0, quoteVolume: ticker?.quoteVolume ?? 0 }, rank);
     const match = this.strategyEngine.evaluate(monitor, now, s => s.id === `kline_stats_${side.toLowerCase()}`)[0];
@@ -983,6 +1130,7 @@ export class PaperTradingEngine {
         this.activePositions.size + this.pendingOrders.size < (this.config.maxPositions ?? 5) && margin > 0 && available >= margin;
       const match = this.strategyEngine.evaluate(monitor, now, s => capacity &&
         (s.side !== "LONG" || this.config.enableLongs !== false) &&
+        !this.isStrategyFaulted(s.id) &&
         this.countPositionsByStrategy(s.id) < (this.config.maxPositionsPerStrategy ?? 1) &&
         (!s.factorManaged || this.factorEntryAllowed(s.side, now)))[0];
       this.strategyMonitor.push(...this.strategyEngine.getResults());
@@ -1476,6 +1624,7 @@ export class PaperTradingEngine {
     // Add realized profit to cash balance
     this.account.balanceUsdt += pos.totalNetPnlUsdt;
     this.recalculateStats();
+    this.checkStrategyHealth(pos);
 
     this.notifyFinal(pos).catch((e) =>
       console.warn(`[paper-trading] 发送结清通知异常:`, (e as any)?.message ?? e),
@@ -1952,6 +2101,7 @@ export class PaperTradingEngine {
       const data: PaperTradingState & { configOverrides?: Partial<PaperStrategyConfig>; leverageDefaultsVersion: number } = {
         leverageDefaultsVersion: 1,
         factorMining: this.getFactorMiningState(),
+        strategyFaults: this.getStrategyFaults(),
         account: this.account,
         pendingOrders: Array.from(this.pendingOrders.values()),
         activePositions: Array.from(this.activePositions.values()),
@@ -2041,6 +2191,12 @@ export class PaperTradingEngine {
           this.factorMiningState = { ...data.factorMining, running: false,
             nextRunAt: data.factorMining.running ? 0 : data.factorMining.nextRunAt };
         }
+        if (Array.isArray((data as any).strategyFaults)) {
+          this.strategyFaults.clear();
+          for (const f of (data as any).strategyFaults) {
+            this.strategyFaults.set(f.strategyId, f);
+          }
+        }
         console.log(
           `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
         );
@@ -2069,6 +2225,7 @@ export class PaperTradingEngine {
     };
     this.stats = this.computeStatsForPositions([]);
     this.stats24h = this.computeStatsForPositions([]);
+    this.strategyFaults.clear();
     this.factorMiningState = initialFactorMiningState();
     this.saveState();
     console.log(`[paper-trading] 🔄 模拟交易账户、活跃持仓、挂单与历史明细已全部重置为初始状态 (100 USDT)`);
@@ -2077,6 +2234,7 @@ export class PaperTradingEngine {
   public getSummary(): PaperTradingSummary {
     this.getStats24h();
     return {
+      strategyFaults: this.getStrategyFaults(),
       factorMining: { ...this.getFactorMiningState(), entryAllowed: {
         LONG: !!this.config.enableLongs && !!this.config.enableKlineStatsLong && this.factorEntryAllowed("LONG"),
         SHORT: !!this.config.enableKlineStatsShort && this.factorEntryAllowed("SHORT"),
@@ -2136,6 +2294,7 @@ export class PaperTradingEngine {
     this.getStats24h();
     return {
       strategyMonitor: this.strategyMonitor,
+      strategyFaults: this.getStrategyFaults(),
       factorMining: this.getFactorMiningState(),
       account: this.account,
       pendingOrders: Array.from(this.pendingOrders.values()),

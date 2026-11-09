@@ -1,6 +1,7 @@
 import { DEFAULT_FACTOR_MINING, type FactorWindows } from "./factor-settings.ts";
 export { DEFAULT_FACTOR_MINING, validateFactorMiningConfig, type FactorMiningConfig } from "./factor-settings.ts";
-import type { KlineStatsStrategyLiveConfig } from "./types.ts";
+import type { KlineStatsStrategyLiveConfig, StrategyFault } from "./types.ts";
+export type { StrategyFault };
 
 export const MINUTE_MS = 60_000;
 export const FACTOR_POLICY_VERSION = 2;
@@ -26,6 +27,13 @@ export interface FactorCandidate {
   validation?: FactorMetrics;
   holdout: FactorMetrics;
 }
+export interface StrategyMiningCandidate {
+  strategyId: string;
+  config: Record<string, any>;
+  train: FactorMetrics;
+  validation?: FactorMetrics;
+  holdout: FactorMetrics;
+}
 export interface FactorMiningResult {
   windows?: FactorWindows;
   policyVersion: number;
@@ -35,6 +43,7 @@ export interface FactorMiningResult {
   trials: number;
   costs: { takerFeeBps: number; slippageBps: number };
   sides: Record<FactorSide, { candidate?: FactorCandidate; reason: string }>;
+  strategies?: Record<string, { candidate?: StrategyMiningCandidate; reason: string }>;
 }
 export interface ActiveFactor extends FactorCandidate {
   windows?: FactorWindows;

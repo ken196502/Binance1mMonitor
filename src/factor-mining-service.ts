@@ -66,11 +66,13 @@ export class FactorMiningService {
     const controller = this.controller = new AbortController();
     const signature = factorConfigKey(config);
     this.engine.setFactorMiningState({ ...state, running: true, lastStartedAt: now, lastError: undefined });
-    this.engine.notifyFactorMiningStarted?.(config.factorMining)?.catch(e =>
+    const notification = this.engine.notifyFactorMiningStarted?.(config.factorMining)?.catch(e =>
       console.error(`[factor-mining] TG 播报 [训练开始] 失败:`, e)
     );
     try {
-      const result = await this.run({ now, config: normalizeFactorMiningConfig(config.factorMining), costs: { takerFeeBps: config.takerFeeBps, slippageBps: config.slippageBps } }, controller.signal);
+      const runPromise = this.run({ now, config: normalizeFactorMiningConfig(config.factorMining), costs: { takerFeeBps: config.takerFeeBps, slippageBps: config.slippageBps } }, controller.signal);
+      await notification;
+      const result = await runPromise;
       if (controller.signal.aborted) throw new Error("因子挖掘已停止");
       if (signature !== factorConfigKey(this.engine.getConfig())) throw new Error("挖掘期间参数已被修改，等待下轮重新验证");
       this.engine.applyMinedFactors(result, this.clock());

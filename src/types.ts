@@ -267,9 +267,20 @@ export interface PaperTradingStats {
   realizedRewardRisk: number | null;
 }
 
+export interface StrategyFault {
+  strategyId: string;
+  stoppedAt: number;
+  reason: string;
+  recentTradesCount: number;
+  consecutiveLosses: number;
+  winRate: number;
+  netPnlUsdt: number;
+}
+
 export interface PaperTradingState {
   strategyRuntime?: import("./strategy-engine.ts").StrategyRuntimeState;
   strategyMonitor?: import("./strategy-engine.ts").StrategyMonitorResult[];
+  strategyFaults?: StrategyFault[];
   factorMining?: import("./factor-policy.ts").FactorMiningState;
   account: PaperAccount;
   pendingOrders: PaperPendingOrder[];
@@ -320,6 +331,7 @@ export interface PaperTradingSummaryConfig {
 
 export interface PaperTradingSummary {
   factorMining?: import("./factor-policy.ts").FactorMiningState & { entryAllowed: Record<"LONG" | "SHORT", boolean> };
+  strategyFaults?: StrategyFault[];
   bySide?: Record<"LONG" | "SHORT", PaperDirectionStats>;
   account: PaperAccount;
   pendingOrders: PaperPendingOrder[];

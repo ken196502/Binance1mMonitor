@@ -2,10 +2,61 @@ import { factorRanges, factorWindows, type FactorWindows } from "./factor-settin
 import { FEATURE_VERSION, type FeatureVector } from "./features.ts";
 import { replayStrategies, type ReplayStrategy, type ReplayTrade } from "./strategy-replay.ts";
 import type { FactorDataset } from "./factor-data.ts";
+import type { StrategyDefinition } from "./strategy-definition.ts";
+import {
+  streakPreset, hourlyPreset, deepReboundPreset, reboundPreset, wBottomPreset,
+} from "./strategy-presets.ts";
 import {
   FACTOR_POLICY_VERSION,
   passesFactorMetrics, type FactorCandidate, type FactorMetrics, type FactorMiningResult, type FactorSide,
 } from "./factor-policy.ts";
+
+export interface PresetCandidateItem {
+  strategyId: string;
+  config: Record<string, any>;
+  definition: StrategyDefinition;
+}
+
+export function presetStrategyCandidates(): Record<string, PresetCandidateItem[]> {
+  return {
+    streak: [
+      { ampDivisor: 8, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { ampDivisor: 10, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { ampDivisor: 12, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { ampDivisor: 10, minStreakCount: 1, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { ampDivisor: 10, minStreakCount: 3, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { ampDivisor: 10, minStreakCount: 2, holdMinutes: 10, exitX: 40, exitN: 1.2, exitM: 2.5 },
+      { ampDivisor: 10, minStreakCount: 2, holdMinutes: 20, exitX: 60, exitN: 1.8, exitM: 3.5 },
+    ].map(c => ({ strategyId: "streak", config: c, definition: streakPreset(c) })),
+
+    hourly_suppression: [
+      { ampDivisor: 10, nGreenBars: 4, holdMinutes: 30, exitX: 50 },
+      { ampDivisor: 8, nGreenBars: 3, holdMinutes: 20, exitX: 40 },
+      { ampDivisor: 12, nGreenBars: 5, holdMinutes: 45, exitX: 60 },
+      { ampDivisor: 10, nGreenBars: 3, holdMinutes: 30, exitX: 50 },
+      { ampDivisor: 8, nGreenBars: 4, holdMinutes: 15, exitX: 40 },
+    ].map(c => ({ strategyId: "hourly_suppression", config: c, definition: hourlyPreset(c) })),
+
+    deep_rebound: [
+      { pullbackX: 20, reboundY: 5, holdMinutes: 30 },
+      { pullbackX: 15, reboundY: 3, holdMinutes: 20 },
+      { pullbackX: 25, reboundY: 7, holdMinutes: 30 },
+      { pullbackX: 20, reboundY: 3, holdMinutes: 20 },
+    ].map(c => ({ strategyId: "deep_rebound", config: c, definition: deepReboundPreset(c) })),
+
+    rebound: [
+      { pullbackX: 10, reboundY: 3, holdMinutes: 30 },
+      { pullbackX: 8, reboundY: 2, holdMinutes: 20 },
+      { pullbackX: 12, reboundY: 4, holdMinutes: 30 },
+    ].map(c => ({ strategyId: "rebound", config: c, definition: reboundPreset(c) })),
+
+    w_bottom_divergence: [
+      { minDropPercent: 10, minNecklineBounce: 5, holdMinutes: 30 },
+      { minDropPercent: 8, minNecklineBounce: 3, holdMinutes: 20 },
+      { minDropPercent: 12, minNecklineBounce: 6, holdMinutes: 30 },
+    ].map(c => ({ strategyId: "w_bottom_divergence", config: c, definition: wBottomPreset(c) })),
+  };
+}
 
 export function factorMetrics(trades: ReplayTrade[]): FactorMetrics {
   const wins = trades.filter(t => t.isWin).length;
@@ -84,5 +135,51 @@ export function mineFactors(data: FactorDataset, costs: FactorMiningResult["cost
       train: best.train, validation: best.validation, holdout: holdoutMetrics };
     result.sides[side] = { candidate, reason: "近期训练和留出检验通过" };
   }
+
+  const presetCandidates = presetStrategyCandidates();
+  result.strategies = {};
+  for (const [strategyId, items] of Object.entries(presetCandidates)) {
+    let best: { config: Record<string, any>; train: FactorMetrics; validation?: FactorMetrics; holdout: FactorMetrics } | undefined;
+    for (const item of items) {
+      const trainTrades = replayStrategies(data.candles, data.indices, data.times, data.boards, [item.definition], train, { costs, fvCache, leverage: 3 }).trades;
+      const trainMetrics = factorMetrics(trainTrades);
+      if (trainMetrics.trades < 2 || trainMetrics.winRate < 60 || trainMetrics.netPercent <= 0) continue;
+
+      let valMetrics: FactorMetrics | undefined;
+      if (hasValidation) {
+        const valTrades = replayStrategies(data.candles, data.indices, data.times, data.boards, [item.definition], validation, { costs, fvCache, leverage: 3 }).trades;
+        valMetrics = factorMetrics(valTrades);
+        if (valMetrics.trades > 0 && (valMetrics.winRate < 50 || valMetrics.netPercent < 0)) continue;
+      }
+
+      const holdTrades = replayStrategies(data.candles, data.indices, data.times, data.boards, [item.definition], holdout, { costs, fvCache, leverage: 3 }).trades;
+      const holdMetrics = factorMetrics(holdTrades);
+      if (holdMetrics.trades > 0 && (holdMetrics.winRate < 50 || holdMetrics.netPercent < 0)) continue;
+
+      const score = (valMetrics ?? trainMetrics).avgNetPercent;
+      const bestScore = best ? (best.validation ?? best.train).avgNetPercent : -Infinity;
+      if (!best || score > bestScore) {
+        best = { config: item.config, train: trainMetrics, validation: valMetrics, holdout: holdMetrics };
+      }
+    }
+
+    if (best) {
+      result.strategies[strategyId] = {
+        candidate: {
+          strategyId,
+          config: best.config,
+          train: best.train,
+          validation: best.validation,
+          holdout: best.holdout,
+        },
+        reason: "近期行情回测验证通过",
+      };
+    } else {
+      result.strategies[strategyId] = {
+        reason: "近期样本不足或未达收益门槛",
+      };
+    }
+  }
+
   return result;
 }
