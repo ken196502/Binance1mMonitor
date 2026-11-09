@@ -13,7 +13,7 @@ services:
     environment:
       - PORT=4111
       - TZ=Asia/Shanghai
-      - DASHBOARD_URL=https://${DOMAIN}
+      - DASHBOARD_URL=https://${DOMAIN:-macd.subx.fun}
       # —— 容器内 mihomo 代理 ——
       # 镜像内置 mihomo，启动时 entrypoint 会在容器内拉起它（默认混合端口 7890），
       # 并把 PROXY/HTTPS_PROXY/HTTP_PROXY 自动指向 http://127.0.0.1:7890，
@@ -62,7 +62,7 @@ services:
       - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
 
       # HTTPS 路由器（使用 Let's Encrypt 证书解析器与 env.DOMAIN）
-      - "traefik.http.routers.binance-macd-monitor.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.binance-macd-monitor.rule=Host(`${DOMAIN:-macd.subx.fun}`)"
       - "traefik.http.routers.binance-macd-monitor.entrypoints=websecure"
       - "traefik.http.routers.binance-macd-monitor.tls=true"
       - "traefik.http.routers.binance-macd-monitor.tls.certresolver=letsencrypt"
@@ -71,7 +71,7 @@ services:
       - "traefik.http.services.binance-macd-monitor.loadbalancer.server.port=4111"
 
       # HTTP 自动强制重定向至 HTTPS
-      - "traefik.http.routers.binance-macd-monitor-http.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.binance-macd-monitor-http.rule=Host(`${DOMAIN:-macd.subx.fun}`)"
       - "traefik.http.routers.binance-macd-monitor-http.entrypoints=web"
       - "traefik.http.routers.binance-macd-monitor-http.middlewares=binance-macd-monitor-redirect"
       - "traefik.http.middlewares.binance-macd-monitor-redirect.redirectscheme.scheme=https"

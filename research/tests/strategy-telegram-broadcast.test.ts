@@ -169,6 +169,24 @@ test("Telegram broadcasts for factor training start and applying new strategy pa
 
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(received.length, countBeforeSkip, "skipNotify: true 时不得触发 TG 播报");
+
+    // 4. 验证当 TG 播报存在网络延迟且 worker 快速抛出异常（如近期数据不足）时，tick() 不会产生未捕获异常并正常捕获
+    const failingService = new FactorMiningService(
+      engine,
+      async () => {
+        // 模拟 worker 快速失败
+        throw new Error("近期行情或实际榜单不足/过期，等待归档积累");
+      },
+      () => now + 16 * 60_000,
+    );
+
+    await assert.doesNotReject(async () => {
+      await failingService.tick();
+    }, "tick() 必须平稳捕获 worker 异常，绝不能产生未处理的 Promise 拒绝导致进程崩溃");
+
+    const state = engine.getFactorMiningState();
+    assert.equal(state.running, false);
+    assert.match(state.lastError ?? "", /近期行情或实际榜单不足\/过期，等待归档积累/);
   } finally {
     fake.close();
     if (originalToken !== undefined) process.env.TELEGRAM_BOT_TOKEN = originalToken;

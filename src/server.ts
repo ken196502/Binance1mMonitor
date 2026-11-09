@@ -1152,6 +1152,9 @@ const isMainModule =
   !process.env.NODE_TEST_CONTEXT;
 
 if (isMainModule) {
+  process.on("unhandledRejection", (reason) => {
+    console.error("[unhandledRejection] 未捕获的异步 Promise 异常:", reason);
+  });
   server.once("close", () => { factorMiningService.stop(); void liveTrading?.stop(); });
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, async () => {
