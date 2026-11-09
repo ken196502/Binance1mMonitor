@@ -3,6 +3,7 @@ import { StrategySettings } from "./StrategySettings";
 import { validateStrategies, type StrategyDefinition } from "../../../src/strategy-definition.ts";
 import type { StrategyMonitorResult } from "../../../src/strategy-engine.ts";
 import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import type {
   PaperTradingSummary,
   PaperPosition,
@@ -10,10 +11,15 @@ import type {
   PaperExitReason,
 } from "../../../src/types.ts";
 
-interface PaperTradingPanelProps {
+export interface PaperTradingPanelProps {
   summary?: PaperTradingSummary;
   onSelectSymbol?: (symbol: string) => void;
   selectedSymbol?: string;
+  dockTab?: "positions" | "history" | "strategy" | "mining" | "all";
+  mode?: "standalone" | "dock";
+  showConfigModal?: boolean;
+  onCloseConfigModal?: () => void;
+  onOpenConfigModal?: () => void;
 }
 
 interface ClosedTradeItem extends PaperPosition {
@@ -21,7 +27,7 @@ interface ClosedTradeItem extends PaperPosition {
   finalReason?: PaperExitReason;
 }
 
-function formatCountdown(targetTime: number): string {
+export function formatCountdown(targetTime: number): string {
   const remainingMs = targetTime - Date.now();
   if (remainingMs <= 0) return "已到期/处理中";
   const totalSeconds = Math.floor(remainingMs / 1000);
@@ -30,7 +36,7 @@ function formatCountdown(targetTime: number): string {
   return `${minutes}分${seconds < 10 ? "0" : ""}${seconds}秒`;
 }
 
-function formatHoldDuration(closedAt?: number, entryTime?: number): string {
+export function formatHoldDuration(closedAt?: number, entryTime?: number): string {
   if (!closedAt || !entryTime) return "-";
   const durationMs = Math.max(0, closedAt - entryTime);
   if (durationMs < 1000) return "<1 秒";
@@ -38,7 +44,7 @@ function formatHoldDuration(closedAt?: number, entryTime?: number): string {
   return `${(durationMs / 60000).toFixed(1)} 分钟`;
 }
 
-function formatSignalLabel(type?: string, label?: string, side?: string): string {
+export function formatSignalLabel(type?: string, label?: string, side?: string): string {
   const isLong = side === "LONG" || side === "做多" || type === "kline_stats_long";
   const defaultKlineLabel = isLong ? "回踩支撑" : "冲高破位";
 
@@ -67,7 +73,7 @@ const KNOWN_SIGNAL_TYPES = new Set([
   "kline_stats_long",
 ]);
 
-function formatDirectionAndSignal(
+export function formatDirectionAndSignal(
   side?: "LONG" | "SHORT" | string,
   typeOrLabel?: string,
   maybeLabel?: string,
@@ -96,7 +102,7 @@ function formatDirectionAndSignal(
   return `${dir} · ${cleanLabel}`;
 }
 
-function formatHistoryTime(timeMs?: number): string {
+export function formatHistoryTime(timeMs?: number): string {
   if (!timeMs) return "-";
   const d = new Date(timeMs);
   const now = new Date();
@@ -110,7 +116,7 @@ function formatHistoryTime(timeMs?: number): string {
   return `${month}/${day} ${timeStr}`;
 }
 
-function formatPrice(price?: number): string {
+export function formatPrice(price?: number): string {
   if (price == null || !Number.isFinite(price) || price === 0) return "0";
   const abs = Math.abs(price);
   if (abs >= 100) return price.toFixed(2);
@@ -120,7 +126,7 @@ function formatPrice(price?: number): string {
   return price.toFixed(8);
 }
 
-function formatExitReason(item: ClosedTradeItem): string {
+export function formatExitReason(item: ClosedTradeItem): string {
   const exit1 = item.exits?.find((e) => e.stage === 1);
   const exit2 = item.exits?.find((e) => e.stage === 2);
 
@@ -159,6 +165,11 @@ export function PaperTradingPanel({
   summary: propSummary,
   onSelectSymbol,
   selectedSymbol,
+  dockTab = "positions",
+  mode = "standalone",
+  showConfigModal: propShowConfigModal,
+  onCloseConfigModal,
+  onOpenConfigModal,
 }: PaperTradingPanelProps) {
   const [liveSummary, setLiveSummary] = useState<PaperTradingSummary | undefined>(propSummary);
   const [showHistory, setShowHistory] = useState(false);
@@ -168,8 +179,11 @@ export function PaperTradingPanel({
   const [isResetting, setIsResetting] = useState(false);
   const [, setTick] = useState(0);
 
-  // 策略配置模态框状态 (API 设置)
-  const [showConfigModal, setShowConfigModal] = useState(false);
+  // 策略配置模态框状态 (API 设置，支持受控与本地状态)
+  const [localShowConfigModal, setLocalShowConfigModal] = useState(false);
+  const isConfigModalOpen = propShowConfigModal !== undefined ? propShowConfigModal : localShowConfigModal;
+  const openConfigModal = onOpenConfigModal ?? (() => setLocalShowConfigModal(true));
+  const closeConfigModal = onCloseConfigModal ?? (() => setLocalShowConfigModal(false));
   const [strategiesInput, setStrategiesInput] = useState<StrategyDefinition[]>([]);
   const [marginPercentInput, setMarginPercentInput] = useState<number>(20);
   const [maxPositionsInput, setMaxPositionsInput] = useState<number>(5);
@@ -264,7 +278,7 @@ export function PaperTradingPanel({
   };
 
   useEffect(() => {
-    if (summary?.config && !showConfigModal) {
+    if (summary?.config && !isConfigModalOpen) {
       setStrategiesInput(structuredClone(summary.config.strategies ?? []));
       setFactorMiningInput(normalizeFactorMiningConfig(summary.config.factorMining ?? DEFAULT_FACTOR_MINING));
       setMarginPercentInput(summary.config.marginPercent ?? 20);
@@ -273,7 +287,7 @@ export function PaperTradingPanel({
       setLimitDivisorInput(summary.config.limitDivisor ?? 0);
       setEnableLongsInput(summary.config.enableLongs ?? true);
     }
-  }, [summary?.config, showConfigModal]);
+  }, [summary?.config, isConfigModalOpen]);
 
   const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -297,7 +311,7 @@ export function PaperTradingPanel({
       const data = await res.json();
       if (data.ok) {
         alert("✅ 模拟交易策略配置已通过 API 成功更新并持久化！");
-        setShowConfigModal(false);
+        closeConfigModal();
         fetchLive();
       } else {
         alert("❌ 更新配置失败: " + (data.error ?? "未知错误"));
@@ -388,6 +402,666 @@ export function PaperTradingPanel({
   const maxPositions = config?.maxPositions ?? 5;
   const maxPerStrategy = config?.maxPositionsPerStrategy ?? 1;
   const isLimitEntry = (config?.limitDivisor ?? 0) > 0;
+
+  const renderPendingOrders = () => {
+    if (pendingOrders.length === 0) return null;
+    return (
+      <div className="paper-pending-wrap" style={{ marginBottom: "14px" }}>
+        <div style={{ fontSize: "12px", fontWeight: "bold", color: "#f5a623", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
+          <span>⏳ 限价挂单等待冲高撮合 (N={config?.limitDivisor ?? 100} · 向上溢价做空接针)</span>
+          <span style={{ fontSize: "11px", opacity: 0.8 }}>({pendingOrders.length} 笔等待触碰)</span>
+        </div>
+        <div className="paper-positions-grid">
+          {pendingOrders.map((order) => {
+            const isSelected = selectedSymbol === order.symbol;
+            const remainingTime = formatCountdown(order.expireAt);
+            const distPercent = ((order.limitPrice - order.currentPrice) / order.currentPrice) * 100;
+            return (
+              <div
+                key={order.id}
+                className={`paper-pos-card ${isSelected ? "pos-card-selected" : ""}`}
+                style={{ borderLeft: "3px solid #f5a623", background: "rgba(245, 166, 35, 0.05)" }}
+                onClick={() => onSelectSymbol?.(order.symbol)}
+                title="点击在右侧查看该标的实时图表"
+              >
+                <div className="pos-card-header">
+                  <div className="pos-card-symbol">
+                    <a
+                      href={`https://www.binance.com/zh-CN/futures/${order.symbol}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <b>{order.symbol}</b>
+                    </a>
+                    <span className={`badge-signal badge-${order.signalType || "streak"}`}>
+                      {formatSignalLabel(order.signalType, order.signalLabel)}
+                    </span>
+                    <span className="badge-short" style={{ background: "rgba(245, 166, 35, 0.2)", color: "#f5a623" }}>
+                      {order.leverage}x 限价挂单
+                    </span>
+                    <span className="badge-margin">保 {order.marginUsdt.toFixed(1)}U</span>
+                    {order.rank && <span className="pos-rank">#{order.rank}</span>}
+                  </div>
+                  <div className="pos-card-timer" title="有效期内冲针触碰即成交，超时自动撤单">
+                    ⏱️ 有效期: <b>{remainingTime}</b>
+                  </div>
+                </div>
+
+                <div className="pos-card-main">
+                  <div className="pos-info-col">
+                    <span className="label">做空挂单价</span>
+                    <span className="val" style={{ color: "#f5a623", fontWeight: "bold" }}>
+                      {formatPrice(order.limitPrice)}
+                      <small style={{ fontSize: "10px", marginLeft: "2px" }}>(+{order.limitOffsetPercent.toFixed(2)}%)</small>
+                    </span>
+                  </div>
+                  <div className="pos-info-col">
+                    <span className="label">最新价 (距离)</span>
+                    <span className="val current-val">
+                      {formatPrice(order.currentPrice)}
+                      <small style={{ fontSize: "10px", color: distPercent > 0 ? "#2ecc71" : "#e74c3c", marginLeft: "2px" }}>
+                        (还差 {distPercent > 0 ? "+" : ""}{distPercent.toFixed(2)}%)
+                      </small>
+                    </span>
+                  </div>
+                  <div className="pos-info-col">
+                    <span className="label">基准价 (24h涨幅)</span>
+                    <span className="val pos-gain">
+                      {formatPrice(order.basePrice)} (+{order.dayChangePercent.toFixed(1)}%)
+                    </span>
+                  </div>
+                  <div className="pos-info-col">
+                    <span className="label">撮合状态</span>
+                    <span className="val" style={{ color: "#f5a623", fontSize: "11px" }}>
+                      等待冲针撮合 ⏳
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderActivePositions = () => {
+    return (
+      <div className="paper-positions-grid">
+        {activePositions.map((pos) => {
+          const pnl = pos.totalNetPnlUsdt;
+          const roe = pos.roePercent;
+          const isSelected = selectedSymbol === pos.symbol;
+          const remainingTime = formatCountdown(pos.timeoutAt);
+          const isLong = pos.side === "LONG";
+
+          return (
+            <div
+              key={pos.id}
+              className={`paper-pos-card ${isSelected ? "pos-card-selected" : ""}`}
+              onClick={() => onSelectSymbol?.(pos.symbol)}
+              title="点击在右侧查看该标的实时图表"
+            >
+              <div className="pos-card-header">
+                <div className="pos-card-symbol">
+                  <a
+                    href={`https://www.binance.com/zh-CN/futures/${pos.symbol}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <b>{pos.symbol}</b>
+                  </a>
+                  <span className={`badge-signal badge-${pos.signalType || "streak"}`}>
+                    {formatSignalLabel(pos.signalType, pos.signalLabel)}
+                  </span>
+                  <span
+                    className={isLong ? "badge-long" : "badge-short"}
+                    style={isLong ? { background: "rgba(46, 204, 113, 0.2)", color: "#2ecc71" } : undefined}
+                  >
+                    {pos.leverage}x {isLong ? "做多" : "做空"}
+                  </span>
+                  <span className="badge-margin">保 {pos.marginUsdt.toFixed(1)}U</span>
+                  {pos.rank && <span className="pos-rank">#{pos.rank}</span>}
+                </div>
+                <div className="pos-card-timer" title="到期后将以市价超时平仓">
+                  ⏱️ 剩余: <b>{remainingTime}</b>
+                </div>
+              </div>
+
+              <div className="pos-card-main">
+                <div className="pos-info-col">
+                  <span className="label">开仓价</span>
+                  <span className="val">{formatPrice(pos.entryPrice)}</span>
+                </div>
+                <div className="pos-info-col">
+                  <span className="label">最新价</span>
+                  <span className="val current-val">{formatPrice(pos.currentPrice)}</span>
+                </div>
+                <div className="pos-info-col">
+                  <span className="label">24h / 30m振幅</span>
+                  <span className="val pos-gain">+{pos.dayChangePercent.toFixed(1)}% / {pos.amp30Percent ? pos.amp30Percent.toFixed(1) : "-"}%</span>
+                </div>
+                <div className="pos-info-col">
+                  <span className="label">浮动盈亏 (ROE)</span>
+                  <span className={`val ${pnl >= 0 ? "pos" : "neg"}`}>
+                    <b>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)} U</b>
+                    <small> ({roe >= 0 ? "+" : ""}{roe.toFixed(1)}%)</small>
+                  </span>
+                </div>
+              </div>
+
+              <div className="pos-card-stages">
+                <div className={`stage-block ${pos.remainingFraction === 1.0 ? "stage-active" : "stage-done"}`}>
+                  <div className="stage-title">
+                    <span>阶段一 (50% 仓位 · {(pos.marginUsdt * 0.5).toFixed(1)}U 保证金)</span>
+                    <span className="stage-status">
+                      {pos.remainingFraction === 1.0 ? "待触发" : "已平仓 ✅"}
+                    </span>
+                  </div>
+                  <div className="stage-targets">
+                    <span>止盈1: <b className="target-green">{formatPrice(pos.tp1Price)} ({isLong ? "+" : "-"}{pos.tp1Percent.toFixed(2)}%)</b></span>
+                    <span>止损1: <b className="target-red">{formatPrice(pos.sl1Price)} ({isLong ? "-" : "+"}{pos.sl1Percent.toFixed(2)}%)</b></span>
+                  </div>
+                </div>
+
+                <div className={`stage-block ${pos.remainingFraction === 0.5 ? "stage-active" : "stage-pending"}`}>
+                  <div className="stage-title">
+                    <span>阶段二 (剩余 50% · {(pos.marginUsdt * 0.5).toFixed(1)}U 保证金)</span>
+                    <span className="stage-status">
+                      {pos.remainingFraction === 0.5 ? "运行中 ⏳" : "等待中"}
+                    </span>
+                  </div>
+                  <div className="stage-targets">
+                    <span>
+                      止损2:{" "}
+                      {pos.isBreakevenArmed ? (
+                        <b className="target-green" title="阶段一止盈后已锁定保本">
+                          保本锁定 ({formatPrice(pos.sl2Price)})
+                        </b>
+                      ) : (
+                        <b className="target-red">
+                          {formatPrice(pos.sl2Price)} ({isLong ? "-" : "+"}{pos.sl2Percent.toFixed(2)}%)
+                        </b>
+                      )}
+                    </span>
+                    <span>止盈2: <b className="target-green">{formatPrice(pos.tp2Price)} ({isLong ? "+" : "-"}{pos.tp2Percent.toFixed(2)}%)</b></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderHistoryDrawer = (forceOpen = false) => {
+    if (!showHistory && !forceOpen) return null;
+    const nowMs = Date.now();
+    const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+    const history24h = historyList.filter(
+      (item) => (item.closedAt ?? item.entryTime) >= nowMs - ONE_DAY_MS
+    );
+    const displayedHistory = historyFilter === "24h" ? history24h : historyList;
+
+    return (
+      <div className="paper-history-drawer" style={forceOpen ? { marginTop: 0, borderTop: "none", paddingTop: 0 } : undefined}>
+        <div className="history-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "8px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <h3 style={{ margin: 0, fontSize: "13px" }}>
+              {historyFilter === "24h"
+                ? `🕒 过去 24 小时平仓明细 (${displayedHistory.length} 笔)`
+                : `📜 全部历史平仓明细 (${displayedHistory.length} 笔)`}
+            </h3>
+            {historyLoading && <span className="loading-hint">加载中…</span>}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <button
+              type="button"
+              className={`btn-sub-tab ${historyFilter === "24h" ? "active" : ""}`}
+              onClick={() => setHistoryFilter("24h")}
+            >
+              近 24 小时 ({history24h.length} 笔)
+            </button>
+            <button
+              type="button"
+              className={`btn-sub-tab ${historyFilter === "all" ? "active" : ""}`}
+              onClick={() => setHistoryFilter("all")}
+            >
+              全部历史 ({historyList.length} 笔)
+            </button>
+          </div>
+        </div>
+
+        {/* 24 小时平仓战绩概览条 */}
+        {history24h.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              gap: "14px",
+              alignItems: "center",
+              flexWrap: "wrap",
+              padding: "8px 12px",
+              background: "rgba(52, 152, 219, 0.08)",
+              borderRadius: "6px",
+              border: "1px solid rgba(52, 152, 219, 0.2)",
+              marginBottom: "10px",
+              fontSize: "12px",
+            }}
+          >
+            <span>
+              🕒 <b>24h 战绩汇总</b>：成交 <b>{history24h.length}</b> 笔
+              (胜 <b>{history24h.filter((t) => t.totalNetPnlUsdt > 0.001).length}</b> / 负 <b>{history24h.filter((t) => t.totalNetPnlUsdt < -0.001).length}</b>)
+            </span>
+            <span>
+              24h 胜率: <b style={{ color: "#3498db" }}>{(history24h.filter((t) => t.totalNetPnlUsdt > 0.001).length / history24h.length * 100).toFixed(1)}%</b>
+            </span>
+            {(() => {
+              const net24h = history24h.reduce((acc, t) => acc + t.totalNetPnlUsdt, 0);
+              return (
+                <span className={net24h >= 0 ? "pos" : "neg"}>
+                  24h 累计净盈亏: <b>{net24h >= 0 ? "+" : ""}{net24h.toFixed(2)} USDT</b>
+                </span>
+              );
+            })()}
+          </div>
+        )}
+
+        {displayedHistory.length === 0 ? (
+          <div className="empty-history" style={{ display: "flex", alignItems: "center", gap: "10px", padding: "12px 0" }}>
+            <span>
+              {historyFilter === "24h"
+                ? `近 24 小时暂无已结清订单 (历史总计 ${historyList.length} 笔)。`
+                : "暂无历史结清订单"}
+            </span>
+            {historyFilter === "24h" && historyList.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setHistoryFilter("all")}
+                style={{
+                  padding: "3px 10px",
+                  fontSize: "11px",
+                  borderRadius: "4px",
+                  border: "1px solid var(--border)",
+                  background: "rgba(255, 255, 255, 0.06)",
+                  color: "var(--text)",
+                  cursor: "pointer",
+                }}
+              >
+                查看全部历史订单
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="table-wrap">
+            <table className="paper-history-table">
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left" }}>平仓时间</th>
+                  <th style={{ textAlign: "left" }}>标的</th>
+                  <th>信号</th>
+                  <th>24h涨幅</th>
+                  <th>30m振幅</th>
+                  <th>开仓价</th>
+                  <th>平仓均价</th>
+                  <th>持仓耗时</th>
+                  <th>平仓原因</th>
+                  <th>净盈亏 (USDT)</th>
+                  <th>ROE (收益率)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayedHistory.map((item) => {
+                  const avgExit =
+                    item.exits && item.exits.length > 0
+                      ? item.exits.reduce((sum, e) => sum + e.exitPrice * e.fraction, 0)
+                      : item.currentPrice;
+                  const isLong = item.side === "LONG";
+                  const pnl = item.totalNetPnlUsdt;
+                  const roe = item.roePercent;
+                  const exitReasonStr = formatExitReason(item);
+
+                  return (
+                    <tr
+                      key={item.id}
+                      onClick={() => onSelectSymbol?.(item.symbol)}
+                      title="点击在右侧查看该标的实时图表"
+                    >
+                      <td style={{ textAlign: "left" }}>{formatHistoryTime(item.closedAt ?? item.entryTime)}</td>
+                      <td style={{ textAlign: "left" }}>
+                        <a
+                          href={`https://www.binance.com/zh-CN/futures/${item.symbol}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <b>{item.symbol}</b>
+                        </a>
+                      </td>
+                      <td>
+                        <span className={`badge-signal badge-${item.signalType || "streak"}`} style={{ fontSize: "10px" }}>
+                          {formatDirectionAndSignal(item.side, item.signalType, item.signalLabel)}
+                        </span>
+                      </td>
+                      <td className="pos">+{item.dayChangePercent.toFixed(1)}%</td>
+                      <td>{item.amp30Percent ? `${item.amp30Percent.toFixed(1)}%` : "-"}</td>
+                      <td>{formatPrice(item.entryPrice)}</td>
+                      <td>{formatPrice(avgExit)}</td>
+                      <td>{formatHoldDuration(item.closedAt, item.entryTime)}</td>
+                      <td style={{ fontSize: "11px", color: exitReasonStr.includes("止盈") ? "#2ecc71" : exitReasonStr.includes("止损") ? "#ff4d4f" : "#f1c40f" }}>
+                        {exitReasonStr}
+                      </td>
+                      <td className={pnl >= 0 ? "pos" : "neg"}>
+                        <b>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</b>
+                      </td>
+                      <td className={roe >= 0 ? "pos" : "neg"}>
+                        <b>{roe >= 0 ? "+" : ""}{roe.toFixed(1)}%</b>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderConfigForm = (_isModal: boolean) => (
+    <form onSubmit={handleSaveConfig}>
+      {/* 2. 仓位与风控 */}
+      <div style={{ marginBottom: "14px", padding: "10px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
+        <div style={{ fontSize: "12px", fontWeight: "bold", color: "var(--text)", marginBottom: "8px" }}>🛡️ 仓位风控与门槛参数</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+          <div className="config-form-group" style={{ margin: 0 }}>
+            <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>单笔仓位比例 (%)</label>
+            <input
+              type="number"
+              min="5"
+              max="20"
+              step="1"
+              value={marginPercentInput}
+              onChange={(e) => setMarginPercentInput(Number(e.target.value))}
+              required
+            />
+          </div>
+          <div className="config-form-group" style={{ margin: 0 }}>
+            <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>全局最大持仓数</label>
+            <input
+              type="number"
+              min="1"
+              max="5"
+              value={maxPositionsInput}
+              onChange={(e) => setMaxPositionsInput(Number(e.target.value))}
+              required
+            />
+          </div>
+          <div className="config-form-group" style={{ margin: 0 }}>
+            <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>单策略限仓 (笔)</label>
+            <input
+              type="number"
+              min="1"
+              max="1"
+              value={maxPerStrategyInput}
+              onChange={(e) => setMaxPerStrategyInput(Number(e.target.value))}
+              required
+            />
+          </div>
+        </div>
+        <div className="config-form-group" style={{ marginTop: "8px", marginBottom: 0 }}>
+          <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>入场挂单分母 (0=市价直开；&gt;0=向上溢价接针)</label>
+          <input
+            type="number"
+            min="0"
+            max="500"
+            step="10"
+            value={limitDivisorInput}
+            onChange={(e) => setLimitDivisorInput(Number(e.target.value))}
+            required
+          />
+        </div>
+      </div>
+
+      <fieldset className="kline-strategy-settings" data-testid="factor-settings">
+        <legend>超短滚动挖掘</legend>
+        <p className="factor-design-note">只验证近期行情适用性，不要求因子长期有效。训练时段 -16:-4 共 12 小时 → -4、-3 小时的 120 分钟验证 → -2 和 -1 的 120 分钟留出；后台持续滚动挖掘并替换合格的新组合。</p>
+        <label><input type="checkbox" checked={factorMiningInput.enabled}
+          onChange={e => setFactorMiningInput({ ...factorMiningInput, enabled: e.target.checked })} /> 建仓后继续挖掘，通过近期验证后自动更新量化多空参数</label>
+        <div className="kline-strategy-fields">
+          {([ ["trainingMinutes", "训练窗口（分钟）", 60], ["validationMinutes", "验证窗口（分钟）", 0], ["holdoutMinutes", "留出窗口（分钟）", 15] ] as const).map(([key, label, min]) => <label key={key}>{label}
+            <input aria-label={label} type="number" min={min} max={4320} step={1} required value={factorMiningInput[key]}
+              onChange={e => setFactorMiningInput({ ...factorMiningInput, [key]: Number(e.target.value) })} />
+          </label>)}
+          <label>刷新间隔（分钟）<input aria-label="刷新间隔（分钟）" type="number" min={15} max={factorMiningInput.validForMinutes - 1} step={1} required
+            value={factorMiningInput.refreshMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, refreshMinutes: Number(e.target.value) })} /></label>
+          <label>最长使用时间（分钟）<input aria-label="最长使用时间（分钟）" type="number" min={Math.max(30, factorMiningInput.refreshMinutes + 1)} max={720} step={1} required
+            value={factorMiningInput.validForMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, validForMinutes: Number(e.target.value) })} /></label>
+        </div>
+        <p style={{ margin: "6px 0 0 0", color: "var(--text-muted, #94a3b8)", fontSize: "11px" }}>
+          自动候选持仓 5/10/15 分钟，统一 3x 杠杆。默认训练时段 -16:-4 共 12 小时 (720m)，-4、-3 的 120 分钟验证，-2 和 -1 的 120 分钟留出，因子最多使用 2 小时。修改参数或窗口后须重新验证；因子到期停开新仓，已有持仓按建仓规则退出。
+        </p>
+        {summary?.factorMining && (
+          <div style={{ marginTop: "6px", fontSize: "11px", color: "var(--text-muted, #94a3b8)", lineHeight: "1.5" }}>
+            <span>当前状态：</span>
+            {config?.factorMining?.enabled ? (
+              <>
+                <b style={{ color: summary.factorMining.running ? "#3498db" : (factorUsable("SHORT") || factorUsable("LONG") ? "#2ecc71" : "#f39c12") }}>
+                  {summary.factorMining.running ? "后台计算中" : (factorUsable("SHORT") || factorUsable("LONG") ? "因子短期生效中" : "等待近期验证，暂停量化新仓")}
+                </b>
+                {summary.factorMining.lastDurationSec && <span> · 上次耗时: {summary.factorMining.lastDurationSec}</span>}
+                {summary.factorMining.lastError && <span> · {summary.factorMining.lastError}</span>}
+                {!!summary.factorMining.nextRunAt && <span> · 下轮调度：{new Date(summary.factorMining.nextRunAt).toLocaleTimeString("zh-CN")}</span>}
+              </>
+            ) : (
+              <span>已停用</span>
+            )}
+          </div>
+        )}
+      </fieldset>
+      <label><input type="checkbox" checked={enableLongsInput} onChange={e => setEnableLongsInput(e.target.checked)} /> 允许做多策略开仓</label>
+      <details className="strategy-preset-card">
+        <summary>特征监控 · 最近一次扫描 ({monitorResults.length})</summary>
+        <div style={{ maxHeight: 260, overflow: "auto" }}>
+          {monitorResults.length === 0 ? <p>等待行情扫描</p> : monitorResults.map(r => <p key={`${r.id}:${r.symbol}`}>
+            <b>{r.symbol} · {strategiesInput.find(s => s.id === r.id)?.label ?? r.id}</b><br />
+            {r.pass ? "特征条件满足" : r.failedReason}
+          </p>)}
+        </div>
+      </details>
+      <StrategySettings value={strategiesInput} onChange={setStrategiesInput} />
+
+      <div className="config-modal-actions">
+        <button
+          type="button"
+          className="btn-preset-reset"
+          onClick={handleResetOptimal}
+          title="撤销尚未保存的参数修改"
+        >
+          撤销本次修改
+        </button>
+        <button
+          type="submit"
+          className="btn-config-save"
+          disabled={isSavingConfig}
+        >
+          {isSavingConfig ? "保存中…" : "保存并应用到模拟交易"}
+        </button>
+      </div>
+    </form>
+  );
+
+  const getFactorLabelAndColor = () => {
+    const fm = summary?.factorMining;
+    const isEnabled = config?.factorMining?.enabled;
+    let label = "已关闭";
+    let color = "var(--text-muted, #888)";
+    if (isEnabled) {
+      if (fm?.running) {
+        label = "计算中...";
+        color = "#3498db";
+      } else if (fm) {
+        const shortAct = factorUsable("SHORT") ? fm.sides.SHORT.active : undefined;
+        const longAct = factorUsable("LONG") ? fm.sides.LONG.active : undefined;
+        if (shortAct && longAct) {
+          label = `多空生效 (空${shortAct.holdout.winRate.toFixed(0)}%/多${longAct.holdout.winRate.toFixed(0)}%)`;
+          color = "#2ecc71";
+        } else if (shortAct) {
+          label = `空头生效 (胜率${shortAct.holdout.winRate.toFixed(0)}%)`;
+          color = "#2ecc71";
+        } else if (longAct) {
+          label = `多头生效 (胜率${longAct.holdout.winRate.toFixed(0)}%)`;
+          color = "#2ecc71";
+        } else {
+          label = fm.sides.SHORT.active || fm.sides.LONG.active ? "因子失效 · 等待新验证" : "待近期样本验证";
+          color = "#f39c12";
+        }
+      }
+    }
+    return { label, color };
+  };
+
+  const renderFactorMiningCard = () => {
+    const fm = summary?.factorMining;
+    const isEnabled = config?.factorMining?.enabled;
+    const { label, color } = getFactorLabelAndColor();
+
+    return (
+      <div className="dock-mining-card">
+        <div className="dock-card-header">
+          <h4 style={{ margin: "0 0 8px", fontSize: "14px" }}>
+            ⛏️ 超短持续因子挖掘调度中心 · <b style={{ color }}>{label}</b>
+          </h4>
+        </div>
+        <p className="factor-design-note" style={{ margin: "0 0 12px", color: "var(--muted)", fontSize: "12px", lineHeight: "1.5" }}>
+          基于近期 1m 行情滚动回测与留出样本验证（训练时段 12h → 验证时段 2h → 留出时段 2h）。通过胜率门槛的因子自动替换实盘策略，到期自动暂停开仓。
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "12px" }}>
+          <div style={{ background: "rgba(255,255,255,0.03)", padding: "12px", borderRadius: "8px", border: "1px solid var(--border)" }}>
+            <div style={{ fontWeight: 600, fontSize: "12px", marginBottom: "8px", color: "#ff6b6b" }}>📉 破位做空模型 (空头因子)</div>
+            {fm?.sides.SHORT.active ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "11px" }}>
+                <div>候选模型: <b>{fm.sides.SHORT.active.id}</b></div>
+                <div>留出胜率: <b className="pos">{fm.sides.SHORT.active.holdout.winRate.toFixed(1)}% ({fm.sides.SHORT.active.holdout.wins}/{fm.sides.SHORT.active.holdout.trades}笔)</b></div>
+                <div>留出盈亏比 (PF): <b>{fm.sides.SHORT.active.holdout.profitFactor != null ? fm.sides.SHORT.active.holdout.profitFactor.toFixed(2) : "∞"}</b></div>
+                <div>到期时间: <b>{new Date(fm.sides.SHORT.active.expiresAt).toLocaleTimeString("zh-CN")}</b></div>
+              </div>
+            ) : (
+              <div style={{ color: "var(--muted)", fontSize: "11px" }}>{fm?.sides.SHORT.reason ?? "当前无生效做空因子 · 暂停破位做空新仓"}</div>
+            )}
+          </div>
+          <div style={{ background: "rgba(255,255,255,0.03)", padding: "12px", borderRadius: "8px", border: "1px solid var(--border)" }}>
+            <div style={{ fontWeight: 600, fontSize: "12px", marginBottom: "8px", color: "#2ecc71" }}>📈 回踩做多模型 (多头因子)</div>
+            {fm?.sides.LONG.active ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "11px" }}>
+                <div>候选模型: <b>{fm.sides.LONG.active.id}</b></div>
+                <div>留出胜率: <b className="pos">{fm.sides.LONG.active.holdout.winRate.toFixed(1)}% ({fm.sides.LONG.active.holdout.wins}/{fm.sides.LONG.active.holdout.trades}笔)</b></div>
+                <div>留出盈亏比 (PF): <b>{fm.sides.LONG.active.holdout.profitFactor != null ? fm.sides.LONG.active.holdout.profitFactor.toFixed(2) : "∞"}</b></div>
+                <div>到期时间: <b>{new Date(fm.sides.LONG.active.expiresAt).toLocaleTimeString("zh-CN")}</b></div>
+              </div>
+            ) : (
+              <div style={{ color: "var(--muted)", fontSize: "11px" }}>{fm?.sides.LONG.reason ?? "当前无生效做多因子 · 暂停回踩做多新仓"}</div>
+            )}
+          </div>
+        </div>
+        <div style={{ marginTop: "12px", display: "flex", flexWrap: "wrap", gap: "16px", fontSize: "11px", color: "var(--muted)" }}>
+          {fm?.nextRunAt && <span>下轮计算调度: {new Date(fm.nextRunAt).toLocaleTimeString("zh-CN")}</span>}
+          {fm?.lastDurationSec && <span>上次计算耗时: {fm.lastDurationSec}秒</span>}
+          {config?.factorMining && <span>调度周期: 每 {config.factorMining.refreshMinutes} 分钟 · 有效期 {config.factorMining.validForMinutes / 60} 小时</span>}
+        </div>
+      </div>
+    );
+  };
+
+  // 专供金融终端底部 Dock 模式使用
+  if (mode === "dock") {
+    const { label: factorLabel, color: factorColor } = getFactorLabelAndColor();
+    return (
+      <div id="paper-trading-panel" className="paper-dock-container">
+        {/* 顶部轻量指标概览条（包含因子挖掘实时状态标签，供自动化测试与交易员一目了然） */}
+        <div className="dock-paper-summary-bar" style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center", marginBottom: "10px", paddingBottom: "8px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+          <span className="chip">
+            账户净值: <b>{account.equityUsdt.toFixed(2)} USDT</b>
+            <small> ({account.accountRoiPercent >= 0 ? "+" : ""}{account.accountRoiPercent.toFixed(1)}%)</small>
+          </span>
+          <span className="chip">
+            可用保证金: <b>{account.availableMarginUsdt.toFixed(2)} USDT</b>
+          </span>
+          <span className="chip">
+            盈亏比 (PF): <b>{Number.isFinite(pf) ? pf.toFixed(2) : "∞"}</b>
+          </span>
+          <span className="chip" title="持续因子挖掘状态：根据近期 1m 样本滚动验证多空适用性">
+            ⛏️ 因子挖掘: <b style={{ color: factorColor }}>{factorLabel}</b>
+          </span>
+          {activePositions.length > 0 && (
+            <span className="chip chip-active-count">
+              持仓中: <b>{activePositions.length}</b> 笔
+            </span>
+          )}
+          {pendingOrders.length > 0 && (
+            <span className="chip" style={{ background: "rgba(245, 166, 35, 0.15)", color: "#f5a623" }}>
+              挂单中: <b>{pendingOrders.length}</b> 笔
+            </span>
+          )}
+        </div>
+        {dockTab === "positions" && (
+          <div className="paper-body">
+            {renderPendingOrders()}
+            {activePositions.length > 0 ? (
+              renderActivePositions()
+            ) : pendingOrders.length === 0 ? (
+              <div className="empty-paper-state">
+                <span className="empty-icon">📡</span>
+                <span className="empty-text">
+                  当前暂无活跃持仓与挂单 · 账户净值 {account.equityUsdt.toFixed(1)} USDT · 动态保证金 {marginPercent}% (当前约 {marginUsdt} USDT) · 最大同时持仓 {maxPositions} 笔 (每策略至多 {maxPerStrategy} 笔) · 正在等待策略突破/背离/冲高破位/回踩支撑开仓信号…
+                </span>
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {dockTab === "history" && (
+          <div className="paper-body">
+            {renderHistoryDrawer(true)}
+          </div>
+        )}
+
+        {dockTab === "strategy" && (
+          <div className="paper-body dock-strategy-pane" style={{ maxWidth: "720px", padding: "4px 0" }}>
+            {renderConfigForm(false)}
+          </div>
+        )}
+
+        {dockTab === "mining" && (
+          <div className="paper-body dock-mining-pane" style={{ padding: "4px 0" }}>
+            {renderFactorMiningCard()}
+          </div>
+        )}
+
+        {/* 策略参数设置模态框 */}
+        {isConfigModalOpen && typeof document !== "undefined" && createPortal(
+          <div className="config-modal-backdrop" onClick={closeConfigModal}>
+            <div className="config-modal-content" onClick={(e) => e.stopPropagation()}>
+              <div className="config-modal-header">
+                <h3>⚙️ 特征监控与策略组合</h3>
+                <button
+                  type="button"
+                  className="config-modal-close"
+                  onClick={closeConfigModal}
+                >
+                  ✕
+                </button>
+              </div>
+              {renderConfigForm(true)}
+            </div>
+          </div>,
+          document.body
+        )}
+      </div>
+    );
+  }
 
   return (
     <section id="paper-trading-panel" className="paper-trading-section">
@@ -511,7 +1185,7 @@ export function PaperTradingPanel({
           <button
             type="button"
             className="btn-config-toggle"
-            onClick={() => setShowConfigModal(true)}
+            onClick={openConfigModal}
             title="通过 API 设置新高背离独立杠杆、顺势波段杠杆与保证金"
           >
             ⚙️ 策略参数设置
@@ -929,142 +1603,23 @@ export function PaperTradingPanel({
         );
       })()}
       {/* 策略参数设置模态框 */}
-      {showConfigModal && (
-        <div className="config-modal-backdrop" onClick={() => setShowConfigModal(false)}>
+      {isConfigModalOpen && typeof document !== "undefined" && createPortal(
+        <div className="config-modal-backdrop" onClick={closeConfigModal}>
           <div className="config-modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="config-modal-header">
               <h3>⚙️ 特征监控与策略组合</h3>
               <button
                 type="button"
                 className="config-modal-close"
-                onClick={() => setShowConfigModal(false)}
+                onClick={closeConfigModal}
               >
                 ✕
               </button>
             </div>
-            <form onSubmit={handleSaveConfig}>
-              {/* 2. 仓位与风控 */}
-              <div style={{ marginBottom: "14px", padding: "10px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
-                <div style={{ fontSize: "12px", fontWeight: "bold", color: "var(--text)", marginBottom: "8px" }}>🛡️ 仓位风控与门槛参数</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                  <div className="config-form-group" style={{ margin: 0 }}>
-                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>单笔仓位比例 (%)</label>
-                    <input
-                      type="number"
-                      min="5"
-                      max="20"
-                      step="1"
-                      value={marginPercentInput}
-                      onChange={(e) => setMarginPercentInput(Number(e.target.value))}
-                      required
-                    />
-                  </div>
-                  <div className="config-form-group" style={{ margin: 0 }}>
-                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>全局最大持仓数</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="5"
-                      value={maxPositionsInput}
-                      onChange={(e) => setMaxPositionsInput(Number(e.target.value))}
-                      required
-                    />
-                  </div>
-                  <div className="config-form-group" style={{ margin: 0 }}>
-                    <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>单策略限仓 (笔)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="1"
-                      value={maxPerStrategyInput}
-                      onChange={(e) => setMaxPerStrategyInput(Number(e.target.value))}
-                      required
-                    />
-                  </div>
-
-                </div>
-                <div className="config-form-group" style={{ marginTop: "8px", marginBottom: 0 }}>
-                  <label style={{ display: "block", fontSize: "11px", marginBottom: "3px" }}>入场挂单分母 (0=市价直开；&gt;0=向上溢价接针)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="500"
-                    step="10"
-                    value={limitDivisorInput}
-                    onChange={(e) => setLimitDivisorInput(Number(e.target.value))}
-                    required
-                  />
-                </div>
-              </div>
-
-              <fieldset className="kline-strategy-settings" data-testid="factor-settings">
-                <legend>超短滚动挖掘</legend>
-                <p className="factor-design-note">只验证近期行情适用性，不要求因子长期有效。训练时段 -16:-4 共 12 小时 → -4、-3 小时的 120 分钟验证 → -2 和 -1 的 120 分钟留出；后台持续滚动挖掘并替换合格的新组合。</p>
-                <label><input type="checkbox" checked={factorMiningInput.enabled}
-                  onChange={e => setFactorMiningInput({ ...factorMiningInput, enabled: e.target.checked })} /> 建仓后继续挖掘，通过近期验证后自动更新量化多空参数</label>
-                <div className="kline-strategy-fields">
-                  {([ ["trainingMinutes", "训练窗口（分钟）", 60], ["validationMinutes", "验证窗口（分钟）", 0], ["holdoutMinutes", "留出窗口（分钟）", 15] ] as const).map(([key, label, min]) => <label key={key}>{label}
-                    <input aria-label={label} type="number" min={min} max={4320} step={1} required value={factorMiningInput[key]}
-                      onChange={e => setFactorMiningInput({ ...factorMiningInput, [key]: Number(e.target.value) })} />
-                  </label>)}
-                  <label>刷新间隔（分钟）<input aria-label="刷新间隔（分钟）" type="number" min={15} max={factorMiningInput.validForMinutes - 1} step={1} required
-                    value={factorMiningInput.refreshMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, refreshMinutes: Number(e.target.value) })} /></label>
-                  <label>最长使用时间（分钟）<input aria-label="最长使用时间（分钟）" type="number" min={Math.max(30, factorMiningInput.refreshMinutes + 1)} max={720} step={1} required
-                    value={factorMiningInput.validForMinutes} onChange={e => setFactorMiningInput({ ...factorMiningInput, validForMinutes: Number(e.target.value) })} /></label>
-                </div>
-                <p style={{ margin: "6px 0 0 0", color: "var(--text-muted, #94a3b8)", fontSize: "11px" }}>
-                  自动候选持仓 5/10/15 分钟，统一 3x 杠杆。默认训练时段 -16:-4 共 12 小时 (720m)，-4、-3 的 120 分钟验证，-2 和 -1 的 120 分钟留出，因子最多使用 2 小时。修改参数或窗口后须重新验证；因子到期停开新仓，已有持仓按建仓规则退出。
-                </p>
-                {summary?.factorMining && (
-                  <div style={{ marginTop: "6px", fontSize: "11px", color: "var(--text-muted, #94a3b8)", lineHeight: "1.5" }}>
-                    <span>当前状态：</span>
-                    {config?.factorMining?.enabled ? (
-                      <>
-                        <b style={{ color: summary.factorMining.running ? "#3498db" : (factorUsable("SHORT") || factorUsable("LONG") ? "#2ecc71" : "#f39c12") }}>
-                          {summary.factorMining.running ? "后台计算中" : (factorUsable("SHORT") || factorUsable("LONG") ? "因子短期生效中" : "等待近期验证，暂停量化新仓")}
-                        </b>
-                        {summary.factorMining.lastDurationSec && <span> · 上次耗时: {summary.factorMining.lastDurationSec}</span>}
-                        {summary.factorMining.lastError && <span> · {summary.factorMining.lastError}</span>}
-                        {!!summary.factorMining.nextRunAt && <span> · 下轮调度：{new Date(summary.factorMining.nextRunAt).toLocaleTimeString("zh-CN")}</span>}
-                      </>
-                    ) : (
-                      <span>已停用</span>
-                    )}
-                  </div>
-                )}
-              </fieldset>
-              <label><input type="checkbox" checked={enableLongsInput} onChange={e => setEnableLongsInput(e.target.checked)} /> 允许做多策略开仓</label>
-              <details className="strategy-preset-card">
-                <summary>特征监控 · 最近一次扫描 ({monitorResults.length})</summary>
-                <div style={{ maxHeight: 260, overflow: "auto" }}>
-                  {monitorResults.length === 0 ? <p>等待行情扫描</p> : monitorResults.map(r => <p key={`${r.id}:${r.symbol}`}>
-                    <b>{r.symbol} · {strategiesInput.find(s => s.id === r.id)?.label ?? r.id}</b><br />
-                    {r.pass ? "特征条件满足" : r.failedReason}
-                  </p>)}
-                </div>
-              </details>
-              <StrategySettings value={strategiesInput} onChange={setStrategiesInput} />
-
-              <div className="config-modal-actions">
-                <button
-                  type="button"
-                  className="btn-preset-reset"
-                  onClick={handleResetOptimal}
-                  title="撤销尚未保存的参数修改"
-                >
-                  撤销本次修改
-                </button>
-                <button
-                  type="submit"
-                  className="btn-config-save"
-                  disabled={isSavingConfig}
-                >
-                  {isSavingConfig ? "保存中…" : "保存并应用到模拟交易"}
-                </button>
-              </div>
-            </form>
+            {renderConfigForm(true)}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </section>
   );

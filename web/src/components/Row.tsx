@@ -7,10 +7,12 @@ interface RowProps {
   isPercentage?: boolean; // true for price change, false for volume
   onSelect?: (symbol: string) => void; // 点击整行 → 右侧图表切到该标的
   selected?: boolean; // 是否为图表当前标的
+  hasPosition?: boolean; // 当前标的是否有持仓
+  hasOrder?: boolean; // 当前标的是否有挂单
 }
 
 // Single table row: displays rank, shift, symbol, 24h change, streak count, streak gain, 1m30upR, support.
-export function StatusRow({ row, changeLabel, isPercentage = true, onSelect, selected }: RowProps) {
+export function StatusRow({ row, changeLabel, isPercentage = true, onSelect, selected, hasPosition, hasOrder }: RowProps) {
   const isPinned = row.isPinned ?? (row.symbol === "BTCUSDT" || row.symbol === "SOLUSDT");
 
   const rowClasses = [
@@ -96,6 +98,16 @@ export function StatusRow({ row, changeLabel, isPercentage = true, onSelect, sel
         >
           {row.symbol}
         </a>
+        {hasPosition && (
+          <span className="row-pos-tag" title="当前标的有活跃持仓">
+            持仓
+          </span>
+        )}
+        {hasOrder && !hasPosition && (
+          <span className="row-order-tag" title="当前标的有限价挂单">
+            挂单
+          </span>
+        )}
       </td>
       <td className={colClass(changeLabel)}>{isPercentage ? pct(changeLabel) : fmt(changeLabel, 2)}</td>
       <td className={row.streakDir === "up" ? "pos" : row.streakDir === "down" ? "neg" : "muted"}>

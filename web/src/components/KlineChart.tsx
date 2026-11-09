@@ -82,6 +82,12 @@ interface ChartPanelProps {
   active?: boolean; // 窄屏 tab 状态（与榜单保持一致，始终可见）
   markerTime?: number | null; // 榜单快照时间(ms)：在时间轴上标出"榜单数据截至此刻"
   dayChangePercent?: number | null; // 24h 涨跌幅
+  jumpToTime?: number | null; // 定位到的 K 线时间戳 (ms)
+  windowMinutes?: number;
+  mode?: "surge" | "drop" | "both";
+  showMarkers?: boolean;
+  embedStats?: boolean; // 是否在图表下方内嵌统计面板 (金融终端默认 false)
+  onBarsLoaded?: (bars: ChartBar[], dayChangePercent: number | null) => void;
 }
 
 export function ChartPanel({
@@ -91,14 +97,24 @@ export function ChartPanel({
   active,
   markerTime,
   dayChangePercent,
+  jumpToTime,
+  windowMinutes: propWindowMinutes,
+  mode: propMode,
+  showMarkers: propShowMarkers,
+  embedStats = false,
+  onBarsLoaded,
 }: ChartPanelProps) {
   const [hiddenMa, setHiddenMa] = useState<ReadonlySet<number>>(() => new Set<number>());
   const [hoverTime, setHoverTime] = useState<number | null>(null);
 
-  // K线量化统计参数控制
-  const [windowMinutes, setWindowMinutes] = useState(15);
-  const [mode, setMode] = useState<"surge" | "drop" | "both">("both");
-  const [showMarkers, setShowMarkers] = useState(true);
+  // K线量化统计参数控制 (支持受控或本地状态)
+  const [localWindowMinutes, setLocalWindowMinutes] = useState(15);
+  const [localMode, setLocalMode] = useState<"surge" | "drop" | "both">("both");
+  const [localShowMarkers, setLocalShowMarkers] = useState(true);
+
+  const windowMinutes = propWindowMinutes ?? localWindowMinutes;
+  const mode = propMode ?? localMode;
+  const showMarkers = propShowMarkers ?? localShowMarkers;
 
   const { data, error, loading } = useKlines(symbol);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -391,6 +407,31 @@ export function ChartPanel({
     return data.bars.findIndex((b) => toTs(b.time) === hoverTime);
   }, [hoverTime, data]);
 
+  // 通知父组件 K 线数据与指标已加载
+  useEffect(() => {
+    if (data?.bars) {
+      onBarsLoaded?.(data.bars, effectiveDayChange);
+    }
+  }, [data, effectiveDayChange, onBarsLoaded]);
+
+  // 外部传入定位时间点时，平滑滚动至该时间戳
+  useEffect(() => {
+    if (!jumpToTime || !data || data.bars.length === 0) return;
+    const barTime = Math.floor(jumpToTime / 60_000) * 60_000;
+    const targetBarTs = toTs(barTime);
+    const idx = data.bars.findIndex((b) => toTs(b.time) === targetBarTs);
+    if (idx !== -1 && chartRef.current) {
+      const ts = chartRef.current.timeScale();
+      const halfVisible = 25;
+      ts.setVisibleLogicalRange({
+        from: Math.max(0, idx - halfVisible),
+        to: idx + halfVisible,
+      });
+      setHoverTime(targetBarTs);
+      hoverRef.current = targetBarTs;
+    }
+  }, [jumpToTime, data]);
+
   const handleSelectTime = (timeMs: number) => {
     const chart = chartRef.current;
     if (!chart || !data) return;
@@ -510,7 +551,7 @@ export function ChartPanel({
         {!loading && error && <div className="chart-mask err">K 线加载失败: {error}</div>}
       </div>
 
-      {data && data.bars.length > 0 && (
+      {embedStats && data && data.bars.length > 0 && (
         <KlineStatsPanel
           symbol={symbol}
           bars={data.bars}
@@ -518,11 +559,11 @@ export function ChartPanel({
           hoverIndex={hoverIndex}
           onSelectTime={handleSelectTime}
           windowMinutes={windowMinutes}
-          onWindowMinutesChange={setWindowMinutes}
+          onWindowMinutesChange={setLocalWindowMinutes}
           mode={mode}
-          onModeChange={setMode}
+          onModeChange={setLocalMode}
           showMarkers={showMarkers}
-          onToggleMarkers={() => setShowMarkers((v) => !v)}
+          onToggleMarkers={() => setLocalShowMarkers((v) => !v)}
           signals={signals}
         />
       )}

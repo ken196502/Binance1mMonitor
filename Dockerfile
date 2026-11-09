@@ -76,11 +76,12 @@ RUN set -eux; \
 # ==========================================
 FROM node:22-slim
 
-# 安装必要证书、时区支持，以及 entrypoint 拉取 mihomo 订阅所需的 curl
+# 安装必要证书、时区支持、gosu（用于挂载数据卷自动修权并安全降权），以及 entrypoint 拉取 mihomo 订阅所需的 curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     tzdata \
+    gosu \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -108,9 +109,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
 # 从阶段 1 复制前端静态构建产物至 web/dist
 COPY --from=web-builder /app/web/dist ./web/dist
 
-# 修正目录归属并切换到内置非 root 用户 node（mihomo 需要在配置目录写 cache.db，模拟盘持久化写入 /app/data）
+# 预置数据目录结构并初始化归属；容器启动入口 entrypoint 会在挂载宿主机卷后自动修权并以 node 用户执行
 RUN mkdir -p /app/data/research/live-1m /app/data/research/live-boards /app/data/signals && chown -R node:node /app /etc/mihomo
-USER node
 
 EXPOSE 4111
 

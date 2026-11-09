@@ -11,6 +11,8 @@ interface GroupSectionProps {
   active: boolean; // narrow-screen tab active state
   onSelectSymbol?: (symbol: string) => void; // 点击行 → 图表切换到该标的
   selectedSymbol?: string; // 图表当前标的（用于高亮）
+  activePositionSymbols?: Set<string>;
+  activeOrderSymbols?: Set<string>;
 }
 
 // Sortable columns. Each header maps to a key whose value is extracted from a
@@ -28,6 +30,8 @@ export function GroupSection({
   active,
   onSelectSymbol,
   selectedSymbol,
+  activePositionSymbols,
+  activeOrderSymbols,
 }: GroupSectionProps) {
   // Sort state is local to each panel. null sortKey = original server ranking.
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
@@ -175,6 +179,8 @@ export function GroupSection({
                 isPercentage={changeKey !== "quoteVolume"}
                 onSelect={onSelectSymbol}
                 selected={selectedSymbol === r.symbol}
+                hasPosition={activePositionSymbols?.has(r.symbol)}
+                hasOrder={activeOrderSymbols?.has(r.symbol)}
               />
             ))}
           </tbody>

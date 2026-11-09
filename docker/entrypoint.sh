@@ -11,6 +11,19 @@ set -euo pipefail
 
 log() { printf '[entrypoint] %s\n' "$*"; }
 
+# ------------------------------------------------------------ 权限自愈与安全降权
+# 若容器以 root 启动（Docker 默认挂载宿主机目录往往为 root:root），
+# 自动修复挂载卷权限为 node:node，避免因子挖掘与模拟盘写入出现 EACCES 权限拒绝，
+# 随后通过 gosu 安全降权为 node 用户执行。
+if [ "$(id -u)" = "0" ]; then
+  BOOT_DATA_DIR="${DATA_DIR:-/app/data}"
+  mkdir -p "$BOOT_DATA_DIR/research/live-1m" "$BOOT_DATA_DIR/research/live-boards" "$BOOT_DATA_DIR/signals" 2>/dev/null || true
+  chown -R node:node "$BOOT_DATA_DIR" "${MIHOMO_CONFIG_DIR:-/etc/mihomo}" /app 2>/dev/null || true
+  if command -v gosu >/dev/null 2>&1; then
+    exec gosu node "$0" "$@"
+  fi
+fi
+
 MIHOMO_ENABLE="${MIHOMO_ENABLE:-1}"
 MIHOMO_BIN="${MIHOMO_BIN:-/usr/local/bin/mihomo}"
 MIHOMO_CONFIG_DIR="${MIHOMO_CONFIG_DIR:-/etc/mihomo}"

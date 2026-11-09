@@ -225,6 +225,9 @@ Docker 保留现有 mihomo 启动、订阅、Binance 健康检查、失败节点
 docker compose up -d --build
 ```
 
+> [!TIP]
+> **宿主机目录权限**：生产环境若宿主机 `./data` 目录属主为 root，容器内内置的 `gosu` 自愈机制会在启动时自动递归修正属主为 `node:node` 并降权执行。若使用旧版镜像或手动挂载出现 `EACCES: permission denied`，可在宿主机直接执行 `sudo chown -R 1000:1000 ./data && sudo chmod -R 775 ./data` 立即恢复。
+
 Mac 本机测试（Apple Silicon）使用独立的 [docker-compose.local.yml](docker-compose.local.yml)，Docker Desktop 启动后执行：
 
 ```bash
