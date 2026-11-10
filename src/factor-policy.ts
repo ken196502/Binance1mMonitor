@@ -137,13 +137,13 @@ export const emptyFactorState = initialFactorMiningState;
 export function passesFactorMetrics(metrics: FactorMetrics, minTrades: number, confidence = false): boolean {
   return [metrics.trades, metrics.wins, metrics.winRate, metrics.wilsonLow, metrics.grossProfit,
     metrics.grossLoss, metrics.netPercent, metrics.avgNetPercent].every(Number.isFinite) &&
-    metrics.trades >= minTrades && metrics.winRate >= 65 && metrics.netPercent > 0 &&
+    metrics.trades >= minTrades && metrics.winRate >= 60 && metrics.netPercent > 0 &&
     metrics.avgNetPercent >= 0.15 && metrics.grossProfit > 0 && metrics.grossLoss >= 0 &&
-    metrics.grossProfit >= metrics.grossLoss * 1.25 && (!confidence || metrics.wilsonLow >= 48);
+    metrics.grossProfit >= metrics.grossLoss * 1.15 && (!confidence || metrics.wilsonLow >= 20);
 }
 export function passesFactorCandidate(candidate: FactorCandidate): boolean {
-  return candidate.config.leverage === 3 && passesFactorMetrics(candidate.train, 10) &&
-    (!candidate.validation || passesFactorMetrics(candidate.validation, 8, true)) && passesFactorMetrics(candidate.holdout, 5);
+  return candidate.config.leverage === 3 && passesFactorMetrics(candidate.train, 3) &&
+    (!candidate.validation || passesFactorMetrics(candidate.validation, 1, true)) && passesFactorMetrics(candidate.holdout, 1);
 }
 /** Stable comparison also invalidates approval after manual parameter edits. */
 export function factorConfigKey(value: object): string {

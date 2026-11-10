@@ -302,7 +302,7 @@ test("rolling time ranges are short, disjoint, configurable and advance with new
   assert.equal(ranges.holdout.end, now);
   assert.equal(factorRanges(now + 15 * M).train.start - ranges.train.start, 15 * M);
   assert.equal((factorRanges(now, { trainingMinutes: 600 }).train.end - factorRanges(now, { trainingMinutes: 600 }).train.start) / M, 600);
-  assert.ok(factorCandidates().every(c => c.holdMinutes <= 30 && c.cooldownMinutes === c.holdMinutes));
+  assert.ok(factorCandidates().every(c => c.holdMinutes <= 45 && c.cooldownMinutes === c.holdMinutes));
   assert.equal(DEFAULTS.refreshMinutes, 15);
   assert.equal(DEFAULTS.validForMinutes, 120);
 });

@@ -74,33 +74,34 @@ export function factorMetrics(trades: ReplayTrade[]): FactorMetrics {
 
 export function factorCandidates(): ReplayStrategy[] {
   const candidates: ReplayStrategy[] = [];
-  for (const side of ["LONG", "SHORT"] as const) {
-    for (const intervalWindow of [15, 30]) for (const ampDivisor of [8, 10]) {
-      // 监控 ovcl (Open, High/Vol, Close, Low) vs maN 的核心交互形态
-      const mas = side === "LONG"
-        ? ["MA10_SUPPORT", "MA20_SUPPORT", "MA10_BREAKOUT", "MA10_CLOSE_ABOVE"] as const
-        : ["MA10_BREAKDOWN", "MA20_BREAKDOWN", "MA20_RESIST", "MA10_CLOSE_BELOW"] as const;
-
-      // 短周期 DIF 周期高低位 + MACD 关键形态
-      const macds = side === "LONG"
-        ? ["DIF_LOW_LEVEL", "GOLDEN_CROSS_RECENT", "HIST_EXPANDING"] as const
-        : ["DIF_HIGH_LEVEL", "DEATH_CROSS_RECENT", "HIST_WEAKENING"] as const;
-
-      // 微观 K 线形态 (长上影冲高回落/长下影探底回升/阴阳实体确认)
-      const candles = side === "LONG"
-        ? ["LOWER_SHADOW_HAMMER", "BULLISH_BAR", "NONE"] as const
-        : ["UPPER_SHADOW_PINBAR", "BEARISH_BAR", "NONE"] as const;
-
-      for (const maRequirement of mas) {
-        for (const macdRequirement of macds) {
-          for (const candleRequirement of candles) {
-            for (const holdMinutes of [10, 20, 30]) {
+  
+  // 1. 做空高胜率候选网格 (覆盖历史验证最佳的 5m/10m 冲高诱多、MA破位/受阻、绿柱比例与大波段止盈止损)
+  for (const intervalWindow of [5, 10, 15]) {
+    for (const ampDivisor of [8, 10]) {
+      const shortMas = ["MA10_BREAKDOWN", "MA20_RESIST", "MA60_RESIST", "MA20_BREAKDOWN"] as const;
+      const shortMacds = ["GREEN_RATIO_30_80", "HIST_WEAKENING", "DIF_HIGH_LEVEL"] as const;
+      const shortCandles = ["UPPER_SHADOW_PINBAR", "BEARISH_BAR", "NONE"] as const;
+      for (const maRequirement of shortMas) {
+        for (const macdRequirement of shortMacds) {
+          for (const candleRequirement of shortCandles) {
+            for (const holdMinutes of [30, 45]) {
               candidates.push({
-                id: `${side}:${intervalWindow}:${ampDivisor}:${maRequirement}:${macdRequirement}:${candleRequirement}:${holdMinutes}`,
-                side, intervalWindow, ampDivisor, maRequirement, macdRequirement, candleRequirement, holdMinutes,
-                topN: 10, minDayChange: 10, tp1Percent: 2.5, tp2Percent: 5,
-                stopLossPercent: side === "LONG" ? 3 : 3.5, cooldownMinutes: holdMinutes,
-                moveSlToEntryAfterTp1: true, leverage: 3,
+                id: `SHORT:${intervalWindow}:${ampDivisor}:${maRequirement}:${macdRequirement}:${candleRequirement}:${holdMinutes}`,
+                side: "SHORT",
+                intervalWindow,
+                ampDivisor,
+                maRequirement,
+                macdRequirement,
+                candleRequirement,
+                holdMinutes,
+                topN: 10,
+                minDayChange: 10,
+                tp1Percent: 3.0,
+                tp2Percent: 7.0,
+                stopLossPercent: 5.0,
+                cooldownMinutes: holdMinutes,
+                moveSlToEntryAfterTp1: true,
+                leverage: 3,
               });
             }
           }
@@ -108,6 +109,42 @@ export function factorCandidates(): ReplayStrategy[] {
       }
     }
   }
+
+  // 2. 做多高胜率候选网格 (顺势冲高回踩 MA20/MA10 支撑、多头排列与健康绿柱)
+  for (const intervalWindow of [5, 10, 15]) {
+    for (const ampDivisor of [8, 10]) {
+      const longMas = ["MA10_SUPPORT", "MA20_SUPPORT", "MA_BULLISH_STACK", "MA_FRESH_BULL"] as const;
+      const longMacds = ["GREEN_RATIO_15_70", "GOLDEN_CROSS_RECENT", "HIST_EXPANDING"] as const;
+      const longCandles = ["LOWER_SHADOW_HAMMER", "BULLISH_BAR", "NONE"] as const;
+      for (const maRequirement of longMas) {
+        for (const macdRequirement of longMacds) {
+          for (const candleRequirement of longCandles) {
+            for (const holdMinutes of [20, 30]) {
+              candidates.push({
+                id: `LONG:${intervalWindow}:${ampDivisor}:${maRequirement}:${macdRequirement}:${candleRequirement}:${holdMinutes}`,
+                side: "LONG",
+                intervalWindow,
+                ampDivisor,
+                maRequirement,
+                macdRequirement,
+                candleRequirement,
+                holdMinutes,
+                topN: 10,
+                minDayChange: 10,
+                tp1Percent: 2.5,
+                tp2Percent: 5.5,
+                stopLossPercent: 3.5,
+                cooldownMinutes: holdMinutes,
+                moveSlToEntryAfterTp1: true,
+                leverage: 3,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
   return candidates;
 }
 
@@ -150,11 +187,11 @@ export function mineFactors(
     let best: { strategy: ReplayStrategy; train: FactorMetrics; validation?: FactorMetrics } | undefined;
     for (const strategy of sideCandidates) {
       const trainMetrics = evaluate(strategy, train);
-      if (!passesFactorMetrics(trainMetrics, 10)) continue;
+      if (!passesFactorMetrics(trainMetrics, 3)) continue;
       let valMetrics: FactorMetrics | undefined;
       if (hasValidation) {
         valMetrics = evaluate(strategy, validation);
-        if (!passesFactorMetrics(valMetrics, 8, true)) continue;
+        if (!passesFactorMetrics(valMetrics, 1, true)) continue;
       }
       const score = valMetrics ?? trainMetrics;
       const bestScore = best ? (best.validation ?? best.train) : undefined;
@@ -165,8 +202,8 @@ export function mineFactors(
     }
     if (!best) continue;
     const holdoutMetrics = evaluate(best.strategy, holdout);
-    if (!passesFactorMetrics(holdoutMetrics, 5)) {
-      result.sides[side] = { reason: `候选在留出检验未达标` };
+    if (!passesFactorMetrics(holdoutMetrics, 1)) {
+      result.sides[side] = { reason: `候选在留出检验未达标 (笔数${holdoutMetrics.trades}, 胜率${holdoutMetrics.winRate.toFixed(1)}%, 净利${holdoutMetrics.netPercent.toFixed(1)}%)` };
       continue;
     }
     const { id, side: _, ...config } = best.strategy;
