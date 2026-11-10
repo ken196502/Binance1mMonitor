@@ -44,6 +44,7 @@ export interface FactorMiningResult {
   costs: { takerFeeBps: number; slippageBps: number };
   sides: Record<FactorSide, { candidate?: FactorCandidate; reason: string }>;
   strategies?: Record<string, { candidate?: StrategyMiningCandidate; reason: string }>;
+  targetStrategyId?: string;
   timings?: {
     loadDatasetMs?: number;
     mineFactorsMs?: number;
@@ -68,6 +69,7 @@ export interface FactorMiningRunRecord {
   timeoutUsagePercent: string;
   trials: number;
   status: "success" | "failed" | "aborted";
+  targetStrategyId?: string;
   error?: string;
   appliedSides: string[];
   appliedStrategies: string[];

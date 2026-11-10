@@ -112,7 +112,13 @@ export function factorCandidates(): ReplayStrategy[] {
 }
 
 /** Select on train/validation only; inspect the final holdout ONCE per direction. */
-export function mineFactors(data: FactorDataset, costs: FactorMiningResult["costs"], candidates = factorCandidates(), windows?: Partial<FactorWindows>): FactorMiningResult {
+export function mineFactors(
+  data: FactorDataset,
+  costs: FactorMiningResult["costs"],
+  candidates = factorCandidates(),
+  windows?: Partial<FactorWindows>,
+  targetStrategyId?: string,
+): FactorMiningResult {
   const end = data.dataAsOf;
   const { train, validation, holdout } = factorRanges(end, windows);
   const fvCache = new Map<string, FeatureVector | null>();
@@ -122,13 +128,27 @@ export function mineFactors(data: FactorDataset, costs: FactorMiningResult["cost
   const result: FactorMiningResult = {
     windows: factorWindows(windows),
     policyVersion: FACTOR_POLICY_VERSION, featureVersion: FEATURE_VERSION, dataAsOf: end,
-    datasetHash: data.datasetHash, trials: candidates.length, costs,
-    sides: { LONG: { reason: "训练/验证样本不足或收益未达标" }, SHORT: { reason: "训练/验证样本不足或收益未达标" } },
+    datasetHash: data.datasetHash, trials: 0, costs,
+    sides: { LONG: { reason: "非本轮目标策略" }, SHORT: { reason: "非本轮目标策略" } },
+    targetStrategyId,
   };
   const hasValidation = validation.end > validation.start;
-  for (const side of ["LONG", "SHORT"] as FactorSide[]) {
+
+  // Determine if we should evaluate quant sides (LONG/SHORT)
+  const shouldEvaluateSide = (side: FactorSide) => {
+    if (!targetStrategyId) return true;
+    if (side === "LONG" && targetStrategyId === "kline_stats_long") return true;
+    if (side === "SHORT" && targetStrategyId === "kline_stats_short") return true;
+    return false;
+  };
+
+  const sidesToEvaluate = (["LONG", "SHORT"] as FactorSide[]).filter(shouldEvaluateSide);
+  for (const side of sidesToEvaluate) {
+    result.sides[side] = { reason: "训练/验证样本不足或收益未达标" };
+    const sideCandidates = candidates.filter(c => c.side === side);
+    result.trials += sideCandidates.length;
     let best: { strategy: ReplayStrategy; train: FactorMetrics; validation?: FactorMetrics } | undefined;
-    for (const strategy of candidates.filter(c => c.side === side)) {
+    for (const strategy of sideCandidates) {
       const trainMetrics = evaluate(strategy, train);
       if (!passesFactorMetrics(trainMetrics, 10)) continue;
       let valMetrics: FactorMetrics | undefined;
@@ -157,7 +177,19 @@ export function mineFactors(data: FactorDataset, costs: FactorMiningResult["cost
 
   const presetCandidates = presetStrategyCandidates();
   result.strategies = {};
-  for (const [strategyId, items] of Object.entries(presetCandidates)) {
+  const presetIds = Object.keys(presetCandidates);
+  const strategiesToEvaluate = targetStrategyId
+    ? (presetIds.includes(targetStrategyId) ? [targetStrategyId] : [])
+    : presetIds;
+
+  if (targetStrategyId && presetIds.includes(targetStrategyId)) {
+    result.trials = presetCandidates[targetStrategyId].length;
+  } else if (!targetStrategyId) {
+    result.trials = candidates.length;
+  }
+
+  for (const strategyId of strategiesToEvaluate) {
+    const items = presetCandidates[strategyId];
     let best: { config: Record<string, any>; train: FactorMetrics; validation?: FactorMetrics; holdout: FactorMetrics } | undefined;
     for (const item of items) {
       const trainTrades = replayStrategies(data.candles, data.indices, data.times, data.boards, [item.definition], train, { costs, fvCache, leverage: 3 }).trades;

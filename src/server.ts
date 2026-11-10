@@ -36,7 +36,7 @@ import { LiveTradingEngine, readLiveConfig } from "./live-trading.ts";
 import { handleLiveTradingApi } from "./live-trading-api.ts";
 import type { LiveTradingSummary } from "./live-trading-types.ts";
 import { FactorMiningService } from "./factor-mining-service.ts";
-import { persistFactorBoard, loadRecentCandlesFromDisk, pruneExpiredArchives, DEFAULT_RESEARCH_ROOT } from "./factor-data.ts";
+import { persistFactorBoard, loadRecentCandlesFromDisk, pruneExpiredArchives, DEFAULT_RESEARCH_ROOT, DEFAULT_SIGNALS_DIR } from "./factor-data.ts";
 import type { Row, Status } from "./types.ts";
 
 // Directory the built React frontend is emitted to (web/dist). In dev you run
@@ -86,6 +86,9 @@ export interface SymbolCandleCache {
 
 const candleCache = new Map<string, SymbolCandleCache>();
 const factorMiningService = new FactorMiningService(paperTrading);
+paperTrading.onStrategyStopped = (strategyId) => {
+  factorMiningService.triggerStrategyMining(strategyId);
+};
 let liveTrading: LiveTradingEngine | null = null;
 let liveSetupError: string | null = null;
 let liveControlToken = "";
@@ -758,15 +761,19 @@ function resetPruneStateForTest(): void {
   lastPrunedUtcDay = "";
 }
 
-async function maybePruneArchives(now = Date.now(), root = DEFAULT_RESEARCH_ROOT): Promise<void> {
+async function maybePruneArchives(
+  now = Date.now(),
+  root = DEFAULT_RESEARCH_ROOT,
+  extraDirs: string[] = [DEFAULT_SIGNALS_DIR],
+): Promise<void> {
   const currentUtcDay = new Date(now).toISOString().slice(0, 10).replaceAll("-", "");
   // 仅在首次启动或跨越每个 UTC 00:00 时执行一次整天文件清理，保护磁盘不被频繁读写
   if (lastPrunedUtcDay === currentUtcDay) return;
   lastPrunedUtcDay = currentUtcDay;
   try {
-    const pruneRes = await pruneExpiredArchives(root, KLINE_RETENTION_HOURS, now);
+    const pruneRes = await pruneExpiredArchives(root, KLINE_RETENTION_HOURS, now, extraDirs);
     if (pruneRes.deletedFiles.length > 0) {
-      console.log(`[storage] UTC 0点归档清理: 删除了 ${pruneRes.deletedFiles.length} 个过期日文件`);
+      console.log(`[storage] UTC 0点归档清理: 删除了 ${pruneRes.deletedFiles.length} 个过期日文件 (包含行情 K 线、板块快照与特征快照)`);
     }
   } catch (err: any) {
     console.warn(`[storage] 清理过期归档失败:`, err?.message ?? err);

@@ -204,3 +204,106 @@ test("strategy faults survive persistence (saveState & loadState)", async () => 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("fault triggers targeted strategy re-mining, sets 60m cooldown if failed, and re-mines after cooldown", async () => {
+  const engine = new PaperTradingEngine({ storageFile: null });
+  let stoppedStrategy: string | null = null;
+  engine.onStrategyStopped = (id) => { stoppedStrategy = id; };
+
+  // Trigger stop on streak
+  engine.stopStrategy("streak", "连续亏损2笔", 2, 2, 0, -3, now);
+  assert.equal(stoppedStrategy, "streak", "onStrategyStopped was triggered immediately");
+
+  // Fault is ready to mine immediately
+  let ready = engine.getNextReadyFaultedStrategy(now);
+  assert.ok(ready);
+  assert.equal(ready?.strategyId, "streak");
+
+  // Mining result failed for streak
+  const failedResult: FactorMiningResult = {
+    policyVersion: FACTOR_POLICY_VERSION,
+    featureVersion: FEATURE_VERSION,
+    dataAsOf: now,
+    datasetHash: "test-hash-failed",
+    trials: 7,
+    costs: { takerFeeBps: 5, slippageBps: 2 },
+    targetStrategyId: "streak",
+    sides: { SHORT: { reason: "未被选定" }, LONG: { reason: "未被选定" } },
+    strategies: { streak: { reason: "近期样本不足" } },
+  };
+
+  engine.applyMinedFactors(failedResult, now, "streak");
+  assert.equal(engine.isStrategyFaulted("streak"), true, "remains faulted");
+
+  const fault = engine.getStrategyFaults().find(f => f.strategyId === "streak")!;
+  assert.equal(fault.nextMineAt, now + 60 * 60_000, "cooldown set to 60 minutes");
+  assert.equal(fault.miningAttempts, 1);
+
+  // During 60-min cooldown, getNextReadyFaultedStrategy returns undefined
+  assert.equal(engine.getNextReadyFaultedStrategy(now + 10 * 60_000), undefined, "still in cooldown at +10m");
+  assert.equal(engine.getNextReadyFaultedStrategy(now + 59 * 60_000), undefined, "still in cooldown at +59m");
+
+  // After 60 minutes, it becomes ready again for re-mining
+  const readyAfter60m = engine.getNextReadyFaultedStrategy(now + 60 * 60_000 + 1);
+  assert.ok(readyAfter60m, "ready to re-mine after 60m");
+  assert.equal(readyAfter60m?.strategyId, "streak");
+});
+
+test("FactorMiningService only mines faulted strategies and skips when healthy", async () => {
+  const engine = new PaperTradingEngine({ storageFile: null });
+  let clock = now;
+  let jobTarget: string | undefined;
+  let runCount = 0;
+
+  const mockMetrics = () => ({
+    trades: 10, wins: 8, winRate: 80, wilsonLow: 60,
+    grossProfit: 20, grossLoss: 4, profitFactor: 5,
+    netPercent: 16, avgNetPercent: 1.6,
+  });
+
+  const service = new (await import("../../src/factor-mining-service.ts")).FactorMiningService(
+    engine,
+    async (job) => {
+      runCount++;
+      jobTarget = job.targetStrategyId;
+      return {
+        policyVersion: FACTOR_POLICY_VERSION,
+        featureVersion: FEATURE_VERSION,
+        dataAsOf: clock,
+        datasetHash: "test-hash",
+        trials: 7,
+        costs: { takerFeeBps: 5, slippageBps: 2 },
+        targetStrategyId: job.targetStrategyId,
+        sides: { SHORT: { reason: "未被选定" }, LONG: { reason: "未被选定" } },
+        strategies: job.targetStrategyId ? {
+          [job.targetStrategyId]: {
+            candidate: {
+              strategyId: job.targetStrategyId,
+              config: { ampDivisor: 10, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+              train: mockMetrics(), validation: mockMetrics(), holdout: mockMetrics(),
+            },
+            reason: "验证通过",
+          },
+        } : {},
+      };
+    },
+    () => clock,
+  );
+
+  let miningPromise: Promise<void> | undefined;
+  engine.onStrategyStopped = (id) => { miningPromise = service.triggerStrategyMining(id); };
+
+  // 1. Initially all healthy and previously active, pollFaultedMining does nothing!
+  engine.getFactorMiningState().lastCompletedAt = clock;
+  engine.getFactorMiningState().sides.SHORT.active = { ...mockMetrics(), id: "short", config: {} as any, holdout: mockMetrics(), revision: "rev1", dataAsOf: clock, expiresAt: clock + 3600_000, featureVersion: FEATURE_VERSION, policyVersion: FACTOR_POLICY_VERSION, costs: { takerFeeBps: 5, slippageBps: 2 } };
+  
+  await service.pollFaultedMining();
+  assert.equal(runCount, 0, "no mining while strategies are healthy");
+
+  // 2. Strategy stops due to 2 consecutive losses -> immediate targeted trigger
+  engine.stopStrategy("streak", "连续亏损2笔", 2, 2, 0, -2, clock);
+  await miningPromise;
+  assert.equal(runCount, 1, "mining immediately triggered on strategy stop");
+  assert.equal(jobTarget, "streak", "mined specifically for faulted strategy");
+  assert.equal(engine.isStrategyFaulted("streak"), false, "strategy resumed after successful re-mining");
+});

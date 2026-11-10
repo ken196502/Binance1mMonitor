@@ -276,6 +276,9 @@ export interface StrategyFault {
   consecutiveLosses: number;
   winRate: number;
   netPnlUsdt: number;
+  nextMineAt?: number;
+  lastMinedAt?: number;
+  miningAttempts?: number;
 }
 
 export interface PaperTradingState {

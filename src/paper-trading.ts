@@ -354,6 +354,7 @@ export class PaperTradingEngine {
   private factorMiningState: FactorMiningState = emptyFactorState();
   private strategyFaults = new Map<string, StrategyFault>();
   private entryListeners = new Set<(position: PaperPosition) => void>();
+  public onStrategyStopped?: (strategyId: string) => Promise<void> | void;
 
   /** New entries only: loading/resetting paper state must never replay live orders. */
   public onEntry(listener: (position: PaperPosition) => void): () => void {
@@ -437,13 +438,14 @@ export class PaperTradingEngine {
       factorConfigKey(active.config) === factorConfigKey(config ?? {});
   }
 
-  public applyMinedFactors(result: FactorMiningResult, now = Date.now()): void {
+  public applyMinedFactors(result: FactorMiningResult, now = Date.now(), targetStrategyId?: string): void {
     if (!this.config.factorMining?.enabled) return;
     if (factorWindowKey(result.windows) !== factorWindowKey(this.config.factorMining) || result.featureVersion !== FEATURE_VERSION || result.policyVersion !== FACTOR_POLICY_VERSION ||
       !Number.isFinite(result.dataAsOf) || result.dataAsOf > now || now - result.dataAsOf > FACTOR_MAX_DATA_AGE_MS ||
       result.costs.takerFeeBps !== this.config.takerFeeBps || result.costs.slippageBps !== this.config.slippageBps) {
       throw new Error("因子结果版本、费用或数据时效不匹配");
     }
+    const target = targetStrategyId ?? result.targetStrategyId;
     // Validate both sides before atomically replacing any parameters/approvals.
     for (const side of ["LONG", "SHORT"] as const) {
       const candidate = result.sides[side].candidate;
@@ -455,7 +457,9 @@ export class PaperTradingEngine {
     const appliedSides: ("LONG" | "SHORT")[] = [];
     for (const side of ["LONG", "SHORT"] as const) {
       const { candidate, reason } = result.sides[side];
-      this.factorMiningState.sides[side] = { reason };
+      if (!target || target === (side === "LONG" ? "kline_stats_long" : "kline_stats_short")) {
+        this.factorMiningState.sides[side] = { reason };
+      }
       if (candidate) {
         appliedSides.push(side);
         const config = structuredClone(candidate.config);
@@ -475,8 +479,17 @@ export class PaperTradingEngine {
       return candidate ? { ...quantPreset(s.side, candidate.config), enabled: s.enabled } : s;
     });
 
-    if (result.sides.LONG.candidate) this.strategyFaults.delete("kline_stats_long");
-    if (result.sides.SHORT.candidate) this.strategyFaults.delete("kline_stats_short");
+    if (result.sides.LONG.candidate) {
+      this.strategyFaults.delete("kline_stats_long");
+    } else if (this.strategyFaults.has("kline_stats_long") && (!target || target === "kline_stats_long")) {
+      this.setStrategyMiningCooldown("kline_stats_long", 60, now, result.sides.LONG.reason);
+    }
+
+    if (result.sides.SHORT.candidate) {
+      this.strategyFaults.delete("kline_stats_short");
+    } else if (this.strategyFaults.has("kline_stats_short") && (!target || target === "kline_stats_short")) {
+      this.setStrategyMiningCooldown("kline_stats_short", 60, now, result.sides.SHORT.reason);
+    }
 
     if (result.strategies) {
       for (const [strategyId, info] of Object.entries(result.strategies)) {
@@ -507,9 +520,8 @@ export class PaperTradingEngine {
               sendTelegramMessage(text).catch(e => console.warn("[paper-trading] 发送恢复通知异常:", (e as any)?.message ?? e));
             }
           }
-        } else if (this.strategyFaults.has(strategyId)) {
-          const label = formatSignalLabel(strategyId as PaperSignalType);
-          console.log(`[paper-trading] ⏸️ 策略 [${label}] 处于停用中，本轮未挖掘出达标参数 (${info.reason})，继续保持停用`);
+        } else if (this.strategyFaults.has(strategyId) && (!target || target === strategyId)) {
+          this.setStrategyMiningCooldown(strategyId, 60, now, info.reason);
         }
       }
     }
@@ -594,6 +606,34 @@ export class PaperTradingEngine {
     }
   }
 
+  public getNextReadyFaultedStrategy(now = Date.now()): StrategyFault | undefined {
+    for (const fault of this.strategyFaults.values()) {
+      if (!fault.nextMineAt || now >= fault.nextMineAt) {
+        return fault;
+      }
+    }
+    return undefined;
+  }
+
+  public setStrategyMiningCooldown(strategyId: string, cooldownMinutes = 60, now = Date.now(), reason?: string): void {
+    const fault = this.strategyFaults.get(strategyId);
+    if (!fault) return;
+    fault.nextMineAt = now + cooldownMinutes * 60_000;
+    fault.lastMinedAt = now;
+    fault.miningAttempts = (fault.miningAttempts || 0) + 1;
+    this.scheduleSave();
+    const label = formatSignalLabel(strategyId as PaperSignalType);
+    const nextTimeStr = new Date(fault.nextMineAt).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+    console.log(`[paper-trading] ⏸️ 策略 [${label}] 本轮重新挖掘未达标 (${reason ?? "无达标参数"})，进入 ${cooldownMinutes} 分钟冷却期 (至 ${nextTimeStr})`);
+    if (telegramConfigured()) {
+      const text = `⏸️ <b>策略重新挖掘未达标，进入 ${cooldownMinutes} 分钟冷却</b>: [${escapeHtml(label)}]\n` +
+        `• <b>原因</b>: ${escapeHtml(reason ?? fault.reason)}\n` +
+        `• <b>状态</b>: 保持停用，暂不开仓\n` +
+        `• <b>下次重试</b>: 将于 <b>${nextTimeStr}</b> 再次触发该策略挖掘`;
+      sendTelegramMessage(text).catch(e => console.warn("[paper-trading] 发送冷却通知异常:", (e as any)?.message ?? e));
+    }
+  }
+
   public stopStrategy(
     strategyId: string,
     reason: string,
@@ -601,15 +641,18 @@ export class PaperTradingEngine {
     consecutiveLosses: number,
     winRate: number,
     netPnlUsdt: number,
+    stoppedAt = Date.now(),
   ): void {
     const fault: StrategyFault = {
       strategyId,
-      stoppedAt: Date.now(),
+      stoppedAt,
       reason,
       recentTradesCount,
       consecutiveLosses,
       winRate,
       netPnlUsdt,
+      nextMineAt: stoppedAt,
+      miningAttempts: 0,
     };
     this.strategyFaults.set(strategyId, fault);
     this.scheduleSave();
@@ -622,19 +665,21 @@ export class PaperTradingEngine {
 
     const label = formatSignalLabel(strategyId as PaperSignalType);
     console.warn(
-      `[paper-trading] 🛑 策略 [${label}] 表现不佳已停用: ${reason}。不设时间冷静期，等待后台挖掘系统重新验证并更新参数`,
+      `[paper-trading] 🛑 策略 [${label}] 表现不佳已停用: ${reason}。立即针对该策略触发重新挖掘，若未达标则冷却 60 分钟后重试`,
     );
 
     if (telegramConfigured()) {
       const text =
         `🛑 <b>策略表现不佳已停用</b>: [${escapeHtml(label)}]\n` +
         `• <b>停用原因</b>: ${escapeHtml(reason)}\n` +
-        `• <b>风控规则</b>: 有问题即停，<b>不设时间冷静期</b>\n` +
-        `• <b>恢复条件</b>: 须等待后台挖掘系统在近 48h 行情中回测验证出新达标参数，方可自动更新并解除停用`;
+        `• <b>风控处理</b>: 触发停用并<b>立即针对该策略重新挖掘参数</b>\n` +
+        `• <b>恢复条件</b>: 挖掘出达标参数后自动更新并解除停用；若未达标则进入 60 分钟冷却`;
       sendTelegramMessage(text).catch((e) =>
         console.warn("[paper-trading] 发送停用通知异常:", (e as any)?.message ?? e),
       );
     }
+
+    this.onStrategyStopped?.(strategyId);
   }
 
   private checkStrategyHealth(pos: PaperPosition): void {
@@ -1899,7 +1944,7 @@ export class PaperTradingEngine {
     await this.sendTg(msg, `订单结清 ${pos.symbol}`);
   }
 
-  public async notifyFactorMiningStarted(jobConfig?: FactorMiningConfig): Promise<void> {
+  public async notifyFactorMiningStarted(jobConfig?: FactorMiningConfig, targetStrategyId?: string): Promise<void> {
     if (!telegramConfigured()) {
       return;
     }
@@ -1915,6 +1960,21 @@ export class PaperTradingEngine {
     const takerBps = this.config.takerFeeBps ?? 5;
     const slipBps = this.config.slippageBps ?? 5;
     const timeStr = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+
+    if (targetStrategyId) {
+      const targetLabel = formatSignalLabel(targetStrategyId as PaperSignalType);
+      const msg = [
+        `🧠 <b>[量化策略] 策略停用触发针对性参数重挖</b>`,
+        `• <b>目标策略</b>: <b>[${escapeHtml(targetLabel)}]</b>`,
+        `• <b>触发时间</b>: ${timeStr} (UTC+8)`,
+        `• <b>数据窗口</b>: 回溯 <b>${(totalMin / 60).toFixed(1)}h</b> (${totalMin}分钟)`,
+        `• <b>模拟成本</b>: 手续费 <b>${takerBps} bps</b> | 滑点 <b>${slipBps} bps</b>`,
+        `• <b>规则机制</b>: 重新挖掘参数；若达标即刻恢复，若未达标则进入 <b>60 分钟冷却期</b>`,
+        `• <b>执行状态</b>: 后台子进程独立计算，特征持续录制中，不影响其他策略运行。`,
+      ].join("\n");
+      await this.sendTg(msg, `针对性因子挖掘 [${targetLabel}]`);
+      return;
+    }
 
     const msg = [
       `🧠 <b>[量化策略] 开始新一轮因子模型训练与参数挖掘</b>`,
