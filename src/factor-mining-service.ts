@@ -95,11 +95,13 @@ export class FactorMiningService {
     const signature = factorConfigKey(config);
     this.engine.setFactorMiningState({ ...state, running: true, lastStartedAt: now, lastError: undefined });
 
-    const targetDesc = targetStrategyId ? `针对策略 [${targetStrategyId}]` : `全策略`;
-    console.log(`[factor-mining] ⏳ [${new Date(now).toISOString()}] 开始新一轮因子模型训练与参数挖掘 (${targetDesc}, 10分钟超时看门狗监控中)...`);
-    const notification = this.engine.notifyFactorMiningStarted?.(config.factorMining, targetStrategyId)?.catch(e =>
-      console.error(`[factor-mining] TG 播报 [训练开始] 失败:`, e)
-    );
+    const targetDesc = targetStrategyId ? `针对策略 [${targetStrategyId}]` : `针对性挖掘`;
+    console.log(`[factor-mining] ⏳ [${new Date(now).toISOString()}] 开始针对性因子模型训练与参数挖掘 (${targetDesc}, 10分钟超时看门狗监控中)...`);
+    const notification = targetStrategyId
+      ? this.engine.notifyFactorMiningStarted?.(config.factorMining, targetStrategyId)?.catch(e =>
+          console.error(`[factor-mining] TG 播报 [训练开始] 失败:`, e)
+        )
+      : undefined;
     try {
       const result = await this.run({
         now,

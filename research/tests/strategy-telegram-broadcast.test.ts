@@ -96,7 +96,7 @@ test("Telegram broadcasts for factor training start and applying new strategy pa
   try {
     const engine = new PaperTradingEngine({ storageFile: null });
 
-    // 1. 验证 FactorMiningService.tick() 启动训练时发送 TG 播报
+    // 1. 验证针对性重挖触发时发送针对性重挖 TG 播报，且无目标策略时不发送全量训练开始播报
     let jobExecuted = false;
     const service = new FactorMiningService(
       engine,
@@ -107,27 +107,33 @@ test("Telegram broadcasts for factor training start and applying new strategy pa
       () => now,
     );
 
+    // 无 targetStrategyId 时不发送训练开始播报
     await service.tick();
+    await new Promise((r) => setTimeout(r, 100));
+    const noTargetMsgCount = received.length;
+
+    // 带 targetStrategyId 时发送 [策略停用触发针对性参数重挖] 播报
+    await service.tick({ targetStrategyId: "streak" });
     assert.equal(jobExecuted, true, "训练任务应被执行");
 
     // 等待异步 TG 消息接收
-    for (let i = 0; i < 20 && received.length < 2; i++) {
+    for (let i = 0; i < 20 && received.length < noTargetMsgCount + 2; i++) {
       await new Promise((r) => setTimeout(r, 50));
     }
 
-    assert.ok(received.length >= 2, `应该收到至少2条消息（1条训练开始，1条应用新策略），实际收到 ${received.length} 条`);
+    assert.ok(received.length >= noTargetMsgCount + 2, `应该收到至少2条消息（1条针对性重挖开始，1条应用新策略），实际收到 ${received.length} 条`);
 
-    // 验证第一条消息：开始训练播报
-    const trainingMsg = received[0].text;
-    assert.match(trainingMsg, /开始新一轮因子模型训练与参数挖掘/);
-    assert.match(trainingMsg, /训练集/);
-    assert.match(trainingMsg, /验证集/);
-    assert.match(trainingMsg, /留出集/);
+    // 验证第一条消息：针对性重挖开始播报
+    const trainingMsg = received[noTargetMsgCount].text;
+    assert.match(trainingMsg, /策略停用触发针对性参数重挖/);
+    assert.match(trainingMsg, /新高顶背离/);
+    assert.match(trainingMsg, /数据窗口/);
     assert.match(trainingMsg, /模拟成本/);
-    assert.match(trainingMsg, /搜索空间/);
+    assert.match(trainingMsg, /规则机制/);
+    assert.match(trainingMsg, /60 分钟冷却期/);
 
     // 验证第二条消息：应用新因子策略参数播报
-    const applyMinedMsg = received[1].text;
+    const applyMinedMsg = received[noTargetMsgCount + 1].text;
     assert.match(applyMinedMsg, /新一轮模型参数已通过验证并成功应用生效/);
     assert.match(applyMinedMsg, /做空/);
     assert.match(applyMinedMsg, /MA10_BREAKDOWN/);

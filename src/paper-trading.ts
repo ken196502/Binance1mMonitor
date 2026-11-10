@@ -1945,7 +1945,7 @@ export class PaperTradingEngine {
   }
 
   public async notifyFactorMiningStarted(jobConfig?: FactorMiningConfig, targetStrategyId?: string): Promise<void> {
-    if (!telegramConfigured()) {
+    if (!telegramConfigured() || !targetStrategyId) {
       return;
     }
     const fm = {
@@ -1961,35 +1961,17 @@ export class PaperTradingEngine {
     const slipBps = this.config.slippageBps ?? 5;
     const timeStr = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
 
-    if (targetStrategyId) {
-      const targetLabel = formatSignalLabel(targetStrategyId as PaperSignalType);
-      const msg = [
-        `🧠 <b>[量化策略] 策略停用触发针对性参数重挖</b>`,
-        `• <b>目标策略</b>: <b>[${escapeHtml(targetLabel)}]</b>`,
-        `• <b>触发时间</b>: ${timeStr} (UTC+8)`,
-        `• <b>数据窗口</b>: 回溯 <b>${(totalMin / 60).toFixed(1)}h</b> (${totalMin}分钟)`,
-        `• <b>模拟成本</b>: 手续费 <b>${takerBps} bps</b> | 滑点 <b>${slipBps} bps</b>`,
-        `• <b>规则机制</b>: 重新挖掘参数；若达标即刻恢复，若未达标则进入 <b>60 分钟冷却期</b>`,
-        `• <b>执行状态</b>: 后台子进程独立计算，特征持续录制中，不影响其他策略运行。`,
-      ].join("\n");
-      await this.sendTg(msg, `针对性因子挖掘 [${targetLabel}]`);
-      return;
-    }
-
+    const targetLabel = formatSignalLabel(targetStrategyId as PaperSignalType);
     const msg = [
-      `🧠 <b>[量化策略] 开始新一轮因子模型训练与参数挖掘</b>`,
+      `🧠 <b>[量化策略] 策略停用触发针对性参数重挖</b>`,
+      `• <b>目标策略</b>: <b>[${escapeHtml(targetLabel)}]</b>`,
       `• <b>触发时间</b>: ${timeStr} (UTC+8)`,
       `• <b>数据窗口</b>: 回溯 <b>${(totalMin / 60).toFixed(1)}h</b> (${totalMin}分钟)`,
-      `   - 训练集 (Train): 最近 <b>${trainMin}m</b> (~${(trainMin / 60).toFixed(1)}h)`,
-      `   - 验证集 (Validation): <b>${valMin}m</b> (~${(valMin / 60).toFixed(1)}h)`,
-      `   - 留出集 (Holdout): <b>${holdMin}m</b> (~${(holdMin / 60).toFixed(1)}h)`,
       `• <b>模拟成本</b>: 手续费 <b>${takerBps} bps</b> | 滑点 <b>${slipBps} bps</b>`,
-      `• <b>搜索空间</b>: 多空全形态网格遍历 (MA均线/MACD/窗口振幅/持仓周期)`,
-      `• <b>调度机制</b>: 每 <b>${fm.refreshMinutes ?? 60}m</b> 周期训练，模型最长有效 <b>${fm.validForMinutes ?? 120}m</b>`,
-      `• <b>执行状态</b>: 后台子进程独立计算，训练完成并通过严格验证后自动生效。`,
+      `• <b>规则机制</b>: 重新挖掘参数；若达标即刻恢复，若未达标则进入 <b>60 分钟冷却期</b>`,
+      `• <b>执行状态</b>: 后台子进程独立计算，特征持续录制中，不影响其他策略运行。`,
     ].join("\n");
-
-    await this.sendTg(msg, "量化因子开始训练");
+    await this.sendTg(msg, `针对性因子挖掘 [${targetLabel}]`);
   }
 
   private async notifyMinedFactorsApplied(
