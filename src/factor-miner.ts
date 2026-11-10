@@ -94,12 +94,12 @@ export function factorCandidates(): ReplayStrategy[] {
       for (const maRequirement of mas) {
         for (const macdRequirement of macds) {
           for (const candleRequirement of candles) {
-            for (const holdMinutes of [10, 15]) {
+            for (const holdMinutes of [10, 20, 30]) {
               candidates.push({
                 id: `${side}:${intervalWindow}:${ampDivisor}:${maRequirement}:${macdRequirement}:${candleRequirement}:${holdMinutes}`,
                 side, intervalWindow, ampDivisor, maRequirement, macdRequirement, candleRequirement, holdMinutes,
                 topN: 10, minDayChange: 10, tp1Percent: 2.5, tp2Percent: 5,
-                stopLossPercent: side === "LONG" ? 3 : 3.5, cooldownMinutes: 3,
+                stopLossPercent: side === "LONG" ? 3 : 3.5, cooldownMinutes: holdMinutes,
                 moveSlToEntryAfterTp1: true, leverage: 3,
               });
             }
