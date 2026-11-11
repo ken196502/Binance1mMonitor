@@ -285,6 +285,7 @@ export interface PaperTradingState {
   strategyRuntime?: import("./strategy-engine.ts").StrategyRuntimeState;
   strategyMonitor?: import("./strategy-engine.ts").StrategyMonitorResult[];
   strategyFaults?: StrategyFault[];
+  strategyResetAt?: Record<string, number>;
   factorMining?: import("./factor-policy.ts").FactorMiningState;
   account: PaperAccount;
   pendingOrders: PaperPendingOrder[];
@@ -336,6 +337,7 @@ export interface PaperTradingSummaryConfig {
 export interface PaperTradingSummary {
   factorMining?: import("./factor-policy.ts").FactorMiningState & { entryAllowed: Record<"LONG" | "SHORT", boolean> };
   strategyFaults?: StrategyFault[];
+  strategyResetAt?: Record<string, number>;
   bySide?: Record<"LONG" | "SHORT", PaperDirectionStats>;
   account: PaperAccount;
   pendingOrders: PaperPendingOrder[];

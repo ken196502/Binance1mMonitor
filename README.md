@@ -140,7 +140,8 @@ npm run deploy:strategy -- --url https://macd.subx.fun
 | `GET /api/status` | 行情快照与模拟账户摘要 |
 | `GET /api/paper-trading` | 账户、挂单、持仓、历史及多空统计 |
 | `GET /api/paper-trading/config` | 当前参数 |
-| `POST /api/paper-trading/config` | 合并更新参数（也支持 PUT/PATCH）；非法形态参数整次拒绝 |
+| `POST /api/paper-trading/config` | 合并更新参数（也支持 PUT/PATCH）；部署新参数或传入 `resetFaults: true` 自动重置暂停策略 |
+| `POST /api/paper-trading/strategy-faults/reset` | 重置策略表现不佳停用/重新挖掘冷却状态（支持可选 `{ strategyId }` 或全部重置） |
 | `POST /api/paper-trading/reset` | 重置模拟账户；GET 不会重置 |
 
 示例：

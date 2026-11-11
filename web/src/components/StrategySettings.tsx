@@ -81,13 +81,44 @@ function RuleEditor({ value, onChange }: { value: FeatureRule; onChange: (v: Fea
   </div>;
 }
 
-export function StrategySettings({ value, onChange }: { value: StrategyDefinition[]; onChange: (v: StrategyDefinition[]) => void }) {
+export function StrategySettings({
+  value,
+  onChange,
+  strategyFaults = [],
+  onResetFault,
+}: {
+  value: StrategyDefinition[];
+  onChange: (v: StrategyDefinition[]) => void;
+  strategyFaults?: import("../../../src/types.ts").StrategyFault[];
+  onResetFault?: (strategyId: string) => void;
+}) {
   const update = (i: number, s: StrategyDefinition) => onChange(value.map((old, j) => j === i ? s : old));
   return <div className="unified-strategy-settings">
     <p>所有策略共用特征监控与条件组合。比例使用小数（0.55 = 55%）；带 % 的特征使用百分数。排列状态：bull_full / bull_short / bear_full / bear_short；峰谷阶段：watching_peak / pulled_back / rebounded。</p>
-    {value.map((s, i) => <details key={s.id} className="strategy-preset-card">
-      <summary>{s.enabled ? "●" : "○"} {s.label} · {s.side === "LONG" ? "做多" : "做空"} · {s.exit.leverage ?? 3}x</summary>
-      <div className="kline-strategy-fields">
+    {value.map((s, i) => {
+      const fault = strategyFaults.find(f => f.strategyId === s.id);
+      return <details key={s.id} className={`strategy-preset-card ${fault ? "strategy-card-faulted" : ""}`}>
+        <summary>
+          {s.enabled ? "●" : "○"} {s.label} · {s.side === "LONG" ? "做多" : "做空"} · {s.exit.leverage ?? 3}x
+          {fault && <span className="strategy-fault-pill" title={`表现不佳暂停: ${fault.reason}`}> ⚠️ 已暂停 (冷却/需重挖)</span>}
+        </summary>
+        {fault && (
+          <div className="strategy-fault-inline-banner">
+            <div>
+              <b>⏸️ 策略已暂停交易</b>：{fault.reason}
+              {fault.nextMineAt && <span> (下次挖掘重试: {new Date(fault.nextMineAt).toLocaleTimeString("zh-CN", { hour12: false })})</span>}
+            </div>
+            <button
+              type="button"
+              className="btn-reset-fault-mini"
+              onClick={() => onResetFault?.(s.id)}
+              title="已部署新版本？点击重置该策略的暂停状态并恢复正常开仓"
+            >
+              🔄 重置暂停状态
+            </button>
+          </div>
+        )}
+        <div className="kline-strategy-fields">
         <label>名称<input required value={s.label} onChange={e => update(i, { ...s, label: e.target.value })} /></label>
         <label>方向<select value={s.side} disabled={s.factorManaged} onChange={e => update(i, { ...s, side: e.target.value as "LONG" | "SHORT" })}><option value="SHORT">做空</option><option value="LONG">做多</option></select></label>
         <label>连续 K 线至少<input type="number" required min={1} max={500} value={s.minBars} onChange={e => update(i, { ...s, minBars: Number(e.target.value) })} /></label>
@@ -120,7 +151,8 @@ export function StrategySettings({ value, onChange }: { value: StrategyDefinitio
         <button type="button" disabled={value.length >= 50} onClick={() => onChange([...value, { ...structuredClone(s), id: `custom_${Date.now().toString(36)}`, label: `${s.label} · 自定义`, enabled: false, factorManaged: false, cooldownGroup: undefined }])}>复制为新组合</button>
         <button type="button" onClick={() => onChange(value.filter((_, j) => i !== j))}>移除策略</button>
       </div>
-    </details>)}
+    </details>;
+    })}
     <button type="button" disabled={value.length >= 50} onClick={() => onChange([...value, { id: `custom_${Date.now().toString(36)}`, label: "自定义特征组合", side: "SHORT", enabled: false,
       minBars: 60, entry: { all: [defaultRule()] }, exit: { holdMinutes: 30, leverage: 3, tp1Percent: 3, tp2Percent: 6, stopLossPercent: 5, moveSlToEntryAfterTp1: true }, cooldownMinutes: 20 }])}>＋新增特征组合</button>
   </div>;

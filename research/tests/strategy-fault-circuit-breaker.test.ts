@@ -295,7 +295,7 @@ test("FactorMiningService only mines faulted strategies and skips when healthy",
 
   // 1. Initially all healthy and previously active, pollFaultedMining does nothing!
   engine.getFactorMiningState().lastCompletedAt = clock;
-  engine.getFactorMiningState().sides.SHORT.active = { ...mockMetrics(), id: "short", config: {} as any, holdout: mockMetrics(), revision: "rev1", dataAsOf: clock, expiresAt: clock + 3600_000, featureVersion: FEATURE_VERSION, policyVersion: FACTOR_POLICY_VERSION, costs: { takerFeeBps: 5, slippageBps: 2 } };
+  engine.getFactorMiningState().sides.SHORT.active = { ...mockMetrics(), id: "short", config: {} as any, train: mockMetrics(), holdout: mockMetrics(), revision: "rev1", dataAsOf: clock, expiresAt: clock + 3600_000, featureVersion: FEATURE_VERSION, policyVersion: FACTOR_POLICY_VERSION, costs: { takerFeeBps: 5, slippageBps: 2 } };
   
   await service.pollFaultedMining();
   assert.equal(runCount, 0, "no mining while strategies are healthy");
@@ -306,4 +306,87 @@ test("FactorMiningService only mines faulted strategies and skips when healthy",
   assert.equal(runCount, 1, "mining immediately triggered on strategy stop");
   assert.equal(jobTarget, "streak", "mined specifically for faulted strategy");
   assert.equal(engine.isStrategyFaulted("streak"), false, "strategy resumed after successful re-mining");
+});
+
+test("manual reset: clearStrategyFault and clearAllStrategyFaults clear fault state and allow trading", () => {
+  const engine = new PaperTradingEngine({ storageFile: null, factorMining: { enabled: false } });
+  engine.stopStrategy("streak", "连续亏损2笔", 2, 2, 0, -2);
+  engine.stopStrategy("hourly_suppression", "胜率过低", 3, 0, 33, -3);
+  assert.equal(engine.isStrategyFaulted("streak"), true);
+  assert.equal(engine.isStrategyFaulted("hourly_suppression"), true);
+  assert.equal(engine.getStrategyFaults().length, 2);
+
+  // Clear single strategy
+  const clearedStreak = engine.clearStrategyFault("streak", "测试单策略重置");
+  assert.equal(clearedStreak, true);
+  assert.equal(engine.isStrategyFaulted("streak"), false);
+  assert.equal(engine.isStrategyFaulted("hourly_suppression"), true);
+  assert.equal(engine.getStrategyFaults().length, 1);
+
+  // Clear all strategies
+  const clearedAll = engine.clearAllStrategyFaults("测试全局重置");
+  assert.deepEqual(clearedAll, ["hourly_suppression"]);
+  assert.equal(engine.isStrategyFaulted("hourly_suppression"), false);
+  assert.equal(engine.getStrategyFaults().length, 0);
+});
+
+test("deploying new parameters automatically resets strategy fault", () => {
+  const engine = new PaperTradingEngine({ storageFile: null, factorMining: { enabled: false } });
+  engine.stopStrategy("streak", "连续亏损2笔", 2, 2, 0, -2);
+  assert.equal(engine.isStrategyFaulted("streak"), true);
+
+  // Deploying new streakConfig automatically clears its fault
+  engine.updateConfig({
+    streakConfig: { ampDivisor: 15 },
+  });
+  assert.equal(engine.isStrategyFaulted("streak"), false, "streak fault cleared upon streakConfig update");
+
+  // Re-fault it and update strategies list
+  engine.stopStrategy("streak", "连续亏损2笔", 2, 2, 0, -2);
+  assert.equal(engine.isStrategyFaulted("streak"), true);
+  const currentStrategies = engine.getConfig().strategies ?? [];
+  engine.updateConfig({
+    strategies: currentStrategies.map(s => s.id === "streak" ? { ...s, exit: { ...s.exit, leverage: 5 } } : s),
+  });
+  assert.equal(engine.isStrategyFaulted("streak"), false, "streak fault cleared upon strategies update");
+
+  // Re-fault and use explicit resetFaults: true
+  engine.stopStrategy("hourly_suppression", "连续亏损", 2, 2, 0, -2);
+  assert.equal(engine.isStrategyFaulted("hourly_suppression"), true);
+  engine.updateConfig({ resetFaults: true });
+  assert.equal(engine.isStrategyFaulted("hourly_suppression"), false, "hourly_suppression fault cleared via resetFaults: true");
+});
+
+test("trade history evaluation window resets after fault clear so 1 loss does not re-fault", () => {
+  const engine = new PaperTradingEngine({ storageFile: null, factorMining: { enabled: false } });
+  const clock = 1700000000000;
+
+  // Simulate 2 previous closed losing trades at clock - 1000 and clock - 500
+  const oldTrade1 = {
+    id: "old1", symbol: "OLD1", side: "SHORT" as const, leverage: 3, marginUsdt: 20, notionalUsdt: 60,
+    status: "CLOSED" as const, signalType: "streak" as const, entryTime: clock - 1000, closedAt: clock - 900,
+    entryPrice: 100, currentPrice: 105, dayChangePercent: 10, amp30Percent: 5, streakCount: 3, upperShadowRatio: 0.1,
+    greenRatio: 0.8, consecutiveGreenBars: 3, tp1Percent: 3, sl1Percent: 5, tp1Price: 97, sl1Price: 105, sl2Percent: 6,
+    tp2Percent: 6, sl2Price: 106, tp2Price: 94, timeoutAt: clock, exits: [], remainingFraction: 0,
+    realizedNetPnlUsdt: -1.0, unrealizedNetPnlUsdt: 0, totalNetPnlUsdt: -1.0, roePercent: -5,
+  };
+  const oldTrade2 = { ...oldTrade1, id: "old2", symbol: "OLD2", entryTime: clock - 500, closedAt: clock - 400 };
+
+  (engine as any).closedPositions = [oldTrade2, oldTrade1];
+  engine.stopStrategy("streak", "连续亏损2笔", 2, 2, 0, -2, clock);
+  assert.equal(engine.isStrategyFaulted("streak"), true);
+
+  // Reset the fault at clock + 100
+  engine.clearStrategyFault("streak", "重置测试");
+  assert.equal(engine.isStrategyFaulted("streak"), false);
+
+  // Now a single new trade closes with a loss after reset (at clock + 500)
+  const newTrade = {
+    ...oldTrade1, id: "new1", symbol: "NEW1", entryTime: clock + 200, closedAt: clock + 500, totalNetPnlUsdt: -0.5,
+  };
+  (engine as any).closedPositions.unshift(newTrade);
+  (engine as any).checkStrategyHealth(newTrade);
+
+  // Since it was only 1 loss since reset, streak should NOT be faulted!
+  assert.equal(engine.isStrategyFaulted("streak"), false, "single loss after reset must not re-trigger consecutive loss fault");
 });

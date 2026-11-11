@@ -105,6 +105,7 @@ export interface PaperStrategyConfig {
   klineStatsShortConfig?: Partial<KlineStatsStrategyLiveConfig>;
   klineStatsLongConfig?: Partial<KlineStatsStrategyLiveConfig>;
   factorMining?: FactorMiningConfig;
+  resetFaults?: boolean | string[]; // 是否在更新配置时重置策略暂停/重新挖掘状态 (true: 全部重置; string[]: 重置指定策略列表)
 }
 
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(process.cwd(), "data");
@@ -353,6 +354,7 @@ export class PaperTradingEngine {
   private strategyMonitor: StrategyMonitorResult[] = [];
   private factorMiningState: FactorMiningState = emptyFactorState();
   private strategyFaults = new Map<string, StrategyFault>();
+  private strategyResetAt = new Map<string, number>();
   private entryListeners = new Set<(position: PaperPosition) => void>();
   public onStrategyStopped?: (strategyId: string) => Promise<void> | void;
 
@@ -600,10 +602,44 @@ export class PaperTradingEngine {
     return Array.from(this.strategyFaults.values());
   }
 
-  public clearStrategyFault(strategyId: string): void {
-    if (this.strategyFaults.delete(strategyId)) {
+  public clearStrategyFault(strategyId: string, reason = "手动重置"): boolean {
+    const existed = this.strategyFaults.delete(strategyId);
+    this.strategyResetAt.set(strategyId, Date.now());
+    if (existed) {
       this.scheduleSave();
+      const label = formatSignalLabel(strategyId as PaperSignalType);
+      console.log(`[paper-trading] 🔄 策略 [${label}] 暂停与重新挖掘状态已重置 (${reason})，恢复正常开仓`);
+      if (telegramConfigured()) {
+        const text = `🔄 <b>策略暂停状态已重置</b>: [${escapeHtml(label)}]\n` +
+          `• <b>原因</b>: ${escapeHtml(reason)}\n` +
+          `• <b>权限</b>: 停用与冷却状态已解除，恢复正常开仓`;
+        sendTelegramMessage(text).catch(e => console.warn("[paper-trading] 发送重置通知异常:", (e as any)?.message ?? e));
+      }
     }
+    return existed;
+  }
+
+  public clearAllStrategyFaults(reason = "手动重置"): string[] {
+    const now = Date.now();
+    const cleared: string[] = [];
+    for (const strategyId of Array.from(this.strategyFaults.keys())) {
+      this.strategyFaults.delete(strategyId);
+      this.strategyResetAt.set(strategyId, now);
+      cleared.push(strategyId);
+    }
+    if (cleared.length > 0) {
+      this.scheduleSave();
+      const labels = cleared.map(id => formatSignalLabel(id as PaperSignalType)).join(", ");
+      console.log(`[paper-trading] 🔄 全部暂停策略已重置 (${reason}): [${labels}]，恢复正常开仓`);
+      if (telegramConfigured()) {
+        const text = `🔄 <b>所有策略暂停状态已重置</b>\n` +
+          `• <b>重置策略</b>: ${escapeHtml(labels)}\n` +
+          `• <b>原因</b>: ${escapeHtml(reason)}\n` +
+          `• <b>权限</b>: 停用与冷却状态已解除，全部恢复正常开仓`;
+        sendTelegramMessage(text).catch(e => console.warn("[paper-trading] 发送重置通知异常:", (e as any)?.message ?? e));
+      }
+    }
+    return cleared;
   }
 
   public getNextReadyFaultedStrategy(now = Date.now()): StrategyFault | undefined {
@@ -686,8 +722,9 @@ export class PaperTradingEngine {
     const strategyId = pos.signalType ?? "streak";
     if (this.strategyFaults.has(strategyId)) return;
 
+    const resetAt = this.strategyResetAt.get(strategyId) ?? 0;
     const stratPositions = this.closedPositions.filter(
-      (p) => (p.signalType ?? "streak") === strategyId,
+      (p) => (p.signalType ?? "streak") === strategyId && (p.closedAt ?? p.entryTime ?? 0) >= resetAt,
     );
     if (!stratPositions.length) return;
 
@@ -1004,6 +1041,46 @@ export class PaperTradingEngine {
     console.log(
       `[paper-trading] ⚙️ 配置已通过 API 动态更新: 新高闪击杠杆 ${this.config.streakLeverage ?? 3}x, 顺势波段杠杆 ${this.config.trendLeverage ?? this.config.leverage}x, 量化特征杠杆 ${this.config.klineStatsLeverage ?? 3}x, 做多杠杆 ${this.config.longLeverage ?? 3}x, 仓位比例 ${((this.config.marginRate ?? 0.2) * 100).toFixed(0)}% (约 ${currentMargin.toFixed(1)}U), 最大持仓 ${this.config.maxPositions ?? 5} 笔 (每策略 ${this.config.maxPositionsPerStrategy ?? 1} 笔), ampDivisor=${this.config.ampDivisor ?? 10}`,
     );
+
+    // 策略暂停/重新挖掘状态重置处理
+    if (updates.resetFaults === true || (updates as any).resetFaults === "all") {
+      this.clearAllStrategyFaults("配置更新并显式请求重置全部");
+    } else if (Array.isArray(updates.resetFaults)) {
+      for (const id of updates.resetFaults) {
+        this.clearStrategyFault(id, "配置更新并显式请求重置");
+      }
+    } else {
+      // 自动检测哪些策略参数被更新或被重新启用，自动重置其暂停状态
+      const strategyParamKeys: Array<[string, keyof PaperStrategyConfig, keyof PaperStrategyConfig]> = [
+        ["streak", "streakConfig", "enableStreak"],
+        ["rebound", "reboundConfig", "enableRebound"],
+        ["deep_rebound", "deepReboundConfig", "enableDeepRebound"],
+        ["hourly_suppression", "hourlySuppressionConfig", "enableHourlySuppression"],
+        ["w_bottom_divergence", "wBottomDivergenceConfig", "enableWBottomDivergence"],
+        ["kline_stats_short", "klineStatsShortConfig", "enableKlineStatsShort"],
+        ["kline_stats_long", "klineStatsLongConfig", "enableKlineStatsLong"],
+      ];
+      for (const [stratId, cfgKey, enableKey] of strategyParamKeys) {
+        const configUpdated = updates[cfgKey] !== undefined;
+        const reEnabled = updates[enableKey] === true;
+        if (configUpdated || reEnabled) {
+          if (this.strategyFaults.has(stratId)) {
+            this.clearStrategyFault(stratId, "检测到策略配置更新或重新启用");
+          } else {
+            this.strategyResetAt.set(stratId, Date.now());
+          }
+        }
+      }
+      if (updates.strategies) {
+        for (const s of updates.strategies) {
+          if (this.strategyFaults.has(s.id)) {
+            this.clearStrategyFault(s.id, "检测到策略集合更新");
+          } else {
+            this.strategyResetAt.set(s.id, Date.now());
+          }
+        }
+      }
+    }
 
     this.scheduleSave();
     if (!options?.skipNotify) {
@@ -2144,6 +2221,7 @@ export class PaperTradingEngine {
         leverageDefaultsVersion: 1,
         factorMining: this.getFactorMiningState(),
         strategyFaults: this.getStrategyFaults(),
+        strategyResetAt: Object.fromEntries(this.strategyResetAt.entries()),
         account: this.account,
         pendingOrders: Array.from(this.pendingOrders.values()),
         activePositions: Array.from(this.activePositions.values()),
@@ -2239,6 +2317,12 @@ export class PaperTradingEngine {
             this.strategyFaults.set(f.strategyId, f);
           }
         }
+        if ((data as any).strategyResetAt && typeof (data as any).strategyResetAt === "object") {
+          this.strategyResetAt.clear();
+          for (const [k, v] of Object.entries((data as any).strategyResetAt)) {
+            if (typeof v === "number") this.strategyResetAt.set(k, v);
+          }
+        }
         console.log(
           `[paper-trading] 成功载入模拟交易历史: 账户余额 ${this.account.balanceUsdt.toFixed(2)} USDT, 挂单 ${this.pendingOrders.size} 笔, 活跃 ${this.activePositions.size} 笔, 历史 ${this.closedPositions.length} 笔 (胜率 ${this.stats.winRate.toFixed(1)}%)`,
         );
@@ -2268,6 +2352,7 @@ export class PaperTradingEngine {
     this.stats = this.computeStatsForPositions([]);
     this.stats24h = this.computeStatsForPositions([]);
     this.strategyFaults.clear();
+    this.strategyResetAt.clear();
     this.factorMiningState = initialFactorMiningState();
     this.saveState();
     console.log(`[paper-trading] 🔄 模拟交易账户、活跃持仓、挂单与历史明细已全部重置为初始状态 (100 USDT)`);

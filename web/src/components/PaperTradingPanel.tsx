@@ -9,6 +9,8 @@ import type {
   PaperPosition,
   PaperPendingOrder,
   PaperExitReason,
+  PaperSignalType,
+  StrategyFault,
 } from "../../../src/types.ts";
 
 export interface PaperTradingPanelProps {
@@ -193,6 +195,32 @@ export function PaperTradingPanel({
   const [factorMiningInput, setFactorMiningInput] = useState({ ...DEFAULT_FACTOR_MINING });
   const [monitorResults, setMonitorResults] = useState<StrategyMonitorResult[]>([]);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [isResettingFaults, setIsResettingFaults] = useState<string | null>(null);
+  const [resetFaultsOnSave, setResetFaultsOnSave] = useState<boolean>(true);
+
+  const handleResetFault = async (strategyId?: string) => {
+    try {
+      setIsResettingFaults(strategyId ?? "all");
+      const res = await fetch("/api/paper-trading/strategy-faults/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategyId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "重置失败");
+      }
+      if (data.summary) {
+        setLiveSummary(data.summary);
+      } else {
+        await fetchLive();
+      }
+    } catch (e: any) {
+      alert(`重置策略暂停状态失败: ${e.message}`);
+    } finally {
+      setIsResettingFaults(null);
+    }
+  };
 
   // 自主同步与高频轮询 /api/paper-trading，彻底摆脱主状态依赖与轮询迟滞
   const fetchLive = async () => {
@@ -306,6 +334,7 @@ export function PaperTradingPanel({
           maxPositionsPerStrategy: Number(maxPerStrategyInput),
           limitDivisor: Number(limitDivisorInput),
           enableLongs: enableLongsInput,
+          resetFaults: resetFaultsOnSave,
         }),
       });
       const data = await res.json();
@@ -770,8 +799,63 @@ export function PaperTradingPanel({
     );
   };
 
+  const renderFaultsAlert = () => {
+    const faults = summary?.strategyFaults ?? [];
+    if (!faults.length) return null;
+    return (
+      <div className="paper-fault-alert">
+        <div className="paper-fault-header">
+          <div className="paper-fault-title-wrap">
+            <span className="paper-fault-icon">⚠️</span>
+            <span className="paper-fault-title">
+              <b>策略已暂停并等待重新挖掘 ({faults.length})</b>：近期表现不佳触发风控保护
+            </span>
+          </div>
+          <button
+            type="button"
+            className="btn-reset-fault-all"
+            disabled={isResettingFaults !== null}
+            onClick={() => handleResetFault()}
+            title="已部署新版本？点击一键重置所有策略暂停状态"
+          >
+            {isResettingFaults === "all" ? "重置中..." : "🔄 一键重置全部暂停策略"}
+          </button>
+        </div>
+        <div className="paper-fault-list">
+          {faults.map((f) => {
+            const label = formatSignalLabel(f.strategyId as PaperSignalType);
+            const nextTime = f.nextMineAt ? new Date(f.nextMineAt).toLocaleTimeString("zh-CN", { hour12: false }) : null;
+            return (
+              <div key={f.strategyId} className="paper-fault-item">
+                <div className="paper-fault-item-info">
+                  <span className="paper-fault-tag">{label}</span>
+                  <span className="paper-fault-reason">{f.reason}</span>
+                  {nextTime && (
+                    <span className="paper-fault-cooldown">
+                      冷却至 {nextTime} (已试 {f.miningAttempts ?? 0} 次)
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="btn-reset-fault-item"
+                  disabled={isResettingFaults !== null}
+                  onClick={() => handleResetFault(f.strategyId)}
+                  title={`重置 [${label}] 暂停状态，立即允许新开仓`}
+                >
+                  {isResettingFaults === f.strategyId ? "重置中..." : "恢复/重置"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   const renderConfigForm = (_isModal: boolean) => (
     <form onSubmit={handleSaveConfig}>
+      {renderFaultsAlert()}
       {/* 2. 仓位与风控 */}
       <div style={{ marginBottom: "14px", padding: "10px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
         <div style={{ fontSize: "12px", fontWeight: "bold", color: "var(--text)", marginBottom: "8px" }}>🛡️ 仓位风控与门槛参数</div>
@@ -871,7 +955,23 @@ export function PaperTradingPanel({
           </p>)}
         </div>
       </details>
-      <StrategySettings value={strategiesInput} onChange={setStrategiesInput} />
+      <StrategySettings
+        value={strategiesInput}
+        onChange={setStrategiesInput}
+        strategyFaults={summary?.strategyFaults}
+        onResetFault={handleResetFault}
+      />
+
+      <div style={{ margin: "12px 0 6px 0", padding: "8px 10px", background: "rgba(52, 152, 219, 0.08)", borderRadius: "6px", border: "1px solid rgba(52, 152, 219, 0.2)" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer", fontSize: "12px", color: "var(--text)" }}>
+          <input
+            type="checkbox"
+            checked={resetFaultsOnSave}
+            onChange={(e) => setResetFaultsOnSave(e.target.checked)}
+          />
+          <b>保存时重置策略暂停/重新挖掘状态</b>（已部署新版本时勾选，立即恢复开仓）
+        </label>
+      </div>
 
       <div className="config-modal-actions">
         <button
@@ -1008,6 +1108,7 @@ export function PaperTradingPanel({
         </div>
         {dockTab === "positions" && (
           <div className="paper-body">
+            {renderFaultsAlert()}
             {renderPendingOrders()}
             {activePositions.length > 0 ? (
               renderActivePositions()
@@ -1197,6 +1298,17 @@ export function PaperTradingPanel({
           >
             {showHistory ? "收起历史记录" : "24h 历史成交明细"}
           </button>
+          {summary?.strategyFaults && summary.strategyFaults.length > 0 && (
+            <button
+              type="button"
+              className="btn-reset-fault-header"
+              onClick={() => handleResetFault()}
+              disabled={isResettingFaults !== null}
+              title="已部署新版本？点击一键重置当前所有处于暂停/冷却中的策略"
+            >
+              {isResettingFaults === "all" ? "重置中..." : `🔄 重置策略暂停 (${summary.strategyFaults.length})`}
+            </button>
+          )}
           <button
             type="button"
             className="btn-reset-paper"
@@ -1210,6 +1322,7 @@ export function PaperTradingPanel({
       </div>
 
       <div className="paper-body">
+        {renderFaultsAlert()}
         {/* 限价做空挂单列表 */}
         {pendingOrders.length > 0 && (
           <div className="paper-pending-wrap" style={{ marginBottom: "14px" }}>

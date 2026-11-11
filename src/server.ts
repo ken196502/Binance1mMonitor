@@ -991,6 +991,43 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (u.pathname === "/api/paper-trading/strategy-faults/reset" || u.pathname === "/api/paper-trading/faults/reset" || (u.pathname === "/api/paper-trading/strategy-faults" && req.method === "DELETE")) {
+    if (req.method !== "POST" && req.method !== "DELETE") {
+      res.writeHead(405, { "Content-Type": "application/json", Allow: "POST, DELETE" });
+      res.end(JSON.stringify({ error: "请使用 POST 或 DELETE 重置策略暂停状态" }));
+      return;
+    }
+    let body: any = {};
+    if (req.method === "POST") {
+      body = await readJsonBody(req).catch(() => ({}));
+    }
+    const queryStrategyId = u.searchParams.get("strategyId");
+    const targetStrategyId = queryStrategyId || (typeof body?.strategyId === "string" && body.strategyId !== "all" ? body.strategyId : undefined);
+
+    let cleared: string[] = [];
+    if (targetStrategyId) {
+      const ok = paperTrading.clearStrategyFault(targetStrategyId, "用户手动请求重置");
+      if (ok) cleared.push(targetStrategyId);
+    } else {
+      cleared = paperTrading.clearAllStrategyFaults("用户手动一键重置");
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify({
+      ok: true,
+      message: cleared.length > 0
+        ? `已重置 ${cleared.length} 个策略的暂停/重新挖掘状态 (${cleared.join(", ")})`
+        : (targetStrategyId ? `策略 [${targetStrategyId}] 未处于暂停状态` : "当前无处于暂停/重新挖掘中的策略"),
+      cleared,
+      strategyFaults: paperTrading.getStrategyFaults(),
+      summary: paperTrading.getSummary(),
+    }));
+    return;
+  }
+
   if (u.pathname === "/api/paper-trading/config") {
     if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
       try {

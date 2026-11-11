@@ -219,6 +219,21 @@ test("HTTP config accepts remote shape settings and GET cannot reset the account
     const state = await (await fetch(`${url}/api/paper-trading`)).json() as any;
     assert.equal(state.stats.bySide.LONG.totalTrades, 0);
     assert.equal(state.stats.bySide.SHORT.totalTrades, 0);
+
+    // Test strategy faults reset endpoint
+    const { paperTrading } = await import("../../src/paper-trading.ts");
+    paperTrading.stopStrategy("streak", "测试故障", 2, 2, 0, -2);
+    assert.equal(paperTrading.isStrategyFaulted("streak"), true);
+
+    const faultReset = await fetch(`${url}/api/paper-trading/strategy-faults/reset`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ strategyId: "streak" }),
+    });
+    assert.equal(faultReset.status, 200);
+    const faultResetData = await faultReset.json() as any;
+    assert.equal(faultResetData.ok, true);
+    assert.deepEqual(faultResetData.cleared, ["streak"]);
+    assert.equal(paperTrading.isStrategyFaulted("streak"), false);
   } finally {
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));

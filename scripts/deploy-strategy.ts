@@ -24,6 +24,11 @@
  *
  *   # 5. 自定义 JSON 参数部署：
  *   npx tsx scripts/deploy-strategy.ts --url http://47.100.20.30:4111 --json '{"marginPercent": 20, "klineStatsLeverage": 10}'
+ *
+ *   # 6. 一键重置远端策略暂停/重新挖掘冷却状态 (无需修改参数)：
+ *   npx tsx scripts/deploy-strategy.ts --url http://47.100.20.30:4111 --reset-faults
+ *   # 或仅重置指定策略 (如 streak):
+ *   npx tsx scripts/deploy-strategy.ts --url http://47.100.20.30:4111 --reset-faults streak
  */
 
 import fs from "node:fs";
@@ -220,6 +225,35 @@ export async function fetchCurrentConfig(opts: DeployOptions = {}) {
   return (await res.json()) as { ok: boolean; config?: PaperStrategyConfig; error?: string };
 }
 
+export async function resetStrategyFaults(
+  strategyId?: string,
+  opts: DeployOptions = {},
+) {
+  const baseUrl = resolveTargetUrl(opts);
+  const endpoint = `${baseUrl}/api/paper-trading/strategy-faults/reset`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+  if (opts.token) {
+    headers["Authorization"] = `Bearer ${opts.token}`;
+  }
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ strategyId }),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`);
+  }
+
+  return (await res.json()) as { ok: boolean; message?: string; cleared?: string[]; error?: string };
+}
+
 export async function deployConfig(
   updates: Partial<PaperStrategyConfig>,
   opts: DeployOptions = {},
@@ -234,10 +268,11 @@ export async function deployConfig(
     headers["Authorization"] = `Bearer ${opts.token}`;
   }
 
+  const payload = { resetFaults: true, ...updates };
   const res = await fetch(endpoint, {
     method: "POST",
     headers,
-    body: JSON.stringify(updates),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
   });
 
@@ -274,6 +309,8 @@ export async function main() {
   let jsonStr = "";
   let filePath = "";
   let isGet = false;
+  let isResetFaults = false;
+  let resetFaultTarget: string | undefined = undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -293,6 +330,11 @@ export async function main() {
       filePath = args[++i];
     } else if (arg === "--get") {
       isGet = true;
+    } else if (arg === "--reset-faults") {
+      isResetFaults = true;
+      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        resetFaultTarget = args[++i];
+      }
     }
   }
 
@@ -303,7 +345,24 @@ export async function main() {
   console.log(`🌐 目标服务器地址: ${resolvedUrl}`);
   console.log("==================================================================");
 
-  // 1. 如果是查询模式 (--get)
+  // 1. 如果是重置策略暂停/重新挖掘状态模式 (--reset-faults)
+  if (isResetFaults) {
+    console.log(`正在向目标服务器请求重置策略暂停/重新挖掘状态 (${resolvedUrl}/api/paper-trading/strategy-faults/reset)...`);
+    try {
+      const res = await resetStrategyFaults(resetFaultTarget, { url: resolvedUrl, token });
+      if (res.ok) {
+        console.log(`\n✅ ${res.message || "策略暂停状态重置成功！"}`);
+      } else {
+        console.error("❌ 重置失败:", res.error ?? "未知错误");
+      }
+    } catch (e: any) {
+      console.error(`❌ 连接目标服务器失败 (${resolvedUrl}):`, e.message);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // 2. 如果是查询模式 (--get)
   if (isGet) {
     console.log(`正在向目标服务器拉取当前运行配置 (${resolvedUrl}/api/paper-trading/config)...`);
     try {
@@ -416,6 +475,9 @@ export async function main() {
   }
 
   // 4. 发送热更新请求
+  if (!args.includes("--no-reset-faults")) {
+    payload.resetFaults = true;
+  }
   console.log(`\n[步骤 2/3] 正在通过 POST /api/paper-trading/config 发送热更新...`);
   try {
     const deployRes = await deployConfig(payload, { url: resolvedUrl, token });
@@ -424,6 +486,9 @@ export async function main() {
       process.exit(1);
     }
     console.log(`✅ ${deployRes.message || "策略参数已成功推送生效！"}`);
+    if (payload.resetFaults) {
+      console.log(`🔄 已同步请求重置策略暂停/重新挖掘状态 (resetFaults=true)，新版本已全面生效！`);
+    }
 
     // 5. 部署后验证并展示最新生效配置
     console.log("\n[步骤 3/3] 验证最新生效配置并确认持久化：");

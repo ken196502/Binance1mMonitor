@@ -210,8 +210,8 @@ test("PaperTradingEngine: checkKlineStatsSignal correctly evaluates 1m candles f
   }
 });
 
-test("deploy-strategy: deployConfig and fetchCurrentConfig work seamlessly over HTTP API", async () => {
-  const { deployConfig, fetchCurrentConfig, PRESET_CONFIGS } = await import("../../scripts/deploy-strategy.ts");
+test("deploy-strategy: deployConfig, fetchCurrentConfig and resetStrategyFaults work seamlessly over HTTP API", async () => {
+  const { deployConfig, fetchCurrentConfig, resetStrategyFaults, PRESET_CONFIGS } = await import("../../scripts/deploy-strategy.ts");
   const engine = new PaperTradingEngine({ storageFile: null });
 
   // Spin up lightweight test server matching src/server.ts router
@@ -230,6 +230,17 @@ test("deploy-strategy: deployConfig and fetchCurrentConfig work seamlessly over 
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, config: engine.getConfig() }));
       }
+    } else if (req.url === "/api/paper-trading/strategy-faults/reset") {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const parsed = body ? JSON.parse(body) : {};
+        const cleared = parsed.strategyId
+          ? (engine.clearStrategyFault(parsed.strategyId) ? [parsed.strategyId] : [])
+          : engine.clearAllStrategyFaults();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, message: "策略暂停状态重置成功", cleared, summary: engine.getSummary() }));
+      });
     }
   });
 
@@ -238,6 +249,14 @@ test("deploy-strategy: deployConfig and fetchCurrentConfig work seamlessly over 
   const testPort = address.port;
 
   try {
+    // 0. Test resetting faults via deploy-strategy.ts resetStrategyFaults
+    engine.stopStrategy("streak", "连亏测试", 2, 2, 0, -2);
+    assert.equal(engine.isStrategyFaulted("streak"), true);
+    const resetRes = await resetStrategyFaults("streak", { port: testPort });
+    assert.equal(resetRes.ok, true);
+    assert.deepEqual(resetRes.cleared, ["streak"]);
+    assert.equal(engine.isStrategyFaulted("streak"), false);
+
     // 1. Deploy preset 'top_short'
     const deployRes = await deployConfig(PRESET_CONFIGS.top_short, { port: testPort });
     assert.equal(deployRes.ok, true);

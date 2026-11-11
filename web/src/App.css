@@ -842,6 +842,156 @@ tbody tr.chart-selected .symbol-link { color: #4d9dff; font-weight: 600; }
   cursor: not-allowed;
 }
 
+.btn-reset-fault-header {
+  background: rgba(243, 156, 18, 0.15);
+  color: #f39c12;
+  border: 1px solid rgba(243, 156, 18, 0.4);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-reset-fault-header:hover {
+  background: rgba(243, 156, 18, 0.25);
+  border-color: #f39c12;
+}
+.btn-reset-fault-header:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.paper-fault-alert {
+  background: rgba(231, 76, 60, 0.08);
+  border: 1px solid rgba(231, 76, 60, 0.3);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+}
+.paper-fault-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.paper-fault-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.paper-fault-icon {
+  font-size: 16px;
+}
+.paper-fault-title {
+  font-size: 13px;
+  color: #e74c3c;
+}
+.btn-reset-fault-all {
+  background: rgba(52, 152, 219, 0.15);
+  border: 1px solid #3498db;
+  color: #3498db;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-reset-fault-all:hover {
+  background: rgba(52, 152, 219, 0.25);
+}
+.paper-fault-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.paper-fault-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 6px 10px;
+  border-radius: 4px;
+  border-left: 3px solid #e74c3c;
+}
+.paper-fault-item-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.paper-fault-tag {
+  background: rgba(231, 76, 60, 0.2);
+  color: #ff6b6b;
+  border: 1px solid rgba(231, 76, 60, 0.4);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.paper-fault-reason {
+  color: var(--text-muted, #aaa);
+}
+.paper-fault-cooldown {
+  color: #f39c12;
+  font-size: 11px;
+}
+.btn-reset-fault-item {
+  background: rgba(46, 204, 113, 0.15);
+  border: 1px solid #2ecc71;
+  color: #2ecc71;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-reset-fault-item:hover {
+  background: rgba(46, 204, 113, 0.25);
+}
+
+.strategy-card-faulted {
+  border-left: 3px solid #e74c3c !important;
+}
+.strategy-fault-pill {
+  color: #e74c3c;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+.strategy-fault-inline-banner {
+  background: rgba(231, 76, 60, 0.1);
+  border: 1px solid rgba(231, 76, 60, 0.3);
+  padding: 8px 10px;
+  border-radius: 4px;
+  margin: 8px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+.btn-reset-fault-mini {
+  background: #3498db;
+  color: #fff;
+  border: none;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-reset-fault-mini:hover {
+  background: #2980b9;
+}
+
 .empty-paper-state {
   display: flex;
   align-items: center;
