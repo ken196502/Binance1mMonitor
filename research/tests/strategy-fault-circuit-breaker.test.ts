@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { PaperTradingEngine } from "../../src/paper-trading.ts";
 import { FEATURE_VERSION } from "../../src/features.ts";
 import { FACTOR_POLICY_VERSION, type FactorMiningResult } from "../../src/factor-policy.ts";
+import { mineFactors } from "../../src/factor-miner.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -309,7 +310,7 @@ test("FactorMiningService only mines faulted strategies and skips when healthy",
 });
 
 test("manual reset: clearStrategyFault and clearAllStrategyFaults clear fault state and allow trading", () => {
-  const engine = new PaperTradingEngine({ storageFile: null, factorMining: { enabled: false } });
+  const engine = new PaperTradingEngine({ storageFile: null, factorMining: { enabled: false } as any });
   engine.stopStrategy("streak", "连续亏损2笔", 2, 2, 0, -2);
   engine.stopStrategy("hourly_suppression", "胜率过低", 3, 0, 33, -3);
   assert.equal(engine.isStrategyFaulted("streak"), true);
@@ -331,7 +332,7 @@ test("manual reset: clearStrategyFault and clearAllStrategyFaults clear fault st
 });
 
 test("deploying new parameters automatically resets strategy fault", () => {
-  const engine = new PaperTradingEngine({ storageFile: null, factorMining: { enabled: false } });
+  const engine = new PaperTradingEngine({ storageFile: null, factorMining: { enabled: false } as any });
   engine.stopStrategy("streak", "连续亏损2笔", 2, 2, 0, -2);
   assert.equal(engine.isStrategyFaulted("streak"), true);
 
@@ -358,7 +359,7 @@ test("deploying new parameters automatically resets strategy fault", () => {
 });
 
 test("trade history evaluation window resets after fault clear so 1 loss does not re-fault", () => {
-  const engine = new PaperTradingEngine({ storageFile: null, factorMining: { enabled: false } });
+  const engine = new PaperTradingEngine({ storageFile: null, factorMining: { enabled: false } as any });
   const clock = 1700000000000;
 
   // Simulate 2 previous closed losing trades at clock - 1000 and clock - 500
@@ -390,3 +391,19 @@ test("trade history evaluation window resets after fault clear so 1 loss does no
   // Since it was only 1 loss since reset, streak should NOT be faulted!
   assert.equal(engine.isStrategyFaulted("streak"), false, "single loss after reset must not re-trigger consecutive loss fault");
 });
+
+test("mineFactors distinguishes 0 samples, insufficient samples and low win rate/return for preset strategies", () => {
+  const dummyData = {
+    candles: new Map(),
+    boards: new Map(),
+    times: [],
+    indices: new Map(),
+    dataAsOf: now,
+    datasetHash: "dummy-hash",
+  };
+  const res = mineFactors(dummyData, { takerFeeBps: 5, slippageBps: 2 }, undefined, undefined, "streak");
+  assert.ok(res.strategies?.streak);
+  assert.equal(res.strategies.streak.candidate, undefined);
+  assert.match(res.strategies.streak.reason, /无触发样本 \(0 笔/);
+});
+

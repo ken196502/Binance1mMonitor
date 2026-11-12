@@ -513,11 +513,18 @@ export class PaperTradingEngine {
           if (wasFaulted) {
             this.strategyFaults.delete(strategyId);
             const label = formatSignalLabel(strategyId as PaperSignalType);
-            console.log(`[paper-trading] 🎉 策略 [${label}] 重新挖掘出达标参数并恢复交易 (留出胜率 ${info.candidate.holdout?.winRate.toFixed(1) ?? "100"}%)`);
+            const holdoutSummary = info.candidate.holdout?.trades
+              ? `留出胜率 ${info.candidate.holdout.winRate.toFixed(1)}%`
+              : `训练胜率 ${info.candidate.train.winRate.toFixed(1)}%`;
+            console.log(`[paper-trading] 🎉 策略 [${label}] 重新挖掘出达标参数并恢复交易 (${holdoutSummary})`);
             if (telegramConfigured()) {
+              const holdoutText = info.candidate.holdout.trades > 0
+                ? `${info.candidate.holdout.trades}笔 | 胜率 ${info.candidate.holdout.winRate.toFixed(1)}% | 净利 ${info.candidate.holdout.netPercent >= 0 ? "+" : ""}${info.candidate.holdout.netPercent.toFixed(2)}%`
+                : "0笔 (近2小时无新触发样本，无违规回撤)";
               const text = `🎉 <b>策略挖掘达标并恢复交易</b>: [${escapeHtml(label)}]\n` +
                 `• <b>状态</b>: 已通过近期行情回测验证并更新参数\n` +
-                `• <b>留出集战绩</b>: ${info.candidate.holdout.trades}笔 | 胜率 ${info.candidate.holdout.winRate.toFixed(1)}% | 净利 +${info.candidate.holdout.netPercent.toFixed(2)}%\n` +
+                `• <b>训练集战绩</b>: ${info.candidate.train.trades}笔 | 胜率 ${info.candidate.train.winRate.toFixed(1)}% | 净利 ${info.candidate.train.netPercent >= 0 ? "+" : ""}${info.candidate.train.netPercent.toFixed(2)}%\n` +
+                `• <b>留出集检验</b>: ${holdoutText}\n` +
                 `• <b>权限</b>: 停用状态已解除，恢复正常开仓`;
               sendTelegramMessage(text).catch(e => console.warn("[paper-trading] 发送恢复通知异常:", (e as any)?.message ?? e));
             }

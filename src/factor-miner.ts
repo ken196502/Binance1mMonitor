@@ -228,21 +228,39 @@ export function mineFactors(
   for (const strategyId of strategiesToEvaluate) {
     const items = presetCandidates[strategyId];
     let best: { config: Record<string, any>; train: FactorMetrics; validation?: FactorMetrics; holdout: FactorMetrics } | undefined;
+    let maxTrainTrades = 0;
+    let bestFailedTrain: FactorMetrics | undefined;
+    let bestFailedVal: FactorMetrics | undefined;
+    let bestFailedHold: FactorMetrics | undefined;
+
     for (const item of items) {
       const trainTrades = replayStrategies(data.candles, data.indices, data.times, data.boards, [item.definition], train, { costs, fvCache, leverage: 3 }).trades;
       const trainMetrics = factorMetrics(trainTrades);
+      if (trainMetrics.trades > maxTrainTrades) {
+        maxTrainTrades = trainMetrics.trades;
+      }
+      if (!bestFailedTrain || trainMetrics.avgNetPercent > bestFailedTrain.avgNetPercent) {
+        bestFailedTrain = trainMetrics;
+      }
+
       if (trainMetrics.trades < 2 || trainMetrics.winRate < 60 || trainMetrics.netPercent <= 0) continue;
 
       let valMetrics: FactorMetrics | undefined;
       if (hasValidation) {
         const valTrades = replayStrategies(data.candles, data.indices, data.times, data.boards, [item.definition], validation, { costs, fvCache, leverage: 3 }).trades;
         valMetrics = factorMetrics(valTrades);
-        if (valMetrics.trades > 0 && (valMetrics.winRate < 50 || valMetrics.netPercent < 0)) continue;
+        if (valMetrics.trades > 0 && (valMetrics.winRate < 50 || valMetrics.netPercent < 0)) {
+          bestFailedVal = valMetrics;
+          continue;
+        }
       }
 
       const holdTrades = replayStrategies(data.candles, data.indices, data.times, data.boards, [item.definition], holdout, { costs, fvCache, leverage: 3 }).trades;
       const holdMetrics = factorMetrics(holdTrades);
-      if (holdMetrics.trades > 0 && (holdMetrics.winRate < 50 || holdMetrics.netPercent < 0)) continue;
+      if (holdMetrics.trades > 0 && (holdMetrics.winRate < 50 || holdMetrics.netPercent < 0)) {
+        bestFailedHold = holdMetrics;
+        continue;
+      }
 
       const score = (valMetrics ?? trainMetrics).avgNetPercent;
       const bestScore = best ? (best.validation ?? best.train).avgNetPercent : -Infinity;
@@ -263,8 +281,26 @@ export function mineFactors(
         reason: "近期行情回测验证通过",
       };
     } else {
+      let failReason = "近期样本不足或未达收益门槛";
+      if (maxTrainTrades === 0) {
+        failReason = "近期训练集无触发样本 (0 笔，未出现该形态)";
+      } else if (maxTrainTrades < 2) {
+        failReason = `近期训练样本不足 (最多仅 ${maxTrainTrades} 笔，门槛要求 >= 2 笔)`;
+      } else if (bestFailedHold) {
+        failReason = `候选在留出检验未达标 (笔数 ${bestFailedHold.trades}, 胜率 ${bestFailedHold.winRate.toFixed(1)}%, 净利 ${bestFailedHold.netPercent.toFixed(1)}%)`;
+      } else if (bestFailedVal) {
+        failReason = `候选在验证集未达标 (笔数 ${bestFailedVal.trades}, 胜率 ${bestFailedVal.winRate.toFixed(1)}%, 净利 ${bestFailedVal.netPercent.toFixed(1)}%)`;
+      } else if (bestFailedTrain) {
+        if (bestFailedTrain.winRate < 60) {
+          failReason = `训练集胜率未达标 (最高胜率仅 ${bestFailedTrain.winRate.toFixed(1)}% < 60%，样本 ${bestFailedTrain.trades} 笔)`;
+        } else if (bestFailedTrain.netPercent <= 0) {
+          failReason = `训练集净收益未达标 (净利 ${bestFailedTrain.netPercent.toFixed(1)}% <= 0，样本 ${bestFailedTrain.trades} 笔)`;
+        } else {
+          failReason = `训练集回测未通过 (笔数 ${bestFailedTrain.trades}, 胜率 ${bestFailedTrain.winRate.toFixed(1)}%, 净利 ${bestFailedTrain.netPercent.toFixed(1)}%)`;
+        }
+      }
       result.strategies[strategyId] = {
-        reason: "近期样本不足或未达收益门槛",
+        reason: failReason,
       };
     }
   }
