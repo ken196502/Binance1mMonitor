@@ -58,7 +58,7 @@ export function readFeaturePath(value: unknown, field: string): unknown {
 
 // Parameterized features use decimal path segments: ma.15.slope2, pivotLow.8.25.dif.
 export const FEATURE_FIELDS = [
-  "rank", "dayChange", "highChange24h", "close", "price.open", "price.high", "price.low", "price.close", "price.previousHigh",
+  "rank", "dayChange", "highChange24h", "hasBigBull120", "maxBullishGain120", "close", "price.open", "price.high", "price.low", "price.close", "price.previousHigh",
   "new24hHigh", "dropFrom24hHigh", "body", "upperWick", "lowerWick", "upperShadowRatio", "upperRangeRatio",
   "surge.5", "surgeRatio.5", "drop.30", "range.30", "closeChange.5", "dayChangeDelta.15", "posIn24hRange",
   "ma.5.value", "ma.10.value", "ma.15.value", "ma.20.value", "ma.30.value", "ma.60.value",
@@ -78,6 +78,7 @@ export function isFeatureField(field: string): boolean {
   if ((FEATURE_FIELDS as readonly string[]).includes(field)) return true;
   const patterns = [
     /^(surge|surgeRatio|drop|dropRatio|range|closeChange|greenRatio)\.(\d+)$/,
+    /^(hasBigBull|maxBullishGain)\.(\d+)(\.(\d+))?$/,
     /^ma\.(\d+)\.(value|slope2|slope3|support|resist|breakout|breakdown|biasPct|biasRatio|emaValue|close_below|close_above)$/,
     /^support\.(\d+)$/, /^streak\.(\d+)\.(up|count)$/,
     /^deaPeak\.(\d+)\.(ago|value)$/,

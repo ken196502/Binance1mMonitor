@@ -18,7 +18,7 @@ export interface PaperTradingPanelProps {
   summary?: PaperTradingSummary;
   onSelectSymbol?: (symbol: string) => void;
   selectedSymbol?: string;
-  dockTab?: "positions" | "history" | "strategy" | "mining" | "all";
+  dockTab?: "positions" | "history" | "mining" | "all";
   mode?: "standalone" | "dock";
   showConfigModal?: boolean;
   onCloseConfigModal?: () => void;
@@ -1162,11 +1162,6 @@ export function PaperTradingPanel({
           </div>
         )}
 
-        {dockTab === "strategy" && (
-          <div className="paper-body dock-strategy-pane" style={{ maxWidth: "720px", padding: "4px 0" }}>
-            {renderConfigForm(false)}
-          </div>
-        )}
 
         {dockTab === "mining" && (
           <div className="paper-body dock-mining-pane" style={{ padding: "4px 0" }}>

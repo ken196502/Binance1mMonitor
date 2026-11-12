@@ -8,10 +8,14 @@ import { readFeaturePath } from "./strategy-rules.ts";
 export class StrategyFeatureMonitor {
   readonly bars: Candle[];
   readonly bar: Candle | undefined;
+  readonly rawCandles?: Candle[];
+  readonly rawTargetIdx?: number;
   private cache = new Map<string, unknown>();
   private macdCache?: ReturnType<typeof computeMacd>;
   private vectorCache?: FeatureVector | null;
   constructor(candles: Candle[], readonly ticker: Ticker24h, readonly rank: number, targetIdx = candles.length - 2, vector?: FeatureVector | null) {
+    this.rawCandles = candles;
+    this.rawTargetIdx = targetIdx;
     let start = Math.max(0, targetIdx - 499);
     for (let i = targetIdx; i > start; i--) if (candles[i].time - candles[i - 1].time !== 60_000) { start = i; break; }
     this.bars = targetIdx >= 0 && targetIdx < candles.length ? candles.slice(start, targetIdx + 1) : [];
@@ -23,6 +27,30 @@ export class StrategyFeatureMonitor {
     return this.vectorCache;
   }
   private get macd() { return this.macdCache ??= computeMacd(this.bars.map(b => b.close)); }
+
+  maxBullishGain(windowBars = 120): number {
+    const list = this.rawCandles ?? this.bars;
+    const targetIdx = this.rawTargetIdx ?? (this.bars.length - 1);
+    if (!this.bar || targetIdx < 0 || list.length === 0) return 0;
+    const endTime = this.bar.time;
+    const startTime = endTime - windowBars * 60_000;
+    let maxGain = 0;
+    const startIdx = Math.max(0, targetIdx - windowBars * 2);
+    for (let i = startIdx; i <= targetIdx && i < list.length; i++) {
+      const b = list[i];
+      if (b.time <= startTime || b.time > endTime) continue;
+      if (b.open > 0 && b.close > b.open) {
+        const gain = ((b.close - b.open) / b.open) * 100;
+        if (gain > maxGain) maxGain = gain;
+      }
+    }
+    return maxGain;
+  }
+
+  hasBigBullishCandle(windowBars = 120, minGainPercent = 5): boolean {
+    return this.maxBullishGain(windowBars) >= minGainPercent - 1e-6;
+  }
+
   read(field: string, observation?: Observation): unknown {
     if (field.startsWith("watch.")) return this.readWatch(field.slice(6), observation);
     if (!this.cache.has(field)) this.cache.set(field, this.compute(field));
@@ -55,11 +83,15 @@ export class StrategyFeatureMonitor {
           : this.bars[0]?.open ?? bar.close);
       return openPrice > 0 ? Math.max(dayChange, ((high - openPrice) / openPrice) * 100) : dayChange;
     }
+    if (field === "hasBigBull120") return this.hasBigBullishCandle(120, 5);
+    if (field === "maxBullishGain120") return this.maxBullishGain(120);
     // Native vector fields keep identical SMA arithmetic in cached replay and live monitoring.
     const cachedVectorValue = readFeaturePath(this.vector, field);
     if (cachedVectorValue !== undefined) return cachedVectorValue;
     const [kind, p1, p2, metric] = field.split(".");
     const n = Number(p1);
+    if (kind === "hasBigBull") return this.hasBigBullishCandle(n || 120, Number(p2) || 5);
+    if (kind === "maxBullishGain") return this.maxBullishGain(n || 120);
     if (["surge", "surgeRatio", "drop", "dropRatio", "range", "closeChange"].includes(kind)) {
       if (this.bars.length < n) return undefined;
       const window = this.bars.slice(-n), low = Math.min(...window.map(b => b.low)), high = Math.max(...window.map(b => b.high));

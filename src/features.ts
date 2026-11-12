@@ -101,6 +101,8 @@ export interface FeatureVector {
   bottomDivergence: boolean;          // 价格新低而 DEA 或柱体未创新低
   difLevel?: "high" | "mid" | "low";  // 短周期 DIF 相对高低位 (30 根窗口)
   difPos?: number;                    // 短周期 DIF 在波段中的归一化位置 (0~1)
+  hasBigBull120?: boolean;            // 120分钟内是否存在>=1分钟5%大阳线
+  maxBullishGain120?: number;         // 120分钟内最大1分钟阳线涨幅 %
 
   // 多周期（由 1m 聚合）
   tf5m: MultiTfFeature;
@@ -117,6 +119,9 @@ export interface KlineStatsStrategySpec {
   maxDayChange?: number;
   minHighChange24h?: number;
   maxHighChange24h?: number;
+  avoidBigBull1m?: boolean;
+  avoidBigBull1mBars?: number;
+  avoidBigBull1mGain?: number;
   intervalWindow?: number;
   ampDivisor?: number;
   maRequirement?: string;
@@ -579,6 +584,18 @@ export function computeFeatureVector(
     : (dif < 0 && minDif < 0 && dif <= 0.8 * minDif) || difPos <= 0.2 ? "low"
     : "mid";
 
+  // 120 分钟内 1m 大阳线检测
+  const window120Start = Math.max(0, curSubIdx - 119);
+  let maxBullishGain120 = 0;
+  for (let k = window120Start; k <= curSubIdx; k++) {
+    const b = subCandles[k];
+    if (b.open > 0 && b.close > b.open) {
+      const gain = ((b.close - b.open) / b.open) * 100;
+      if (gain > maxBullishGain120) maxBullishGain120 = gain;
+    }
+  }
+  const hasBigBull120 = maxBullishGain120 >= 5 - 1e-6;
+
   // 多周期 (5m / 15m)
   const tf5m = computeTfFeature(subCandles, 5 * 60 * 1000);
   const tf15m = computeTfFeature(subCandles, 15 * 60 * 1000);
@@ -614,6 +631,8 @@ export function computeFeatureVector(
     deaPct,
     difLevel,
     difPos,
+    hasBigBull120,
+    maxBullishGain120,
     greenRatio,
     greenStreak,
     redStreak,
@@ -638,6 +657,10 @@ export function evaluateFeatureSpec(
   fv: FeatureVector,
   spec: KlineStatsStrategySpec,
 ): { pass: boolean; failedReason?: string } {
+  const shouldAvoidBigBull = spec.avoidBigBull1m ?? (side === "SHORT");
+  if (shouldAvoidBigBull && fv.hasBigBull120) {
+    return { pass: false, failedReason: "120分钟内存在>=5%大阳线退避" };
+  }
   const w = spec.intervalWindow ?? 5;
   if (!(FEATURE_SURGE_WINDOWS as readonly number[]).includes(w) || !Number.isFinite(spec.ampDivisor ?? 8) || (spec.ampDivisor ?? 8) <= 0) return { pass: false, failedReason: "invalid intervalWindow or ampDivisor" };
   return evaluateRules(compileFeatureSpec(side, spec), field => field === "relativeBias30"

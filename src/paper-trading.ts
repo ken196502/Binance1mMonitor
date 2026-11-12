@@ -97,6 +97,9 @@ export interface PaperStrategyConfig {
   enableWBottomDivergence?: boolean; // 是否启用左侧3W底背离弹射做多 (默认 true)
   enableKlineStatsShort?: boolean;   // 是否启用量化K线特征挖掘做空 (默认 true)
   enableKlineStatsLong?: boolean;    // 是否启用量化K线特征挖掘做多 (默认 true)
+  avoidBigBull1m?: boolean;          // 做空退避120分钟内>=5%大阳线标的 (默认 true)
+  avoidBigBull1mBars?: number;       // 退避回溯窗口分钟/根数 (默认 120)
+  avoidBigBull1mGain?: number;       // 大阳线涨幅阈值 % (默认 5%)
   streakConfig?: Partial<StreakStrategyLiveConfig>;
   reboundConfig?: Partial<PeakReboundLiveConfig>;
   deepReboundConfig?: Partial<DeepReboundLiveConfig>;
@@ -152,6 +155,9 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   enableWBottomDivergence: true, // 策略 1: 开启左侧3W底背离弹射做多 (最大 30m 持仓)
   enableKlineStatsShort: true,   // 策略 7: 开启量化K线统计特征做空 (45m 持仓)
   enableKlineStatsLong: false,   // 策略 8: 默认关闭量化做多 (审计结论：线上净亏 -15.9U、样本外留出收益负值，未达部署门槛前严禁默认开启)
+  avoidBigBull1m: true,          // 做空退避120分钟内>=5%大阳线标的 (默认 true)
+  avoidBigBull1mBars: 120,       // 回溯 120 根 1m K线
+  avoidBigBull1mGain: 5,         // 1分钟 5% 大阳线阈值
   storageFile: STATE_FILE,
   streakConfig: {
     ...STREAK_LIVE_DEFAULT_CONFIG,
@@ -946,6 +952,15 @@ export class PaperTradingEngine {
     }
     if (typeof updates.enableKlineStatsLong === "boolean") {
       this.config.enableKlineStatsLong = updates.enableKlineStatsLong;
+    }
+    if (typeof updates.avoidBigBull1m === "boolean") {
+      this.config.avoidBigBull1m = updates.avoidBigBull1m;
+    }
+    if (typeof updates.avoidBigBull1mBars === "number" && Number.isFinite(updates.avoidBigBull1mBars) && updates.avoidBigBull1mBars >= 1) {
+      this.config.avoidBigBull1mBars = Math.floor(updates.avoidBigBull1mBars);
+    }
+    if (typeof updates.avoidBigBull1mGain === "number" && Number.isFinite(updates.avoidBigBull1mGain) && updates.avoidBigBull1mGain > 0) {
+      this.config.avoidBigBull1mGain = updates.avoidBigBull1mGain;
     }
     if (typeof updates.topN === "number" && Number.isFinite(updates.topN) && updates.topN >= 1) {
       this.config.topN = Math.floor(updates.topN);

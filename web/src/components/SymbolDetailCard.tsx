@@ -6,7 +6,7 @@ interface SymbolDetailCardProps {
   gainer?: Row;
   activePosition?: PaperPosition;
   pendingOrder?: PaperPendingOrder;
-  onSwitchTab?: (tab: "positions" | "stats" | "history" | "strategy" | "mining") => void;
+  onSwitchTab?: (tab: "positions" | "stats" | "history" | "mining") => void;
 }
 
 function formatPrice(v: number | null | undefined): string {

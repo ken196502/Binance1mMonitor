@@ -119,6 +119,9 @@ export interface KlineStatsStrategyLiveConfig {
   maxDayChange?: number;       // 24h 涨幅上限 (可选)
   minHighChange24h?: number;   // 24h 最高涨幅下限 % (做空防劣质标的，默认 20%)
   maxHighChange24h?: number;   // 24h 最高涨幅上限 % (可选)
+  avoidBigBull1m?: boolean;    // 做空退避120分钟内>=5%大阳线标的 (默认 true)
+  avoidBigBull1mBars?: number; // 退避回溯分钟/根数 (默认 120)
+  avoidBigBull1mGain?: number; // 大阳线涨幅阈值 % (默认 5%)
   intervalWindow: number;      // 冲高/回溯窗口 (如 5m, 10m, 15m)
   ampDivisor: number;          // 冲高涨幅 >= 24h 涨幅 / ampDivisor (如 8, 10, 12)
   maRequirement: typeof MA_REQUIREMENTS[number];

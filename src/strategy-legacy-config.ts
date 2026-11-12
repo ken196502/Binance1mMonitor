@@ -23,6 +23,9 @@ export interface PeakReboundLiveConfig {
   tp1Percent?: number;      // 阶段一止盈比例 (e.g. 4.0%)
   tp2Percent?: number;      // 阶段二止盈比例 (e.g. 8.0%)
   moveSlToEntryAfterTp1?: boolean; // 阶段一达标后移动保本止损
+  avoidBigBull1m?: boolean; // 做空退避120分钟内>=5%大阳线标的 (默认 true)
+  avoidBigBull1mBars?: number; // 退避回溯分钟/根数 (默认 120)
+  avoidBigBull1mGain?: number; // 大阳线涨幅阈值 % (默认 5%)
   watchWindowHours: number; // how long to observe after reaching rank 1 (default 48h)
 }
 
@@ -109,6 +112,9 @@ export interface StreakStrategyLiveConfig {
   maxLowerShadowPercent?: number; // 信号K线下影线占价格比例上限 (防止强买盘托底)
   minHighChange24h?: number;      // 24h 最高涨幅下限 % (做空防劣质标的)
   maxHighChange24h?: number;      // 24h 最高涨幅上限 % (可选)
+  avoidBigBull1m?: boolean;       // 做空退避120分钟内>=5%大阳线标的 (默认 true)
+  avoidBigBull1mBars?: number;    // 退避回溯分钟/根数 (默认 120)
+  avoidBigBull1mGain?: number;    // 大阳线涨幅阈值 % (默认 5%)
   // 向下兼容可选字段 (保留自定义测试支持)
   minStreakCount?: number;
   minUpperShadowRatio?: number;
@@ -153,6 +159,9 @@ export interface DeepReboundLiveConfig {
   tp1Percent?: number;      // 阶段一止盈比例 (默认 4.0%)
   tp2Percent?: number;      // 阶段二止盈比例 (默认 8.0%)
   moveSlToEntryAfterTp1?: boolean; // 阶段一达标后移动保本止损
+  avoidBigBull1m?: boolean; // 做空退避120分钟内>=5%大阳线标的 (默认 true)
+  avoidBigBull1mBars?: number; // 退避回溯分钟/根数 (默认 120)
+  avoidBigBull1mGain?: number; // 大阳线涨幅阈值 % (默认 5%)
   cooldownMinutes: number; // e.g. 30
 }
 
@@ -190,6 +199,9 @@ export interface HourlySuppressionLiveConfig {
   minDayChange?: number;      // 24h 涨幅门槛 (深跌狂暴狙击默认 10)
   minHighChange24h?: number;  // 24h 最高涨幅下限 % (做空防劣质标的)
   maxHighChange24h?: number;  // 24h 最高涨幅上限 % (可选)
+  avoidBigBull1m?: boolean;   // 做空退避120分钟内>=5%大阳线标的 (默认 true)
+  avoidBigBull1mBars?: number;// 退避回溯分钟/根数 (默认 120)
+  avoidBigBull1mGain?: number;// 大阳线涨幅阈值 % (默认 5%)
   minDropFrom24h?: number;    // 距离 24h 最高价至少跌了 x% (深跌狂暴狙击默认 20%)
   requireMa60GtMa10GtMa20?: boolean; // 是否要求 MA60 > MA10 > MA20 (深跌狂暴狙击默认 true)
   requireCloseBelowMa?: boolean; // 是否要求收盘价受制于 MA60 之下 (默认 false)

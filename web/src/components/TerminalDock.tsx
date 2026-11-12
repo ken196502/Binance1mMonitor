@@ -3,7 +3,7 @@ import type { ChartBar, IntervalSignal, PaperTradingSummary } from "../../../src
 import { KlineStatsPanel } from "./KlineStatsPanel";
 import { PaperTradingPanel } from "./PaperTradingPanel";
 
-export type DockTabKey = "positions" | "stats" | "history" | "strategy" | "mining";
+export type DockTabKey = "positions" | "stats" | "history" | "mining";
 
 interface TerminalDockProps {
   activeTab: DockTabKey;
@@ -90,14 +90,6 @@ export function TerminalDock({
             ) : null}
           </button>
 
-          <button
-            type="button"
-            className={`dock-tab ${activeTab === "strategy" ? "active" : ""}`}
-            onClick={() => onTabChange("strategy")}
-          >
-            <span className="dock-tab-icon">⚙️</span>
-            <span>策略与风控配置</span>
-          </button>
 
           <button
             type="button"

@@ -45,6 +45,9 @@ export class StrategyEngine {
     for (const strategy of this.definitions) {
       const observation = strategy.observation && monitor.bar.time + 60_000 <= now && monitor.bars.length >= strategy.minBars
         ? this.getWatch(strategy.id).observe(monitor.ticker.symbol, monitor.bars, strategy.observation, now) : undefined;
+      const shouldAvoidBigBull = strategy.avoidBigBull1m ?? (strategy.side === "SHORT");
+      const avoidBars = strategy.avoidBigBull1mBars ?? 120;
+      const avoidGain = strategy.avoidBigBull1mGain ?? 5;
       let result: { pass: boolean; failedReason?: string };
       if (!strategy.enabled) result = { pass: false, failedReason: "策略已关闭" };
       else if (monitor.bar.time + 60_000 > now) result = { pass: false, failedReason: "K线尚未收盘" };
@@ -52,6 +55,7 @@ export class StrategyEngine {
       else if (!eligible(strategy)) result = { pass: false, failedReason: "仓位或因子验证暂不允许入场" };
       else if ((this.consumedBars.get(`${strategy.id}:${monitor.ticker.symbol}`) ?? -Infinity) >= monitor.bar.time) result = { pass: false, failedReason: "本根信号已执行" };
       else if ((this.cooldowns.get(`${strategy.cooldownGroup ?? strategy.id}:${monitor.ticker.symbol}`) ?? 0) > now) result = { pass: false, failedReason: "冷却中" };
+      else if (shouldAvoidBigBull && monitor.hasBigBullishCandle(avoidBars, avoidGain)) result = { pass: false, failedReason: `${avoidBars}分钟内存在>=${avoidGain}%大阳线退避` };
       else result = evaluateRules(strategy.entry, field => monitor.read(field, observation));
       this.results.push({ id: strategy.id, symbol: monitor.ticker.symbol, time: monitor.bar.time + 60_000, ...result });
       if (result.pass) matches.push({ strategy, monitor, observation: observation && structuredClone(observation), time: monitor.bar.time + 60_000 });

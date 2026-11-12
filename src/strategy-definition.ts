@@ -16,6 +16,12 @@ export interface StrategyDefinition {
   cooldownGroup?: string;
   /** Quant candidates retain the existing validation/expiry gate. */
   factorManaged?: boolean;
+  /** 做空是否退避大阳线标的 (做空策略默认 true) */
+  avoidBigBull1m?: boolean;
+  /** 大阳线退避回溯分钟/根数 (默认 120) */
+  avoidBigBull1mBars?: number;
+  /** 大阳线涨幅阈值 % (默认 5%) */
+  avoidBigBull1mGain?: number;
 }
 export function validateStrategies(value: unknown): asserts value is StrategyDefinition[] {
   if (!Array.isArray(value) || value.length > 50) throw new Error("strategies 必须是最多 50 个策略的数组");
@@ -33,6 +39,9 @@ export function validateStrategies(value: unknown): asserts value is StrategyDef
     if (s.cooldownFrom !== undefined && !["entry", "exit"].includes(s.cooldownFrom)) throw new Error("冷却起点无效");
     if (s.cooldownGroup !== undefined && (typeof s.cooldownGroup !== "string" || s.cooldownGroup.length > 64)) throw new Error("冷却组无效");
     if (s.factorManaged !== undefined && typeof s.factorManaged !== "boolean") throw new Error("factorManaged 必须是布尔值");
+    if (s.avoidBigBull1m !== undefined && typeof s.avoidBigBull1m !== "boolean") throw new Error("avoidBigBull1m 必须是布尔值");
+    if (s.avoidBigBull1mBars !== undefined) number(s.avoidBigBull1mBars, 1, 1440, "avoidBigBull1mBars", true);
+    if (s.avoidBigBull1mGain !== undefined) number(s.avoidBigBull1mGain, 0.1, 100, "avoidBigBull1mGain");
     if (["kline_stats_long", "kline_stats_short"].includes(s.id) && s.factorManaged !== true) throw new Error("量化预设必须保留因子验证标记");
     if (s.factorManaged && s.id !== `kline_stats_${s.side.toLowerCase()}`) throw new Error("因子管理仅用于对应方向的量化预设");
     validateRules(s.entry);

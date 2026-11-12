@@ -17,8 +17,8 @@ function exit(config: PaperExitParams): PaperExitParams {
   }
   return result;
 }
-function preset(id: string, label: string, side: "LONG" | "SHORT", minBars: number, rules: FeatureRule[], config: PaperExitParams, cooldownMinutes = 0): StrategyDefinition {
-  return { id, label, side, enabled: true, minBars, entry: all(...rules), exit: exit(config), cooldownMinutes };
+function preset(id: string, label: string, side: "LONG" | "SHORT", minBars: number, rules: FeatureRule[], config: PaperExitParams, cooldownMinutes = 0, options: { avoidBigBull1m?: boolean; avoidBigBull1mBars?: number; avoidBigBull1mGain?: number } = {}): StrategyDefinition {
+  return { id, label, side, enabled: true, minBars, entry: all(...rules), exit: exit(config), cooldownMinutes, ...options };
 }
 export function streakPreset(config: Partial<StreakStrategyLiveConfig> = {}): StrategyDefinition {
   const c = { ...STREAK_LIVE_DEFAULT_CONFIG, ...config };
@@ -37,7 +37,7 @@ export function streakPreset(config: Partial<StreakStrategyLiveConfig> = {}): St
     rules.push(r("price.high", ">=", ref(`${p}.price`)), r("hist", "<", ref(`${p}.hist`)));
     if (c.requireDoubleDivergence ?? true) rules.push(r("dif", "<", ref(`${p}.dif`)));
   }
-  return preset("streak", "新高顶背离", "SHORT", Math.max(35, ...c.supportMaPeriods), rules, c);
+  return preset("streak", "新高顶背离", "SHORT", Math.max(35, ...c.supportMaPeriods), rules, c, 0, { avoidBigBull1m: c.avoidBigBull1m, avoidBigBull1mBars: c.avoidBigBull1mBars, avoidBigBull1mGain: c.avoidBigBull1mGain });
 }
 export function reboundPreset(config: Partial<PeakReboundLiveConfig> = {}): StrategyDefinition {
   const c = { ...PEAK_REBOUND_LIVE_DEFAULT_CONFIG, ...config };
@@ -54,7 +54,7 @@ export function reboundPreset(config: Partial<PeakReboundLiveConfig> = {}): Stra
   if (c.minReboundUpCandles !== undefined) rules.push(r("watch.upCandles", ">=", c.minReboundUpCandles));
   if (c.maxFibRetracement !== undefined) rules.push(r("watch.fib", "<=", c.maxFibRetracement));
   if (c.requireBearishOrUpperShadow) rules.push(any(r("price.close", "<=", ref("price.open")), r("upperRangeRatio", ">=", c.minUpperShadowRatio ?? 0.3)));
-  return { ...preset("rebound", "首次跌10%", "SHORT", Math.max(c.shortMa, c.mediumMa ?? 0, c.longMa, 30) + 4, rules, c, c.holdMinutes),
+  return { ...preset("rebound", "首次跌10%", "SHORT", Math.max(c.shortMa, c.mediumMa ?? 0, c.longMa, 30) + 4, rules, c, c.holdMinutes, { avoidBigBull1m: c.avoidBigBull1m, avoidBigBull1mBars: c.avoidBigBull1mBars, avoidBigBull1mGain: c.avoidBigBull1mGain }),
     observation: { rank: 1, watchWindowHours: c.watchWindowHours, pullbackPercent: c.pullbackX, reboundPercent: c.reboundY, historyBars: 120 } };
 }
 export function deepReboundPreset(config: Partial<DeepReboundLiveConfig> = {}): StrategyDefinition {
@@ -63,7 +63,7 @@ export function deepReboundPreset(config: Partial<DeepReboundLiveConfig> = {}): 
     r("price.close", "<", ref(`ma.${c.shortMa}.value`)), r(`ma.${c.shortMa}.value`, "<", ref("price.high")), r(`ma.${c.shortMa}.value`, "<", ref(`ma.${c.longMa}.value`))];
   if (c.requireMaSlopeDown) rules.push(r(`ma.${c.longMa}.slope2`, "<=", 0));
   if (c.minGreenRatio20 > 0) rules.push(r("greenRatio.20", ">", c.minGreenRatio20));
-  return preset("deep_rebound", "跌到20%+", "SHORT", Math.max(36, c.shortMa + 3, c.longMa + 3), rules, c, c.cooldownMinutes);
+  return preset("deep_rebound", "跌到20%+", "SHORT", Math.max(36, c.shortMa + 3, c.longMa + 3), rules, c, c.cooldownMinutes, { avoidBigBull1m: c.avoidBigBull1m, avoidBigBull1mBars: c.avoidBigBull1mBars, avoidBigBull1mGain: c.avoidBigBull1mGain });
 }
 export function hourlyPreset(config: Partial<HourlySuppressionLiveConfig> = {}): StrategyDefinition {
   const c = { ...HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG, ...config };
@@ -77,7 +77,7 @@ export function hourlyPreset(config: Partial<HourlySuppressionLiveConfig> = {}):
   if (c.requireCloseBelowMa) rules.push(r("price.close", "<", ref("ma.60.value")));
   if (c.requireBearish) rules.push(r("price.close", "<", ref("price.open")));
   if (c.requireMaSlopeDown) rules.push(r("ma.60.slope3", "<=", 0));
-  return preset("hourly_suppression", "小时线压制", "SHORT", 66, rules, c, c.cooldownMinutes);
+  return preset("hourly_suppression", "小时线压制", "SHORT", 66, rules, c, c.cooldownMinutes, { avoidBigBull1m: c.avoidBigBull1m, avoidBigBull1mBars: c.avoidBigBull1mBars, avoidBigBull1mGain: c.avoidBigBull1mGain });
 }
 export function wBottomPreset(config: Partial<WBottomDivergenceLiveConfig> = {}): StrategyDefinition {
   const c = { ...W_BOTTOM_DIVERGENCE_DEFAULT_CONFIG, ...config };
@@ -95,6 +95,7 @@ export function quantPreset(side: "LONG" | "SHORT", c: KlineStatsStrategySpec): 
   if (c.maRequirement === "MA_BULLISH_STACK") label = "多头排列";
   if (["MA10_BREAKOUT", "MA20_BREAKOUT"].includes(c.maRequirement ?? "")) label = "均线突破";
   return { id: `kline_stats_${side.toLowerCase()}`, label, side, enabled: true, minBars: 60,
+    avoidBigBull1m: c.avoidBigBull1m, avoidBigBull1mBars: c.avoidBigBull1mBars, avoidBigBull1mGain: c.avoidBigBull1mGain,
     entry: compileFeatureSpec(side, c), exit: exit({ holdMinutes: c.holdMinutes ?? (side === "SHORT" ? 45 : 30),
       tp1Percent: c.tp1Percent ?? (side === "SHORT" ? 3 : 2.5), tp2Percent: c.tp2Percent ?? (side === "SHORT" ? 7 : 5.5),
       stopLossPercent: c.stopLossPercent ?? (side === "SHORT" ? 5 : 3.5), moveSlToEntryAfterTp1: c.moveSlToEntryAfterTp1 ?? true, leverage: c.leverage ?? 3 }),
@@ -103,11 +104,12 @@ export function quantPreset(side: "LONG" | "SHORT", c: KlineStatsStrategySpec): 
 
 /** Migration boundary only. Runtime execution never branches on these legacy names. */
 export function buildStrategyPresets(c: PaperStrategyConfig): StrategyDefinition[] {
+  const shortAvoid = { avoidBigBull1m: c.avoidBigBull1m, avoidBigBull1mBars: c.avoidBigBull1mBars, avoidBigBull1mGain: c.avoidBigBull1mGain };
   const strategies = [
-    reboundPreset(c.reboundConfig), deepReboundPreset(c.deepReboundConfig),
-    streakPreset({ topN: c.topN, supportMaPeriods: c.supportMaPeriods, ampDivisor: c.ampDivisor, holdMinutes: c.holdMinutes, exitX: c.exitX, exitN: c.exitN, exitM: c.exitM, ...c.streakConfig }),
-    hourlyPreset(c.hourlySuppressionConfig), wBottomPreset(c.wBottomDivergenceConfig),
-    quantPreset("SHORT", c.klineStatsShortConfig ?? {}), quantPreset("LONG", c.klineStatsLongConfig ?? {}),
+    reboundPreset({ ...shortAvoid, ...c.reboundConfig }), deepReboundPreset({ ...shortAvoid, ...c.deepReboundConfig }),
+    streakPreset({ topN: c.topN, supportMaPeriods: c.supportMaPeriods, ampDivisor: c.ampDivisor, holdMinutes: c.holdMinutes, exitX: c.exitX, exitN: c.exitN, exitM: c.exitM, ...shortAvoid, ...c.streakConfig }),
+    hourlyPreset({ ...shortAvoid, ...c.hourlySuppressionConfig }), wBottomPreset(c.wBottomDivergenceConfig),
+    quantPreset("SHORT", { ...shortAvoid, ...(c.klineStatsShortConfig ?? {}) }), quantPreset("LONG", c.klineStatsLongConfig ?? {}),
   ];
   const enabled = [c.enableRebound, c.enableDeepRebound, c.enableStreak, c.enableHourlySuppression, c.enableWBottomDivergence, c.enableKlineStatsShort, c.enableKlineStatsLong];
   const leverage = [c.trendLeverage ?? c.leverage, c.trendLeverage ?? c.leverage, c.streakLeverage ?? 3, c.hourlySuppressionConfig?.leverage ?? c.trendLeverage ?? c.leverage,
