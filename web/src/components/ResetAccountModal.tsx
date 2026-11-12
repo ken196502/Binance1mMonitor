@@ -8,7 +8,7 @@ export interface ResetAccountModalProps {
 }
 
 export function ResetAccountModal({ isOpen, onClose, onSuccess }: ResetAccountModalProps) {
-  const [password, setPassword] = useState("Abcd#123456");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -16,7 +16,7 @@ export function ResetAccountModal({ isOpen, onClose, onSuccess }: ResetAccountMo
   // 每次打开弹窗时重置状态
   useEffect(() => {
     if (isOpen) {
-      setPassword("Abcd#123456");
+      setPassword("");
       setError(null);
       setLoading(false);
     }
@@ -100,7 +100,6 @@ export function ResetAccountModal({ isOpen, onClose, onSuccess }: ResetAccountMo
           <div className="config-form-group" style={{ marginTop: "16px" }}>
             <label htmlFor="reset-account-pwd">
               <span>操作密码验证</span>
-              <small>默认密码: Abcd#123456</small>
             </label>
             <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
               <input
@@ -108,7 +107,7 @@ export function ResetAccountModal({ isOpen, onClose, onSuccess }: ResetAccountMo
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="请输入重置密码 (默认: Abcd#123456)"
+                placeholder="请输入重置操作密码"
                 autoFocus
                 disabled={loading}
                 style={{ paddingRight: "42px" }}
@@ -129,34 +128,6 @@ export function ResetAccountModal({ isOpen, onClose, onSuccess }: ResetAccountMo
                 title={showPassword ? "隐藏密码" : "显示密码"}
               >
                 {showPassword ? "🙈" : "👁️"}
-              </button>
-            </div>
-            <div
-              style={{
-                marginTop: "6px",
-                fontSize: "11px",
-                color: "var(--muted, #888)",
-                display: "flex",
-                justifyContent: "space-between",
-              }}
-            >
-              <span>
-                系统默认密码：<code>Abcd#123456</code>
-              </span>
-              <button
-                type="button"
-                style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "#3498db",
-                  fontSize: "11px",
-                  padding: 0,
-                  textDecoration: "underline",
-                }}
-                onClick={() => setPassword("Abcd#123456")}
-              >
-                填入默认密码
               </button>
             </div>
           </div>

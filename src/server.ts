@@ -991,7 +991,7 @@ const server = http.createServer(async (req, res) => {
         "Content-Type": "application/json; charset=utf-8",
         "Cache-Control": "no-store",
       });
-      res.end(JSON.stringify({ error: "重置密码错误，请输入正确的密码（默认：Abcd#123456）" }));
+      res.end(JSON.stringify({ error: "重置密码错误，请输入正确的操作密码" }));
       return;
     }
     paperTrading.reset();
