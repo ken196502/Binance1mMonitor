@@ -28,7 +28,9 @@ export function KlineStrategySettings({ title, value, onChange }: {
 }) {
   const fields = [
     ["ampDivisor", "振幅分母 N", 0.1, 0.1], ["topN", "榜单前 N 名", 1, 1],
-    ["minDayChange", "最低 24h 涨幅 (%)", 0, 0.1], ["holdMinutes", "最长持仓 (分钟)", 1, 1],
+    ["minHighChange24h", "最低 24h 最高涨幅 (%)", 0, 0.1], ["maxHighChange24h", "最高 24h 最高涨幅 (%)", 0, 0.1],
+    ["minDayChange", "最低 24h 涨幅 (%)", 0, 0.1], ["maxDayChange", "最高 24h 涨幅 (%)", 0, 0.1],
+    ["holdMinutes", "最长持仓 (分钟)", 1, 1],
     ["tp1Percent", "第一阶段止盈 (%)", 0.01, 0.01], ["tp2Percent", "第二阶段止盈 (%)", 0.01, 0.01],
     ["stopLossPercent", "止损 (%)", 0.01, 0.01], ["cooldownMinutes", "冷却时间 (分钟)", 0, 1],
     ["leverage", "本策略杠杆", 1, 1],

@@ -45,6 +45,16 @@ export class StrategyFeatureMonitor {
       const high = this.ticker.highPrice && this.ticker.highPrice > 0 ? this.ticker.highPrice : Math.max(...this.bars.map(b => b.high));
       return (high - bar.close) / high * 100;
     }
+    if (field === "highChange24h") {
+      const high = this.ticker.highPrice && this.ticker.highPrice > 0 ? this.ticker.highPrice : Math.max(...this.bars.map(b => b.high));
+      const dayChange = this.ticker.priceChangePercent ?? 0;
+      const openPrice = this.ticker.openPrice && this.ticker.openPrice > 0
+        ? this.ticker.openPrice
+        : (bar.close > 0 && dayChange !== -100
+          ? bar.close / (1 + dayChange / 100)
+          : this.bars[0]?.open ?? bar.close);
+      return openPrice > 0 ? Math.max(dayChange, ((high - openPrice) / openPrice) * 100) : dayChange;
+    }
     // Native vector fields keep identical SMA arithmetic in cached replay and live monitoring.
     const cachedVectorValue = readFeaturePath(this.vector, field);
     if (cachedVectorValue !== undefined) return cachedVectorValue;

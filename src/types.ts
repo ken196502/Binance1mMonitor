@@ -41,6 +41,7 @@ export interface Row extends Ticker24h {
   hourFirstLow?: number | null;
   surgeRatio5?: number | null;
   posIn24hRange?: number | null;
+  highChange24h?: number | null;
   biasRatio30?: number | null;
   goldenCrossAgo?: number | null;
 }
@@ -114,7 +115,10 @@ export type PaperSignalLabel =
 export interface KlineStatsStrategyLiveConfig {
   rules?: import("./strategy-rules.ts").FeatureCondition[];
   topN?: number;               // 适用榜单 Top N (默认 10)
-  minDayChange?: number;       // 24h 涨幅门槛 (默认 10%)
+  minDayChange?: number;       // 24h 涨幅下限 (默认 10%)
+  maxDayChange?: number;       // 24h 涨幅上限 (可选)
+  minHighChange24h?: number;   // 24h 最高涨幅下限 % (做空防劣质标的，默认 20%)
+  maxHighChange24h?: number;   // 24h 最高涨幅上限 % (可选)
   intervalWindow: number;      // 冲高/回溯窗口 (如 5m, 10m, 15m)
   ampDivisor: number;          // 冲高涨幅 >= 24h 涨幅 / ampDivisor (如 8, 10, 12)
   maRequirement: typeof MA_REQUIREMENTS[number];

@@ -27,6 +27,7 @@ interface TerminalDockProps {
   onOpenConfigModal?: () => void;
   showConfigModal?: boolean;
   onCloseConfigModal?: () => void;
+  onOpenResetModal?: () => void;
 }
 
 export function TerminalDock({
@@ -49,6 +50,7 @@ export function TerminalDock({
   onOpenConfigModal,
   showConfigModal,
   onCloseConfigModal,
+  onOpenResetModal,
 }: TerminalDockProps) {
   const activePositions = paperSummary?.activePositions ?? [];
   const pendingOrders = paperSummary?.pendingOrders ?? [];
@@ -110,6 +112,16 @@ export function TerminalDock({
 
         {/* 右侧快捷动作按钮 */}
         <div className="dock-actions-group">
+          {onOpenResetModal && (
+            <button
+              type="button"
+              className="btn-reset-paper"
+              onClick={onOpenResetModal}
+              title="清空模拟持仓、挂单与历史平仓明细，账户恢复为初始 100 USDT"
+            >
+              🔄 重置账户
+            </button>
+          )}
           <button
             type="button"
             className="btn-config-toggle"
@@ -156,6 +168,7 @@ export function TerminalDock({
             showConfigModal={showConfigModal}
             onCloseConfigModal={onCloseConfigModal}
             onOpenConfigModal={onOpenConfigModal}
+            onOpenResetModal={onOpenResetModal}
           />
         </div>
       </div>

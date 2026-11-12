@@ -302,6 +302,7 @@ async function fetchRowData(t: Ticker24h, options: FetchRowOptions = {}): Promis
         greenBarCount30: macdGreen?.greenCount ?? null,
         surgeRatio5: fv ? (fv.surgeRatio[5] ?? null) : null,
         posIn24hRange: fv ? (fv.posIn24hRange ?? null) : null,
+        highChange24h: fv ? (fv.highChange24h ?? null) : null,
         biasRatio30: fv ? (fv.ma[30]?.biasRatio ?? null) : null,
         goldenCrossAgo: fv ? (fv.goldenCrossAgo !== 999 ? fv.goldenCrossAgo : null) : null,
       },
@@ -980,6 +981,17 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== "POST") {
       res.writeHead(405, { "Content-Type": "application/json", Allow: "POST" });
       res.end(JSON.stringify({ error: "请使用 POST 重置模拟账户" }));
+      return;
+    }
+    const body = await readJsonBody(req).catch(() => ({}));
+    const expectedPassword = process.env.RESET_ACCOUNT_PASSWORD || "Abcd#123456";
+    const password = typeof body?.password === "string" ? body.password.trim() : "";
+    if (password !== expectedPassword) {
+      res.writeHead(401, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify({ error: "重置密码错误，请输入正确的密码（默认：Abcd#123456）" }));
       return;
     }
     paperTrading.reset();

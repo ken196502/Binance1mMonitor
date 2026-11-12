@@ -203,6 +203,21 @@ test("HTTP config accepts remote shape settings and GET cannot reset the account
   try {
     const reset = await fetch(`${url}/api/paper-trading/reset`);
     assert.equal(reset.status, 405);
+    const resetUnauthorized = await fetch(`${url}/api/paper-trading/reset`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: "wrong-password" }),
+    });
+    assert.equal(resetUnauthorized.status, 401);
+    const resetNoBody = await fetch(`${url}/api/paper-trading/reset`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+    });
+    assert.equal(resetNoBody.status, 401);
+    const resetSuccess = await fetch(`${url}/api/paper-trading/reset`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: "Abcd#123456" }),
+    });
+    assert.equal(resetSuccess.status, 200);
+    assert.equal((await resetSuccess.json() as any).ok, true);
     const updated = await fetch(`${url}/api/paper-trading/config`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ klineStatsLongConfig: { intervalWindow: 15, ampDivisor: 12, maRequirement: "MA_FRESH_BULL" } }),

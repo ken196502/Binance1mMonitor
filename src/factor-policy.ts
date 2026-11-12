@@ -94,6 +94,7 @@ export interface FactorMiningState {
 export const BASELINE_SHORT_CONFIG: KlineStatsStrategyLiveConfig = {
   topN: 10,
   minDayChange: 10,
+  minHighChange24h: 20,
   intervalWindow: 5,
   ampDivisor: 8,
   maRequirement: "MA10_BREAKDOWN",

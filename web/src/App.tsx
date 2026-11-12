@@ -8,6 +8,7 @@ import { LiveTradingPanel } from "./components/LiveTradingPanel";
 import { SymbolDetailCard } from "./components/SymbolDetailCard";
 import { TerminalDock, type DockTabKey } from "./components/TerminalDock";
 import { KlineStatsPanel } from "./components/KlineStatsPanel";
+import { ResetAccountModal } from "./components/ResetAccountModal";
 import { detectIntervalSignals } from "../../src/kline-stats.ts";
 import type { ChartBar } from "../../src/types.ts";
 import "./App.css";
@@ -17,6 +18,7 @@ export default function App() {
   const { state: liveState, connected: liveConnected, setState: setLiveState } = useLiveTrading(status?.liveTrading);
   const [showLiveModal, setShowLiveModal] = useState(false);
   const [showConfigModal, setShowConfigModal] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
   const [remaining, setRemaining] = useState(60);
 
   // 当前选中标的：榜单点击与图表下拉联动
@@ -293,6 +295,15 @@ export default function App() {
 
           <button
             type="button"
+            className="btn-reset-paper header-reset-btn"
+            onClick={() => setShowResetModal(true)}
+            title="清空模拟持仓、挂单与历史平仓明细，账户恢复为初始 100 USDT"
+          >
+            🔄 重置账户
+          </button>
+
+          <button
+            type="button"
             className="btn-config-toggle header-config-btn"
             onClick={() => setShowConfigModal(true)}
             title="策略参数设置"
@@ -427,6 +438,7 @@ export default function App() {
             showConfigModal={showConfigModal}
             onOpenConfigModal={() => setShowConfigModal(true)}
             onCloseConfigModal={() => setShowConfigModal(false)}
+            onOpenResetModal={() => setShowResetModal(true)}
           />
         </div>
       </main>
@@ -438,6 +450,12 @@ export default function App() {
         state={liveState}
         connected={liveConnected}
         onStateChange={setLiveState}
+      />
+
+      {/* 模拟账户重置弹窗 */}
+      <ResetAccountModal
+        isOpen={showResetModal}
+        onClose={() => setShowResetModal(false)}
       />
     </div>
   );

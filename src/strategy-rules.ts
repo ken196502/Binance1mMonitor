@@ -58,7 +58,7 @@ export function readFeaturePath(value: unknown, field: string): unknown {
 
 // Parameterized features use decimal path segments: ma.15.slope2, pivotLow.8.25.dif.
 export const FEATURE_FIELDS = [
-  "rank", "dayChange", "close", "price.open", "price.high", "price.low", "price.close", "price.previousHigh",
+  "rank", "dayChange", "highChange24h", "close", "price.open", "price.high", "price.low", "price.close", "price.previousHigh",
   "new24hHigh", "dropFrom24hHigh", "body", "upperWick", "lowerWick", "upperShadowRatio", "upperRangeRatio",
   "surge.5", "surgeRatio.5", "drop.30", "range.30", "closeChange.5", "dayChangeDelta.15", "posIn24hRange",
   "ma.5.value", "ma.10.value", "ma.15.value", "ma.20.value", "ma.30.value", "ma.60.value",
@@ -111,11 +111,27 @@ export function validateRules(value: unknown, depth = 0): asserts value is Featu
 
 /** Compile the old quant shorthand into exactly the same rule tree as every other preset. */
 export function compileFeatureSpec(side: "LONG" | "SHORT", spec: {
-  topN?: number; minDayChange?: number; intervalWindow?: number; ampDivisor?: number;
+  topN?: number; minDayChange?: number; maxDayChange?: number;
+  minHighChange24h?: number; maxHighChange24h?: number;
+  intervalWindow?: number; ampDivisor?: number;
   maRequirement?: string; macdRequirement?: string; candleRequirement?: string; rules?: FeatureCondition[];
 }): FeatureRule {
-  const rules: FeatureRule[] = [rule("rank", "<=", spec.topN ?? 10), rule("dayChange", ">=", spec.minDayChange ?? 10),
-    rule(`surgeRatio.${spec.intervalWindow ?? 5}`, side === "SHORT" ? ">=" : "<=", 1 / (spec.ampDivisor ?? 8))];
+  const rules: FeatureRule[] = [rule("rank", "<=", spec.topN ?? 10)];
+  if (spec.minDayChange !== undefined) {
+    rules.push(rule("dayChange", ">=", spec.minDayChange));
+  } else if (spec.minHighChange24h === undefined) {
+    rules.push(rule("dayChange", ">=", 10));
+  }
+  if (spec.maxDayChange !== undefined) {
+    rules.push(rule("dayChange", "<=", spec.maxDayChange));
+  }
+  if (spec.minHighChange24h !== undefined) {
+    rules.push(rule("highChange24h", ">=", spec.minHighChange24h));
+  }
+  if (spec.maxHighChange24h !== undefined) {
+    rules.push(rule("highChange24h", "<=", spec.maxHighChange24h));
+  }
+  rules.push(rule(`surgeRatio.${spec.intervalWindow ?? 5}`, side === "SHORT" ? ">=" : "<=", 1 / (spec.ampDivisor ?? 8)));
   const ma = spec.maRequirement ?? "NONE";
   const match = /^MA(10|20|30|60)_(SUPPORT|RESIST|BREAKOUT|BREAKDOWN|CLOSE_BELOW|CLOSE_ABOVE)$/.exec(ma);
   if (match) rules.push(rule(`ma.${match[1]}.${match[2].toLowerCase()}`, "==", true));

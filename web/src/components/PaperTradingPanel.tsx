@@ -1,5 +1,6 @@
 import { DEFAULT_FACTOR_MINING, normalizeFactorMiningConfig } from "../../../src/factor-settings.ts";
 import { StrategySettings } from "./StrategySettings";
+import { ResetAccountModal } from "./ResetAccountModal";
 import { validateStrategies, type StrategyDefinition } from "../../../src/strategy-definition.ts";
 import type { StrategyMonitorResult } from "../../../src/strategy-engine.ts";
 import { useState, useEffect } from "react";
@@ -22,6 +23,9 @@ export interface PaperTradingPanelProps {
   showConfigModal?: boolean;
   onCloseConfigModal?: () => void;
   onOpenConfigModal?: () => void;
+  showResetModal?: boolean;
+  onCloseResetModal?: () => void;
+  onOpenResetModal?: () => void;
 }
 
 interface ClosedTradeItem extends PaperPosition {
@@ -172,6 +176,9 @@ export function PaperTradingPanel({
   showConfigModal: propShowConfigModal,
   onCloseConfigModal,
   onOpenConfigModal,
+  showResetModal: propShowResetModal,
+  onCloseResetModal,
+  onOpenResetModal,
 }: PaperTradingPanelProps) {
   const [liveSummary, setLiveSummary] = useState<PaperTradingSummary | undefined>(propSummary);
   const [showHistory, setShowHistory] = useState(false);
@@ -186,6 +193,12 @@ export function PaperTradingPanel({
   const isConfigModalOpen = propShowConfigModal !== undefined ? propShowConfigModal : localShowConfigModal;
   const openConfigModal = onOpenConfigModal ?? (() => setLocalShowConfigModal(true));
   const closeConfigModal = onCloseConfigModal ?? (() => setLocalShowConfigModal(false));
+
+  // 重置账户模态框状态 (支持受控与本地状态)
+  const [localShowResetModal, setLocalShowResetModal] = useState(false);
+  const isResetModalOpen = propShowResetModal !== undefined ? propShowResetModal : localShowResetModal;
+  const openResetModal = onOpenResetModal ?? (() => setLocalShowResetModal(true));
+  const closeResetModal = onCloseResetModal ?? (() => setLocalShowResetModal(false));
   const [strategiesInput, setStrategiesInput] = useState<StrategyDefinition[]>([]);
   const [marginPercentInput, setMarginPercentInput] = useState<number>(20);
   const [maxPositionsInput, setMaxPositionsInput] = useState<number>(5);
@@ -973,22 +986,32 @@ export function PaperTradingPanel({
         </label>
       </div>
 
-      <div className="config-modal-actions">
+      <div className="config-modal-actions" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <button
           type="button"
-          className="btn-preset-reset"
-          onClick={handleResetOptimal}
-          title="撤销尚未保存的参数修改"
+          className="btn-reset-paper"
+          onClick={openResetModal}
+          title="清空模拟持仓、挂单与历史平仓明细，账户恢复为初始 100 USDT"
         >
-          撤销本次修改
+          🔄 重置账户
         </button>
-        <button
-          type="submit"
-          className="btn-config-save"
-          disabled={isSavingConfig}
-        >
-          {isSavingConfig ? "保存中…" : "保存并应用到模拟交易"}
-        </button>
+        <div style={{ display: "flex", gap: "10px" }}>
+          <button
+            type="button"
+            className="btn-preset-reset"
+            onClick={handleResetOptimal}
+            title="撤销尚未保存的参数修改"
+          >
+            撤销本次修改
+          </button>
+          <button
+            type="submit"
+            className="btn-config-save"
+            disabled={isSavingConfig}
+          >
+            {isSavingConfig ? "保存中…" : "保存并应用到模拟交易"}
+          </button>
+        </div>
       </div>
     </form>
   );
@@ -1105,6 +1128,16 @@ export function PaperTradingPanel({
               挂单中: <b>{pendingOrders.length}</b> 笔
             </span>
           )}
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "6px" }}>
+            <button
+              type="button"
+              className="btn-reset-paper"
+              onClick={openResetModal}
+              title="清空模拟持仓、挂单与历史平仓明细，账户恢复为初始 100 USDT"
+            >
+              🔄 重置账户
+            </button>
+          </div>
         </div>
         {dockTab === "positions" && (
           <div className="paper-body">
@@ -1159,6 +1192,14 @@ export function PaperTradingPanel({
             </div>
           </div>,
           document.body
+        )}
+
+        {/* 模拟账户重置弹窗 (未在外部委托时由组件内部兜底渲染) */}
+        {!onOpenResetModal && (
+          <ResetAccountModal
+            isOpen={isResetModalOpen}
+            onClose={closeResetModal}
+          />
         )}
       </div>
     );
@@ -1312,11 +1353,10 @@ export function PaperTradingPanel({
           <button
             type="button"
             className="btn-reset-paper"
-            onClick={handleReset}
-            disabled={isResetting}
+            onClick={openResetModal}
             title="清空所有模拟持仓、挂单与历史平仓明细，账户恢复为初始 100 USDT"
           >
-            {isResetting ? "重置中…" : "重置模拟仓位"}
+            🔄 重置账户
           </button>
         </div>
       </div>
@@ -1733,6 +1773,14 @@ export function PaperTradingPanel({
           </div>
         </div>,
         document.body
+      )}
+
+      {/* 模拟账户重置弹窗 (未在外部委托时由组件内部兜底渲染) */}
+      {!onOpenResetModal && (
+        <ResetAccountModal
+          isOpen={isResetModalOpen}
+          onClose={closeResetModal}
+        />
       )}
     </section>
   );

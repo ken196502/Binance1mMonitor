@@ -27,7 +27,8 @@ export function validateStrategySpec(value: unknown): void {
     for (const rule of spec.rules) validateRules(rule);
   }
   const numeric: Record<string, [number, number]> = {
-    topN: [1, 1000], minDayChange: [0, 10000], ampDivisor: [0.001, 10000],
+    topN: [1, 1000], minDayChange: [0, 10000], maxDayChange: [0, 10000],
+    minHighChange24h: [0, 10000], maxHighChange24h: [0, 10000], ampDivisor: [0.001, 10000],
     holdMinutes: [1, 10080], tp1Percent: [0.001, 99], tp2Percent: [0.001, 99],
     stopLossPercent: [0.001, 99], cooldownMinutes: [0, 10080], leverage: [1, 100],
   };
@@ -47,4 +48,10 @@ export function validateStrategySpec(value: unknown): void {
   }
   if (spec.moveSlToEntryAfterTp1 !== undefined && typeof spec.moveSlToEntryAfterTp1 !== "boolean") throw new Error("moveSlToEntryAfterTp1 必须是布尔值");
   if (typeof spec.tp1Percent === "number" && typeof spec.tp2Percent === "number" && spec.tp2Percent < spec.tp1Percent) throw new Error("TP2 不能小于 TP1");
+  if (typeof spec.minHighChange24h === "number" && typeof spec.maxHighChange24h === "number" && spec.maxHighChange24h < spec.minHighChange24h) {
+    throw new Error("maxHighChange24h 不能小于 minHighChange24h");
+  }
+  if (typeof spec.minDayChange === "number" && typeof spec.maxDayChange === "number" && spec.maxDayChange < spec.minDayChange) {
+    throw new Error("maxDayChange 不能小于 minDayChange");
+  }
 }

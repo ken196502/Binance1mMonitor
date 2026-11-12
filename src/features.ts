@@ -70,6 +70,7 @@ export interface FeatureVector {
   dayChangeDelta: Record<number, number>; // 15, 60 分钟内 24h 涨幅变化
   posIn24hRange: number;              // (close - low24h) / (high24h - low24h)，取值 0~1
   dropFrom24hHigh: number;            // 距 24h 最高价的回撤 %
+  highChange24h: number;              // 24h 内最高涨幅 %: ((high24h - open24h) / open24h) * 100
 
   // 归一化（A ÷ B）
   surgeRatio: Record<number, number>; // surge[W] / dayChange
@@ -113,6 +114,9 @@ export interface FeatureRuleCondition extends FeatureCondition {
 export interface KlineStatsStrategySpec {
   topN?: number;
   minDayChange?: number;
+  maxDayChange?: number;
+  minHighChange24h?: number;
+  maxHighChange24h?: number;
   intervalWindow?: number;
   ampDivisor?: number;
   maRequirement?: string;
@@ -301,6 +305,14 @@ export function computeFeatureVector(
   const range = high24h - low24h;
   const posIn24hRange = range > 0 ? Math.max(0, Math.min(1, (close - low24h) / range)) : 0.5;
   const dropFrom24hHigh = high24h > 0 ? Math.max(0, ((high24h - close) / high24h) * 100) : 0;
+
+  // 24h 最高涨幅 (24h high change percent)
+  const open24h = ticker?.openPrice && ticker.openPrice > 0
+    ? ticker.openPrice
+    : (dayChange !== -100 && close > 0
+      ? close / (1 + dayChange / 100)
+      : subCandles[Math.max(0, curSubIdx - 1439)]?.open ?? close);
+  const highChange24h = open24h > 0 ? Math.max(dayChange, ((high24h - open24h) / open24h) * 100) : dayChange;
 
   // 24h 变化速率
   const dayChangeDelta: Record<number, number> = { 15: 0, 60: 0 };
@@ -587,6 +599,7 @@ export function computeFeatureVector(
     dayChangeDelta,
     posIn24hRange,
     dropFrom24hHigh,
+    highChange24h,
     surgeRatio,
     dropRatio,
     ma,

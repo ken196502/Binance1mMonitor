@@ -2,7 +2,7 @@ import type { StrategyDefinition } from "../../../src/strategy-definition.ts";
 import { FEATURE_FIELDS, type FeatureRule, type FeatureCondition, type FeatureOperand } from "../../../src/strategy-rules.ts";
 
 const labels: Record<string, string> = {
-  rank: "涨幅榜排名", dayChange: "24h 涨幅 (%)", close: "收盘价", "price.open": "开盘价", "price.high": "最高价", "price.low": "最低价", "price.close": "收盘价", "price.previousHigh": "前根最高价",
+  rank: "涨幅榜排名", dayChange: "24h 涨幅 (%)", highChange24h: "24h 最高涨幅 (%)", close: "收盘价", "price.open": "开盘价", "price.high": "最高价", "price.low": "最低价", "price.close": "收盘价", "price.previousHigh": "前根最高价",
   new24hHigh: "创 24h 新高", dropFrom24hHigh: "距 24h 高点回撤 (%)", body: "实体幅度 (%)", upperWick: "上影线幅度 (%)", lowerWick: "下影线幅度 (%)", upperShadowRatio: "上影线 / 实体", upperRangeRatio: "上影线 / 全振幅",
   surge: "窗口冲高 (%)", surgeRatio: "窗口冲高 / 24h 涨幅", drop: "窗口回撤 (%)", dropRatio: "窗口回撤 / 24h 涨幅", range: "窗口振幅 (%)", closeChange: "窗口收盘变化 (%)", dayChangeDelta: "24h 涨幅变化", posIn24hRange: "24h 区间位置",
   value: "数值", slope2: "两根斜率 (%)", slope3: "三根斜率 (%)", support: "支撑", resist: "压制", breakout: "突破", breakdown: "跌破", biasPct: "乖离 (%)", biasRatio: "相对乖离", emaValue: "EMA 数值",

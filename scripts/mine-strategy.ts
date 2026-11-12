@@ -103,6 +103,9 @@ export interface MiningStrategyCandidate extends KlineStatsStrategySpec {
   cooldownMinutes?: number;
   topN?: number;
   minDayChange?: number;
+  maxDayChange?: number;
+  minHighChange24h?: number;
+  maxHighChange24h?: number;
 }
 
 export interface TradeRecord {
@@ -791,30 +794,39 @@ export async function main() {
     : (["UPPER_SHADOW_PINBAR", "BEARISH_BAR", "NONE"] as const);
   const shortHolds = isQuick ? [15, 30] : [15, 20, 30, 45];
 
+  const shortHighRanges = isQuick
+    ? ([{ minHighChange24h: 20 }] as const)
+    : ([{ minHighChange24h: 20 }, { minHighChange24h: 20, maxHighChange24h: 100 }] as const);
+
   for (const window of shortWindows) {
     for (const div of shortDivs) {
-      for (const maReq of shortMaReqs) {
-        for (const macdReq of shortMacdReqs) {
-          for (const candleReq of shortCandleReqs) {
-            for (const hold of shortHolds) {
-              candidates.push({
-                id: `SHORT_W${window}_D${div}_${maReq}_${macdReq}_${candleReq}_H${hold}`,
-                name: `空头摸顶: ${window}m冲高(>=24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + ${candleReq} + 持仓${hold}m`,
-                side: "SHORT",
-                leverage: 3,
-                intervalWindow: window,
-                ampDivisor: div,
-                maRequirement: maReq,
-                macdRequirement: macdReq,
-                candleRequirement: candleReq,
-                holdMinutes: hold,
-                tp1Percent: 2.5,
-                tp2Percent: 5.0,
-                stopLossPercent: 3.5,
-                cooldownMinutes: 20,
-                topN: 10,
-                minDayChange: 10,
-              });
+      for (const range of shortHighRanges) {
+        for (const maReq of shortMaReqs) {
+          for (const macdReq of shortMacdReqs) {
+            for (const candleReq of shortCandleReqs) {
+              for (const hold of shortHolds) {
+                const rangeTag = range.maxHighChange24h ? `HC${range.minHighChange24h}-${range.maxHighChange24h}` : `HC${range.minHighChange24h}`;
+                const rangeDesc = range.maxHighChange24h ? `24h最高[${range.minHighChange24h}%~${range.maxHighChange24h}%]` : `24h最高[>=${range.minHighChange24h}%]`;
+                candidates.push({
+                  id: `SHORT_W${window}_D${div}_${rangeTag}_${maReq}_${macdReq}_${candleReq}_H${hold}`,
+                  name: `空头摸顶: ${rangeDesc} + ${window}m冲高(>=24h/${div}) + ${maReq.replace("_", "")} + ${macdReq} + ${candleReq} + 持仓${hold}m`,
+                  side: "SHORT",
+                  leverage: 3,
+                  intervalWindow: window,
+                  ampDivisor: div,
+                  maRequirement: maReq,
+                  macdRequirement: macdReq,
+                  candleRequirement: candleReq,
+                  holdMinutes: hold,
+                  tp1Percent: 2.5,
+                  tp2Percent: 5.0,
+                  stopLossPercent: 3.5,
+                  cooldownMinutes: 20,
+                  topN: 10,
+                  minHighChange24h: range.minHighChange24h,
+                  maxHighChange24h: range.maxHighChange24h,
+                });
+              }
             }
           }
         }

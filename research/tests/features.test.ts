@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { computeFeatureVector, evaluateFeatureSpec, FEATURE_VERSION } from "../../src/features.ts";
+import { validateStrategySpec } from "../../src/strategy-spec.ts";
 import type { Candle } from "../../src/macd.ts";
 import type { Ticker24h } from "../../src/binance.ts";
 
@@ -44,6 +45,7 @@ test("computeFeatureVector: extracts correct features with valid bounds", () => 
   assert.equal(fv.version, FEATURE_VERSION);
   assert.equal(fv.rank, 2);
   assert.equal(fv.dayChange, 25.0);
+  assert.equal(fv.highChange24h, 50.0);
   assert.ok(fv.posIn24hRange >= 0 && fv.posIn24hRange <= 1);
   assert.ok(fv.surge[5] >= 0);
   assert.ok(fv.surgeRatio[5] >= 0);
@@ -100,4 +102,57 @@ test("evaluateFeatureSpec: matches both traditional enum requirements and rules 
 
   const resFailDayChange = evaluateFeatureSpec("SHORT", fv, { minDayChange: 50 });
   assert.equal(resFailDayChange.pass, false);
+});
+
+test("24h highest gain range (24h最高涨幅区间): filters out short candidates < 20% and enforces bounds", () => {
+  const candles = generateSyntheticCandles(200);
+  
+  // Coin A: 24h最高涨幅只有 15% (< 20%)，做空失败概率极大，应被拦截
+  const tickerLowSurge: Ticker24h = {
+    symbol: "LOWSURGEUSDT",
+    lastPrice: candles[198].close,
+    priceChangePercent: 12.0,
+    quoteVolume: 1000000,
+    highPrice: 115.0,
+    openPrice: 100.0,
+  };
+  const fvLow = computeFeatureVector(candles, tickerLowSurge, 198, { rank: 3 });
+  assert.ok(fvLow !== null);
+  assert.equal(fvLow.highChange24h, 15.0);
+
+  // 未满足 minHighChange24h: 20
+  const checkLow = evaluateFeatureSpec("SHORT", fvLow, { topN: 10, minHighChange24h: 20 });
+  assert.equal(checkLow.pass, false);
+  assert.match(checkLow.failedReason ?? "", /highChange24h/);
+
+  // Coin B: 24h最高涨幅 35% (>= 20%)，满足门槛允许做空
+  const tickerHighSurge: Ticker24h = {
+    symbol: "HIGHSURGEUSDT",
+    lastPrice: candles[198].close,
+    priceChangePercent: 15.0, // 当前涨幅虽回撤至 15%，但 24h 最高曾冲至 35%
+    quoteVolume: 5000000,
+    highPrice: 135.0,
+    openPrice: 100.0,
+  };
+  const fvHigh = computeFeatureVector(candles, tickerHighSurge, 198, { rank: 2 });
+  assert.ok(fvHigh !== null);
+  assert.equal(fvHigh.highChange24h, 35.0);
+
+  const checkHigh = evaluateFeatureSpec("SHORT", fvHigh, { topN: 10, minHighChange24h: 20, ampDivisor: 100 });
+  assert.equal(checkHigh.pass, true);
+
+  // 区间上限过滤测试 (如 [20%, 30%])
+  const checkRangeFail = evaluateFeatureSpec("SHORT", fvHigh, { minHighChange24h: 20, maxHighChange24h: 30 });
+  assert.equal(checkRangeFail.pass, false);
+  assert.match(checkRangeFail.failedReason ?? "", /highChange24h/);
+
+  const checkRangePass = evaluateFeatureSpec("SHORT", fvHigh, { minHighChange24h: 20, maxHighChange24h: 50, ampDivisor: 100 });
+  assert.equal(checkRangePass.pass, true);
+});
+
+test("validateStrategySpec: validates 24h highest gain interval and bounds", () => {
+  assert.doesNotThrow(() => validateStrategySpec({ minHighChange24h: 20, maxHighChange24h: 100 }));
+  assert.doesNotThrow(() => validateStrategySpec({ minHighChange24h: 20 }));
+  assert.throws(() => validateStrategySpec({ minHighChange24h: 50, maxHighChange24h: 20 }), /maxHighChange24h 不能小于 minHighChange24h/);
+  assert.throws(() => validateStrategySpec({ minHighChange24h: -5 }), /minHighChange24h/);
 });

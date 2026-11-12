@@ -24,6 +24,8 @@ export function streakPreset(config: Partial<StreakStrategyLiveConfig> = {}): St
   const c = { ...STREAK_LIVE_DEFAULT_CONFIG, ...config };
   const rules: FeatureRule[] = [r("dayChange", ">", 0), r("rank", "<=", c.topN), r(`surge.${c.xMinutes ?? 5}`, ">=", ref("dayChange", 1 / c.ampDivisor)), ...c.supportMaPeriods.map(p => r(`support.${p}`, "==", false))];
   if (c.require24hNewHigh ?? true) rules.push(r("new24hHigh", "==", true));
+  if (c.minHighChange24h !== undefined) rules.push(r("highChange24h", ">=", c.minHighChange24h));
+  if (c.maxHighChange24h !== undefined) rules.push(r("highChange24h", "<=", c.maxHighChange24h));
   if (c.minStreakCount !== undefined && c.minStreakCount > 0) rules.push(r(`streak.${c.requireBearish ? 1 : 0}.up`, ">=", c.minStreakCount));
   if (c.minUpperShadowRatio !== undefined && c.maxUpperShadowRatio !== undefined) rules.push(r("upperShadowRatio", ">=", c.minUpperShadowRatio), r("upperShadowRatio", "<", c.maxUpperShadowRatio));
   if (c.requireBearish) rules.push(r("price.close", "<", ref("price.open")));
@@ -67,6 +69,8 @@ export function hourlyPreset(config: Partial<HourlySuppressionLiveConfig> = {}):
   const c = { ...HOURLY_SUPPRESSION_LIVE_DEFAULT_CONFIG, ...config };
   const rules: FeatureRule[] = [r("dayChange", ">", 0), r("rank", "<=", c.topN), r("dayChange", ">=", c.minDayChange ?? 0),
     r("price.high", ">", ref("ma.60.value")), r("price.low", "<", ref("ma.60.value")), r("greenStreak", ">=", Math.max(1, c.nGreenBars))];
+  if (c.minHighChange24h !== undefined) rules.push(r("highChange24h", ">=", c.minHighChange24h));
+  if (c.maxHighChange24h !== undefined) rules.push(r("highChange24h", "<=", c.maxHighChange24h));
   if (c.requireSurge ?? true) rules.push(r(`surge.${c.xMinutes ?? 5}`, ">=", ref("dayChange", 1 / (c.ampDivisor ?? 10))));
   if (c.minDropFrom24h !== undefined && c.minDropFrom24h > 0) rules.push(r("dropFrom24hHigh", ">=", c.minDropFrom24h));
   if (c.requireMa60GtMa10GtMa20) rules.push(r("ma.60.value", ">", ref("ma.10.value")), r("ma.10.value", ">", ref("ma.20.value")));

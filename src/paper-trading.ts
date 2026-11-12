@@ -194,6 +194,7 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
   klineStatsShortConfig: {
     topN: 10,
     minDayChange: 10,
+    minHighChange24h: 20,
     intervalWindow: 5,
     ampDivisor: 8,
     maRequirement: "MA10_BREAKDOWN",
@@ -2084,11 +2085,14 @@ export class PaperTradingEngine {
       const trainPf = c.train.profitFactor != null && Number.isFinite(c.train.profitFactor) ? c.train.profitFactor.toFixed(2) : "∞";
       const holdPf = c.holdout.profitFactor != null && Number.isFinite(c.holdout.profitFactor) ? c.holdout.profitFactor.toFixed(2) : "∞";
 
+      const hcStr = cfg.minHighChange24h != null
+        ? ` | 24h最高涨幅 <b>[${cfg.minHighChange24h}%${cfg.maxHighChange24h ? `~${cfg.maxHighChange24h}%` : "+"}]</b>`
+        : "";
       lines.push(
         ``,
         `<b>【${dirStr} 策略新参数】</b>`,
         `• <b>形态特征</b>: 均线 <code>${escapeHtml(cfg.maRequirement)}</code> | MACD <code>${escapeHtml(cfg.macdRequirement)}</code>`,
-        `• <b>入场条件</b>: 前置窗口 <b>${cfg.intervalWindow}m</b> | 振幅门槛 <b>24h/${cfg.ampDivisor}</b>`,
+        `• <b>入场条件</b>: 前置窗口 <b>${cfg.intervalWindow}m</b> | 振幅门槛 <b>24h/${cfg.ampDivisor}</b>${hcStr}`,
         `• <b>止盈止损</b>: 阶段一 <b>+${cfg.tp1Percent.toFixed(1)}%</b> / 阶段二 <b>+${cfg.tp2Percent.toFixed(1)}%</b> | 止损 <b>-${cfg.stopLossPercent.toFixed(1)}%</b>`,
         `• <b>持仓杠杆</b>: <b>${cfg.holdMinutes}分钟</b>超时平仓 | <b>${cfg.leverage}x</b> 杠杆${cfg.moveSlToEntryAfterTp1 ? " (TP1后保本)" : ""}`,
         `• <b>回测战绩</b>:`,
@@ -2136,7 +2140,10 @@ export class PaperTradingEngine {
 
     if (updates.klineStatsShortConfig) {
       const sc = updates.klineStatsShortConfig;
-      changes.push(`• <b>量化做空参数</b>: 窗口 ${sc.intervalWindow ?? "-"}m | 振幅 24h/${sc.ampDivisor ?? "-"} | 均线 ${escapeHtml(sc.maRequirement ?? "-")} | MACD ${escapeHtml(sc.macdRequirement ?? "-")} | TP1 +${sc.tp1Percent}% / TP2 +${sc.tp2Percent}% / SL -${sc.stopLossPercent}%`);
+      const hcStr = sc.minHighChange24h != null
+        ? ` | 24h最高涨幅 ${sc.minHighChange24h}%${sc.maxHighChange24h ? `~${sc.maxHighChange24h}%` : "+"}`
+        : "";
+      changes.push(`• <b>量化做空参数</b>: 窗口 ${sc.intervalWindow ?? "-"}m | 振幅 24h/${sc.ampDivisor ?? "-"}${hcStr} | 均线 ${escapeHtml(sc.maRequirement ?? "-")} | MACD ${escapeHtml(sc.macdRequirement ?? "-")} | TP1 +${sc.tp1Percent}% / TP2 +${sc.tp2Percent}% / SL -${sc.stopLossPercent}%`);
     }
     if (updates.klineStatsLongConfig) {
       const lc = updates.klineStatsLongConfig;

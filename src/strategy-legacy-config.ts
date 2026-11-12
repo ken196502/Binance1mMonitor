@@ -107,6 +107,8 @@ export interface StreakStrategyLiveConfig {
   requireDoubleDivergence?: boolean; // 是否要求 DIF 与 Hist 双重顶背离 (默认 true)
   requireBearish?: boolean; // 信号K线需收阴确认假突破 (默认 true，开启后规避顺势暴涨冲高风险)
   maxLowerShadowPercent?: number; // 信号K线下影线占价格比例上限 (防止强买盘托底)
+  minHighChange24h?: number;      // 24h 最高涨幅下限 % (做空防劣质标的)
+  maxHighChange24h?: number;      // 24h 最高涨幅上限 % (可选)
   // 向下兼容可选字段 (保留自定义测试支持)
   minStreakCount?: number;
   minUpperShadowRatio?: number;
@@ -186,6 +188,8 @@ export interface HourlySuppressionLiveConfig {
   ampDivisor?: number;        // x 分钟内冲高涨幅 >= 24h 涨幅 / ampDivisor (默认 10)
   nGreenBars: number;         // 近 N 根已收盘 1m MACD 绿柱 (默认 3 根)
   minDayChange?: number;      // 24h 涨幅门槛 (深跌狂暴狙击默认 10)
+  minHighChange24h?: number;  // 24h 最高涨幅下限 % (做空防劣质标的)
+  maxHighChange24h?: number;  // 24h 最高涨幅上限 % (可选)
   minDropFrom24h?: number;    // 距离 24h 最高价至少跌了 x% (深跌狂暴狙击默认 20%)
   requireMa60GtMa10GtMa20?: boolean; // 是否要求 MA60 > MA10 > MA20 (深跌狂暴狙击默认 true)
   requireCloseBelowMa?: boolean; // 是否要求收盘价受制于 MA60 之下 (默认 false)

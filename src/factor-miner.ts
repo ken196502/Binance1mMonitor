@@ -20,21 +20,21 @@ export interface PresetCandidateItem {
 export function presetStrategyCandidates(): Record<string, PresetCandidateItem[]> {
   return {
     streak: [
-      { ampDivisor: 8, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
-      { ampDivisor: 10, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
-      { ampDivisor: 12, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
-      { ampDivisor: 10, minStreakCount: 1, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
-      { ampDivisor: 10, minStreakCount: 3, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
-      { ampDivisor: 10, minStreakCount: 2, holdMinutes: 10, exitX: 40, exitN: 1.2, exitM: 2.5 },
-      { ampDivisor: 10, minStreakCount: 2, holdMinutes: 20, exitX: 60, exitN: 1.8, exitM: 3.5 },
+      { minHighChange24h: 20, ampDivisor: 8, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { minHighChange24h: 20, ampDivisor: 10, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { minHighChange24h: 20, ampDivisor: 12, minStreakCount: 2, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { minHighChange24h: 20, ampDivisor: 10, minStreakCount: 1, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { minHighChange24h: 20, ampDivisor: 10, minStreakCount: 3, holdMinutes: 15, exitX: 50, exitN: 1.5, exitM: 3.0 },
+      { minHighChange24h: 20, ampDivisor: 10, minStreakCount: 2, holdMinutes: 10, exitX: 40, exitN: 1.2, exitM: 2.5 },
+      { minHighChange24h: 20, ampDivisor: 10, minStreakCount: 2, holdMinutes: 20, exitX: 60, exitN: 1.8, exitM: 3.5 },
     ].map(c => ({ strategyId: "streak", config: c, definition: streakPreset(c) })),
 
     hourly_suppression: [
-      { ampDivisor: 10, nGreenBars: 4, holdMinutes: 30, exitX: 50 },
-      { ampDivisor: 8, nGreenBars: 3, holdMinutes: 20, exitX: 40 },
-      { ampDivisor: 12, nGreenBars: 5, holdMinutes: 45, exitX: 60 },
-      { ampDivisor: 10, nGreenBars: 3, holdMinutes: 30, exitX: 50 },
-      { ampDivisor: 8, nGreenBars: 4, holdMinutes: 15, exitX: 40 },
+      { minHighChange24h: 20, ampDivisor: 10, nGreenBars: 4, holdMinutes: 30, exitX: 50 },
+      { minHighChange24h: 20, ampDivisor: 8, nGreenBars: 3, holdMinutes: 20, exitX: 40 },
+      { minHighChange24h: 20, ampDivisor: 12, nGreenBars: 5, holdMinutes: 45, exitX: 60 },
+      { minHighChange24h: 20, ampDivisor: 10, nGreenBars: 3, holdMinutes: 30, exitX: 50 },
+      { minHighChange24h: 20, ampDivisor: 8, nGreenBars: 4, holdMinutes: 15, exitX: 40 },
     ].map(c => ({ strategyId: "hourly_suppression", config: c, definition: hourlyPreset(c) })),
 
     deep_rebound: [
@@ -76,6 +76,12 @@ export function factorCandidates(): ReplayStrategy[] {
   const candidates: ReplayStrategy[] = [];
   
   // 1. 做空高胜率候选网格 (覆盖历史验证最佳的 5m/10m 冲高诱多、MA破位/受阻、绿柱比例与大波段止盈止损)
+  // 核心约束：24h最高涨幅不到 20% 的做空失败概率极大，加入 24h 最高涨幅区间网格 [20%+] 与 [20%~100%]
+  const shortHighRanges = [
+    { minHighChange24h: 20 },
+    { minHighChange24h: 20, maxHighChange24h: 100 },
+  ] as const;
+
   for (const intervalWindow of [5, 10, 15]) {
     for (const ampDivisor of [8, 10]) {
       const shortMas = ["MA10_BREAKDOWN", "MA20_RESIST", "MA60_RESIST", "MA20_BREAKDOWN"] as const;
@@ -85,24 +91,28 @@ export function factorCandidates(): ReplayStrategy[] {
         for (const macdRequirement of shortMacds) {
           for (const candleRequirement of shortCandles) {
             for (const holdMinutes of [30, 45]) {
-              candidates.push({
-                id: `SHORT:${intervalWindow}:${ampDivisor}:${maRequirement}:${macdRequirement}:${candleRequirement}:${holdMinutes}`,
-                side: "SHORT",
-                intervalWindow,
-                ampDivisor,
-                maRequirement,
-                macdRequirement,
-                candleRequirement,
-                holdMinutes,
-                topN: 10,
-                minDayChange: 10,
-                tp1Percent: 3.0,
-                tp2Percent: 7.0,
-                stopLossPercent: 5.0,
-                cooldownMinutes: holdMinutes,
-                moveSlToEntryAfterTp1: true,
-                leverage: 3,
-              });
+              for (const range of shortHighRanges) {
+                const rangeTag = range.maxHighChange24h ? `HC${range.minHighChange24h}_${range.maxHighChange24h}` : `HC${range.minHighChange24h}`;
+                candidates.push({
+                  id: `SHORT:${intervalWindow}:${ampDivisor}:${maRequirement}:${macdRequirement}:${candleRequirement}:${holdMinutes}:${rangeTag}`,
+                  side: "SHORT",
+                  intervalWindow,
+                  ampDivisor,
+                  maRequirement,
+                  macdRequirement,
+                  candleRequirement,
+                  holdMinutes,
+                  topN: 10,
+                  minHighChange24h: range.minHighChange24h,
+                  maxHighChange24h: range.maxHighChange24h,
+                  tp1Percent: 3.0,
+                  tp2Percent: 7.0,
+                  stopLossPercent: 5.0,
+                  cooldownMinutes: holdMinutes,
+                  moveSlToEntryAfterTp1: true,
+                  leverage: 3,
+                });
+              }
             }
           }
         }
