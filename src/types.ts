@@ -130,7 +130,8 @@ export interface KlineStatsStrategyLiveConfig {
   holdMinutes: number;         // 持仓分钟数 (如 15m, 30m, 45m)
   tp1Percent: number;          // TP1 止盈 % (如 3.0%)
   tp2Percent: number;          // TP2 止盈 % (如 7.0%)
-  stopLossPercent: number;     // 止损 % (如 5.0%)
+  stopLossPercent: number;     // 阶段一止损 % (如 3.0%)
+  stopLoss2Percent?: number;   // 阶段二止损 % (如 5.0%)
   moveSlToEntryAfterTp1?: boolean; // TP1 达成后是否移动保本
   cooldownMinutes?: number;    // 同币种冷静期 (默认 20m)
   leverage?: number;           // 策略杠杆
@@ -142,7 +143,10 @@ export interface PaperExitParams {
   exitX?: number;
   exitN?: number;
   exitM?: number;
-  stopLossPercent?: number;       // e.g. 10.0 (%) 显式大止损比例
+  stopLossPercent?: number;       // e.g. 3.5 (%) 阶段一显式止损比例
+  stopLoss2Percent?: number;      // e.g. 7.0 (%) 阶段二显式止损比例
+  sl1Percent?: number;            // 阶段一显式止损比例 (优先于 stopLossPercent)
+  sl2Percent?: number;            // 阶段二显式止损比例 (优先于 stopLoss2Percent)
   tp1Percent?: number;            // e.g. 4.0 (%) 阶段一显式止盈比例
   tp2Percent?: number;            // e.g. 8.0 (%) 阶段二显式止盈比例
   moveSlToEntryAfterTp1?: boolean;// 阶段一止盈后剩余仓位止损移动至保本价 (Breakeven)

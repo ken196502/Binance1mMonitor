@@ -168,6 +168,21 @@ export class StrategyFeatureMonitor {
       if (metric === "hist" || metric === "dif") return this.macd[metric][pivot];
       if (metric === "bounce") return (Math.max(...this.bars.slice(pivot).map(b => b.high)) - price) / price * 100;
       if (metric === "ratio") return bar.low / price;
+      if (metric === "midMinRatio") {
+        const slice = this.bars.slice(pivot);
+        return slice.length > 0
+          ? (kind === "pivotLow" ? Math.min(...slice.map(b => b.low)) / price : Math.max(...slice.map(b => b.high)) / price)
+          : 1;
+      }
+      if (metric === "hasLowerBottoms") {
+        if (kind !== "pivotLow") return false;
+        // 1. 当前K线最低点低于前底 (严格过滤底比底低，仅保留0.2%微小误差容忍)
+        if (bar.low < price * 0.998) return true;
+        // 2. 前底到当前K线之间，是否有任何K线跌破前底支撑
+        const slice = this.bars.slice(pivot);
+        if (slice.length > 0 && Math.min(...slice.map(b => b.low)) < price * 0.998) return true;
+        return false;
+      }
     }
     if (field === "relativeBias30") return Math.abs(Number(this.read("ma.30.biasPct"))) / Math.max(1, this.ticker.priceChangePercent);
     return readFeaturePath(this.vector, field);

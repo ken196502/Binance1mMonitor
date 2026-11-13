@@ -71,7 +71,7 @@ export const FEATURE_FIELDS = [
   "tf15m.macdHist", "tf15m.macdHistSlope", "tf15m.stack", "tf15m.closeVsMa20",
   "deaPeak.30.ago", "deaPeak.30.value", "streak.0.up", "streak.1.up", "streak.0.count",
   "pivotHigh.10.20.price", "pivotHigh.10.20.hist", "pivotHigh.10.20.dif", "pivotHigh.10.20.time",
-  "pivotLow.8.25.price", "pivotLow.8.25.hist", "pivotLow.8.25.dif", "pivotLow.8.25.bounce", "pivotLow.8.25.ratio",
+  "pivotLow.8.25.price", "pivotLow.8.25.hist", "pivotLow.8.25.dif", "pivotLow.8.25.bounce", "pivotLow.8.25.ratio", "pivotLow.8.25.midMinRatio", "pivotLow.8.25.hasLowerBottoms",
   "watch.ready", "watch.state", "watch.pullback", "watch.rebound", "watch.fib", "watch.upCandles", "watch.peakPrice", "watch.troughPrice",
 ] as const;
 export function isFeatureField(field: string): boolean {
@@ -82,7 +82,7 @@ export function isFeatureField(field: string): boolean {
     /^ma\.(\d+)\.(value|slope2|slope3|support|resist|breakout|breakdown|biasPct|biasRatio|emaValue|close_below|close_above)$/,
     /^support\.(\d+)$/, /^streak\.(\d+)\.(up|count)$/,
     /^deaPeak\.(\d+)\.(ago|value)$/,
-    /^pivot(High|Low)\.(\d+)\.(\d+)\.(price|hist|dif|time|bounce|ratio)$/,
+    /^pivot(High|Low)\.(\d+)\.(\d+)\.(price|hist|dif|time|bounce|ratio|midMinRatio|hasLowerBottoms)$/,
   ];
   if (!patterns.some(p => p.test(field))) return false;
   const numbers = field.split(".").filter(p => /^\d+$/.test(p)).map(Number);

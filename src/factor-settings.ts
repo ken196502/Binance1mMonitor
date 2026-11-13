@@ -22,7 +22,7 @@ export const DEFAULT_FACTOR_MINING: NormalizedFactorMiningConfig = {
   enabled: true,
   refreshMinutes: 15,
   validForMinutes: 120, // 因子最多使用 2 小时 (120 分钟)
-  trainingMinutes: 720, // 默认 12 小时训练 (-16h ~ -4h)
+  trainingMinutes: 1440, // 默认 24 小时训练 (-28h ~ -4h)
   validationMinutes: 120, // 默认 120 分钟验证 (-4h ~ -2h, 覆盖 -4, -3 小时)
   holdoutMinutes: 120, // 默认 120 分钟留出 (-2h ~ 0h, 覆盖 -2 和 -1 小时)
 };
@@ -102,7 +102,7 @@ export function factorRanges(end: number, config: Partial<FactorWindows & Factor
   }
 
   // 默认三段固定时段：
-  // 训练时段：-16h ~ -4h (相对 end，默认 720 分钟即 12 小时)
+  // 训练时段：-28h ~ -4h (相对 end，默认 1440 分钟即 24 小时)
   const trainEnd = end - 4 * 3600_000;
   const trainStart = trainEnd - windows.trainingMinutes * 60_000;
   const train = { start: trainStart, end: trainEnd };

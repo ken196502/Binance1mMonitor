@@ -24,7 +24,7 @@ export class UnifiedLongStrategyTracker extends StrategyCompatibilityTracker {
     const c = this.config.wBottomDivergenceConfig, p = `pivotLow.${c.prevBottomMinBars}.${c.prevBottomMaxBars}`;
     const read = (field: string) => Number(match.monitor.read(field));
     return { id: `long-w-div-${symbol}-${match.monitor.bar!.time}`, type: "w_bottom_divergence", label: match.strategy.label, symbol, time: match.time, dayChangePercent: dayChange,
-      entryPrice: match.monitor.bar!.close, side: "LONG", exitParams: { holdMinutes: c.holdMinutes, stopLossPercent: c.stopLossPercent, tp1Percent: c.tp1Percent, tp2Percent: c.tp2Percent, moveSlToEntryAfterTp1: c.moveSlToEntryAfterTp1, leverage: c.leverage },
+      entryPrice: match.monitor.bar!.close, side: "LONG", exitParams: { holdMinutes: c.holdMinutes, stopLossPercent: c.stopLossPercent, stopLoss2Percent: c.stopLoss2Percent, tp1Percent: c.tp1Percent, tp2Percent: c.tp2Percent, moveSlToEntryAfterTp1: c.moveSlToEntryAfterTp1, leverage: c.leverage },
       details: { drop30: read("drop.31"), prevLow: read(`${p}.price`), difNow: read("dif"), difPrev: read(`${p}.dif`) } };
   }
 }

@@ -168,7 +168,8 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     holdMinutes: 30,
     tp1Percent: 3.5,
     tp2Percent: 8.0,
-    stopLossPercent: 7.0,
+    stopLossPercent: 3.5,
+    stopLoss2Percent: 7.0,
     moveSlToEntryAfterTp1: true,
     minGreenRatio20: 0.55, // 回测验证最优：0.55 兼顾胜率与收益比
   },
@@ -177,7 +178,8 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     holdMinutes: 30,
     tp1Percent: 3.5,
     tp2Percent: 8.0,
-    stopLossPercent: 7.0,
+    stopLossPercent: 3.5,
+    stopLoss2Percent: 7.0,
     moveSlToEntryAfterTp1: true,
     minGreenRatio20: 0.55, // 回测验证最优：0.55
   },
@@ -186,7 +188,8 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     holdMinutes: 30,
     tp1Percent: 3.5,
     tp2Percent: 8.0,
-    stopLossPercent: 7.0,
+    stopLossPercent: 3.5,
+    stopLoss2Percent: 7.0,
     moveSlToEntryAfterTp1: true,
   },
   wBottomDivergenceConfig: {
@@ -194,7 +197,10 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     holdMinutes: 30,
     tp1Percent: 3.0,
     tp2Percent: 8.0,
-    stopLossPercent: 7.0,
+    stopLossPercent: 3.5,
+    stopLoss2Percent: 7.0,
+    minBottomFloorRatio: 0.998,
+    filterLowerBottoms: true,
     moveSlToEntryAfterTp1: true,
   },
   klineStatsShortConfig: {
@@ -208,7 +214,8 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     holdMinutes: 45,
     tp1Percent: 3.0,
     tp2Percent: 7.0,
-    stopLossPercent: 5.0,
+    stopLossPercent: 3.0,
+    stopLoss2Percent: 5.0,
     moveSlToEntryAfterTp1: true,
     cooldownMinutes: 20,
     leverage: 3,
@@ -223,7 +230,8 @@ export const PAPER_DEFAULT_CONFIG: PaperStrategyConfig = {
     holdMinutes: 30,
     tp1Percent: 2.5,
     tp2Percent: 5.5,
-    stopLossPercent: 3.5,
+    stopLossPercent: 2.5,
+    stopLoss2Percent: 4.5,
     moveSlToEntryAfterTp1: true,
     cooldownMinutes: 20,
     leverage: 3,
@@ -1343,11 +1351,15 @@ export class PaperTradingEngine {
     const holdMinutes = exitParams?.holdMinutes ?? this.config.holdMinutes;
 
     // Two-stage dynamic thresholds:
-    // 支持显式大止损/大止盈参数 (如 10% 大止损, 4% TP1, 8% TP2) 或回退至动态公式
+    // 支持显式止损/止盈参数 (如 4% TP1, 8% TP2, 3.5% SL1, 7% SL2) 或回退至动态公式
     const tp1Percent = exitParams?.tp1Percent ?? (dayChangePercent / exitX);
-    const sl1Percent = exitParams?.stopLossPercent ?? (dayChangePercent / exitX);
-    const sl2Percent = exitParams?.stopLossPercent ?? ((dayChangePercent * exitN) / exitX);
     const tp2Percent = exitParams?.tp2Percent ?? ((dayChangePercent * exitM) / exitX);
+    const sl1Percent = exitParams?.sl1Percent ?? exitParams?.stopLossPercent ?? (dayChangePercent / exitX);
+    const sl2Percent = exitParams?.sl2Percent ?? exitParams?.stopLoss2Percent ?? (
+      exitParams?.stopLossPercent !== undefined
+        ? (exitParams.exitN !== undefined ? exitParams.stopLossPercent * exitParams.exitN : exitParams.stopLossPercent)
+        : ((dayChangePercent * exitN) / exitX)
+    );
 
     // Direction-aware price levels:
     let tp1Price: number;
@@ -1395,6 +1407,9 @@ export class PaperTradingEngine {
         exitN,
         exitM,
         stopLossPercent: exitParams?.stopLossPercent,
+        stopLoss2Percent: exitParams?.stopLoss2Percent,
+        sl1Percent: exitParams?.sl1Percent,
+        sl2Percent: exitParams?.sl2Percent,
         tp1Percent: exitParams?.tp1Percent,
         tp2Percent: exitParams?.tp2Percent,
         moveSlToEntryAfterTp1: exitParams?.moveSlToEntryAfterTp1,
@@ -2064,7 +2079,7 @@ export class PaperTradingEngine {
       ...this.config.factorMining,
       ...jobConfig,
     };
-    const trainMin = fm.trainingMinutes ?? 720;
+    const trainMin = fm.trainingMinutes ?? 1440;
     const valMin = fm.validationMinutes ?? 120;
     const holdMin = fm.holdoutMinutes ?? 120;
     const totalMin = trainMin + valMin + holdMin;
@@ -2119,7 +2134,7 @@ export class PaperTradingEngine {
         `<b>【${dirStr} 策略新参数】</b>`,
         `• <b>形态特征</b>: 均线 <code>${escapeHtml(cfg.maRequirement)}</code> | MACD <code>${escapeHtml(cfg.macdRequirement)}</code>`,
         `• <b>入场条件</b>: 前置窗口 <b>${cfg.intervalWindow}m</b> | 振幅门槛 <b>24h/${cfg.ampDivisor}</b>${hcStr}`,
-        `• <b>止盈止损</b>: 阶段一 <b>+${cfg.tp1Percent.toFixed(1)}%</b> / 阶段二 <b>+${cfg.tp2Percent.toFixed(1)}%</b> | 止损 <b>-${cfg.stopLossPercent.toFixed(1)}%</b>`,
+        `• <b>止盈止损</b>: 阶段一 <b>+${cfg.tp1Percent.toFixed(1)}%</b> / 阶段二 <b>+${cfg.tp2Percent.toFixed(1)}%</b> | 止损一 <b>-${cfg.stopLossPercent.toFixed(1)}%</b>${cfg.stopLoss2Percent ? ` / 止损二 <b>-${cfg.stopLoss2Percent.toFixed(1)}%</b>` : ""}`,
         `• <b>持仓杠杆</b>: <b>${cfg.holdMinutes}分钟</b>超时平仓 | <b>${cfg.leverage}x</b> 杠杆${cfg.moveSlToEntryAfterTp1 ? " (TP1后保本)" : ""}`,
         `• <b>回测战绩</b>:`,
         `   - 训练集 (Train): <b>${c.train.trades}笔</b> | 胜率 <b>${c.train.winRate.toFixed(1)}%</b> | PF <b>${trainPf}</b> | 净利 <b>${c.train.netPercent >= 0 ? "+" : ""}${c.train.netPercent.toFixed(2)}%</b>`,
@@ -2169,11 +2184,13 @@ export class PaperTradingEngine {
       const hcStr = sc.minHighChange24h != null
         ? ` | 24h最高涨幅 ${sc.minHighChange24h}%${sc.maxHighChange24h ? `~${sc.maxHighChange24h}%` : "+"}`
         : "";
-      changes.push(`• <b>量化做空参数</b>: 窗口 ${sc.intervalWindow ?? "-"}m | 振幅 24h/${sc.ampDivisor ?? "-"}${hcStr} | 均线 ${escapeHtml(sc.maRequirement ?? "-")} | MACD ${escapeHtml(sc.macdRequirement ?? "-")} | TP1 +${sc.tp1Percent}% / TP2 +${sc.tp2Percent}% / SL -${sc.stopLossPercent}%`);
+      const slShortStr = sc.stopLoss2Percent ? `-${sc.stopLossPercent}%/-${sc.stopLoss2Percent}%` : `-${sc.stopLossPercent}%`;
+      changes.push(`• <b>量化做空参数</b>: 窗口 ${sc.intervalWindow ?? "-"}m | 振幅 24h/${sc.ampDivisor ?? "-"}${hcStr} | 均线 ${escapeHtml(sc.maRequirement ?? "-")} | MACD ${escapeHtml(sc.macdRequirement ?? "-")} | TP1 +${sc.tp1Percent}% / TP2 +${sc.tp2Percent}% | SL ${slShortStr}`);
     }
     if (updates.klineStatsLongConfig) {
       const lc = updates.klineStatsLongConfig;
-      changes.push(`• <b>量化做多参数</b>: 窗口 ${lc.intervalWindow ?? "-"}m | 振幅 24h/${lc.ampDivisor ?? "-"} | 均线 ${escapeHtml(lc.maRequirement ?? "-")} | MACD ${escapeHtml(lc.macdRequirement ?? "-")} | TP1 +${lc.tp1Percent}% / TP2 +${lc.tp2Percent}% / SL -${lc.stopLossPercent}%`);
+      const slLongStr = lc.stopLoss2Percent ? `-${lc.stopLossPercent}%/-${lc.stopLoss2Percent}%` : `-${lc.stopLossPercent}%`;
+      changes.push(`• <b>量化做多参数</b>: 窗口 ${lc.intervalWindow ?? "-"}m | 振幅 24h/${lc.ampDivisor ?? "-"} | 均线 ${escapeHtml(lc.maRequirement ?? "-")} | MACD ${escapeHtml(lc.macdRequirement ?? "-")} | TP1 +${lc.tp1Percent}% / TP2 +${lc.tp2Percent}% | SL ${slLongStr}`);
     }
     if (updates.strategies) {
       const enabledList = updates.strategies.filter(s => s.enabled).map(s => escapeHtml(s.label || s.id));

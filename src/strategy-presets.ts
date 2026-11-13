@@ -12,7 +12,7 @@ import {
 
 function exit(config: PaperExitParams): PaperExitParams {
   const result: PaperExitParams = { holdMinutes: config.holdMinutes };
-  for (const key of ["exitX", "exitN", "exitM", "tp1Percent", "tp2Percent", "stopLossPercent", "moveSlToEntryAfterTp1", "leverage"] as const) {
+  for (const key of ["exitX", "exitN", "exitM", "tp1Percent", "tp2Percent", "stopLossPercent", "stopLoss2Percent", "moveSlToEntryAfterTp1", "leverage"] as const) {
     if (config[key] !== undefined) Object.assign(result, { [key]: config[key] });
   }
   return result;
@@ -84,6 +84,9 @@ export function wBottomPreset(config: Partial<WBottomDivergenceLiveConfig> = {})
   const p = `pivotLow.${c.prevBottomMinBars}.${c.prevBottomMaxBars}`;
   const rules: FeatureRule[] = [r("rank", "<=", c.topN), r("dayChange", ">=", c.minDayChange), r("drop.31", ">=", c.minDropPercent),
     r(`${p}.bounce`, ">=", c.minNecklineBounce), r(`${p}.ratio`, ">=", c.minBottomFloorRatio), r(`${p}.ratio`, "<=", c.maxBottomToleranceRatio)];
+  if (c.filterLowerBottoms ?? true) {
+    rules.push(r(`${p}.hasLowerBottoms`, "==", false), r(`${p}.midMinRatio`, ">=", c.minBottomFloorRatio));
+  }
   if (c.requireMacdDivergence) rules.push(r("dif", ">", ref(`${p}.dif`)), r("hist", ">", ref(`${p}.hist`)));
   if (c.requireCatapultBull) rules.push(r("price.close", ">", ref("price.open")), r("price.close", ">", ref("price.previousHigh", 0.999)));
   return preset("w_bottom_divergence", "左侧3W底背离", "LONG", 41, rules, c, c.cooldownMinutes);
@@ -94,11 +97,15 @@ export function quantPreset(side: "LONG" | "SHORT", c: KlineStatsStrategySpec): 
   if (c.maRequirement === "MA_BEARISH_STACK") label = "空头排列";
   if (c.maRequirement === "MA_BULLISH_STACK") label = "多头排列";
   if (["MA10_BREAKOUT", "MA20_BREAKOUT"].includes(c.maRequirement ?? "")) label = "均线突破";
+  const sl1 = c.stopLossPercent ?? (side === "SHORT" ? 3 : 2.5);
+  const sl2 = c.stopLoss2Percent ?? (c.stopLossPercent !== undefined ? (c.exitN !== undefined ? c.stopLossPercent * c.exitN : c.stopLossPercent) : (side === "SHORT" ? 5 : 4.5));
   return { id: `kline_stats_${side.toLowerCase()}`, label, side, enabled: true, minBars: 60,
     avoidBigBull1m: c.avoidBigBull1m, avoidBigBull1mBars: c.avoidBigBull1mBars, avoidBigBull1mGain: c.avoidBigBull1mGain,
     entry: compileFeatureSpec(side, c), exit: exit({ holdMinutes: c.holdMinutes ?? (side === "SHORT" ? 45 : 30),
       tp1Percent: c.tp1Percent ?? (side === "SHORT" ? 3 : 2.5), tp2Percent: c.tp2Percent ?? (side === "SHORT" ? 7 : 5.5),
-      stopLossPercent: c.stopLossPercent ?? (side === "SHORT" ? 5 : 3.5), moveSlToEntryAfterTp1: c.moveSlToEntryAfterTp1 ?? true, leverage: c.leverage ?? 3 }),
+      stopLossPercent: sl1,
+      stopLoss2Percent: Math.max(sl1, sl2),
+      moveSlToEntryAfterTp1: c.moveSlToEntryAfterTp1 ?? true, leverage: c.leverage ?? 3 }),
     cooldownMinutes: c.cooldownMinutes ?? 20, cooldownFrom: "exit", cooldownGroup: "quant", factorManaged: true };
 }
 

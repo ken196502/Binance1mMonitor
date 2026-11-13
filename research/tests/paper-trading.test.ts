@@ -658,7 +658,8 @@ test("PaperTradingEngine: LONG position opens with inverted price thresholds (TP
       holdMinutes: 90,
       tp1Percent: 3.0,
       tp2Percent: 8.0,
-      stopLossPercent: 8.0,
+      stopLossPercent: 4.0,
+      stopLoss2Percent: 8.0,
       moveSlToEntryAfterTp1: true,
       leverage: 3,
     },
@@ -681,8 +682,8 @@ test("PaperTradingEngine: LONG position opens with inverted price thresholds (TP
 
   // TP must be ABOVE entry: 10 * (1 + 0.03) = 10.30
   assert.ok(Math.abs(pos.tp1Price - 10.30) < 1e-4);
-  // SL must be BELOW entry: 10 * (1 - 0.08) = 9.20
-  assert.ok(Math.abs(pos.sl1Price - 9.20) < 1e-4);
+  // SL1 must be BELOW entry: 10 * (1 - 0.04) = 9.60
+  assert.ok(Math.abs(pos.sl1Price - 9.60) < 1e-4);
   // TP2 must be ABOVE entry: 10 * (1 + 0.08) = 10.80
   assert.ok(Math.abs(pos.tp2Price - 10.80) < 1e-4);
   // SL2 must be BELOW entry: 10 * (1 - 0.08) = 9.20

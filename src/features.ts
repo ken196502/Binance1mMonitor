@@ -132,6 +132,8 @@ export interface KlineStatsStrategySpec {
   tp1Percent?: number;
   tp2Percent?: number;
   stopLossPercent?: number;
+  stopLoss2Percent?: number;
+  exitN?: number;
   moveSlToEntryAfterTp1?: boolean;
   cooldownMinutes?: number;
   leverage?: number;

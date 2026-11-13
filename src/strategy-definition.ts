@@ -47,15 +47,16 @@ export function validateStrategies(value: unknown): asserts value is StrategyDef
     validateRules(s.entry);
     if (!s.exit || typeof s.exit !== "object" || Array.isArray(s.exit)) throw new Error("缺少退出参数");
     number(s.exit.holdMinutes, 1, 10080, "holdMinutes");
-    for (const key of ["tp1Percent", "tp2Percent", "stopLossPercent"] as const) {
+    for (const key of ["tp1Percent", "tp2Percent", "stopLossPercent", "stopLoss2Percent"] as const) {
       if (s.exit[key] !== undefined) number(s.exit[key], 0.001, 99, key);
-      else if (s.exit.exitX === undefined) throw new Error(`缺少 ${key} 或动态退出分母 exitX`);
+      else if (s.exit.exitX === undefined && key !== "stopLoss2Percent") throw new Error(`缺少 ${key} 或动态退出分母 exitX`);
     }
     if (s.exit.tp2Percent === undefined && s.exit.exitM === undefined || s.exit.stopLossPercent === undefined && s.exit.exitN === undefined) throw new Error("动态退出需要 exitX、exitN、exitM");
     for (const key of ["exitX", "exitN", "exitM"] as const) if (s.exit[key] !== undefined) number(s.exit[key], 0.001, 10000, key);
     if (s.exit.leverage !== undefined) number(s.exit.leverage, 1, 100, "leverage");
     if (s.exit.moveSlToEntryAfterTp1 !== undefined && typeof s.exit.moveSlToEntryAfterTp1 !== "boolean") throw new Error("保本开关必须是布尔值");
     if (s.exit.tp1Percent !== undefined && s.exit.tp2Percent !== undefined && s.exit.tp2Percent < s.exit.tp1Percent) throw new Error("TP2 不能小于 TP1");
+    if (s.exit.stopLossPercent !== undefined && s.exit.stopLoss2Percent !== undefined && s.exit.stopLoss2Percent < s.exit.stopLossPercent) throw new Error("SL2 不能小于 SL1");
     if (s.observation !== undefined) {
       if (!s.observation || typeof s.observation !== "object" || Array.isArray(s.observation)) throw new Error("观察参数无效");
       number(s.observation.rank, 1, 1000, "observation.rank", true);

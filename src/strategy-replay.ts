@@ -185,13 +185,19 @@ export function replayStrategies(
         const sign = strategy.side === "LONG" ? 1 : -1;
         const exits = strategy.exit;
         const dynamic = info.dayChange / (exits.exitX ?? 35);
+        const sl1Pct = exits.sl1Percent ?? exits.stopLossPercent ?? dynamic;
+        const sl2Pct = exits.sl2Percent ?? exits.stopLoss2Percent ?? (
+          exits.stopLossPercent !== undefined
+            ? (exits.exitN !== undefined ? exits.stopLossPercent * exits.exitN : exits.stopLossPercent)
+            : dynamic * (exits.exitN ?? 2)
+        );
         active.set(symbol, {
           strategy, symbol, entryTime: now, entryPrice: entry, margin,
           notional: margin * (strategy.exit.leverage ?? options.leverage ?? 3),
           tp1: entry * (1 + sign * (exits.tp1Percent ?? dynamic) / 100),
           tp2: entry * (1 + sign * (exits.tp2Percent ?? dynamic * (exits.exitM ?? 3)) / 100),
-          sl: entry * (1 - sign * (exits.stopLossPercent ?? dynamic) / 100),
-          sl2: entry * (1 - sign * (exits.stopLossPercent ?? dynamic * (exits.exitN ?? 2)) / 100),
+          sl: entry * (1 - sign * sl1Pct / 100),
+          sl2: entry * (1 - sign * sl2Pct / 100),
           st1Done: false, netPercent: 0, lastPrice: entry, lastTime: now,
         });
         engine.commit(match, now);

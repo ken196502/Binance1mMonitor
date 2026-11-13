@@ -291,10 +291,10 @@ test("worker cancellation terminates the owned process", async () => {
 
 test("rolling time ranges are short, disjoint, configurable and advance with new data", () => {
   const ranges = factorRanges(now);
-  assert.equal((ranges.train.end - ranges.train.start) / M, 720);
+  assert.equal((ranges.train.end - ranges.train.start) / M, 1440);
   assert.equal((ranges.validation.end - ranges.validation.start) / M, 120);
   assert.equal((ranges.holdout.end - ranges.holdout.start) / M, 120);
-  assert.equal(ranges.train.start, now - 16 * 60 * M);
+  assert.equal(ranges.train.start, now - 28 * 60 * M);
   assert.equal(ranges.train.end, now - 4 * 60 * M);
   assert.equal(ranges.validation.start, now - 4 * 60 * M);
   assert.equal(ranges.validation.end, now - 2 * 60 * M);

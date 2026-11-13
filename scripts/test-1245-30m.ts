@@ -110,8 +110,8 @@ async function run1245Backtest() {
   }
 
   const holdM = 30; // 最大 30 分钟持仓
-  const tp1Long = 3.0, tp2Long = 8.0, slLong = 7.0;
-  const tp1Short = 3.5, tp2Short = 8.0, slShort = 7.0;
+  const tp1Long = 3.0, tp2Long = 8.0, slLong = 3.5, sl2Long = 7.0;
+  const tp1Short = 3.5, tp2Short = 8.0, slShort = 3.5, sl2Short = 7.0;
 
   // 1, 2, 4, 5 Tracker:
   // 策略 1: 左侧3W底背离弹射做多 (w_bottom_divergence)
@@ -357,7 +357,8 @@ async function run1245Backtest() {
           const isStreak = stratType === 'streak';
           const tp1 = isStreak ? (row.dayChange / 50) : (exitParams.tp1Percent ?? tp1Short);
           const tp2 = isStreak ? (row.dayChange / 25) : (exitParams.tp2Percent ?? tp2Short);
-          const sl = isStreak ? (row.dayChange / 25) : (exitParams.stopLossPercent ?? slShort);
+          const sl = isStreak ? (row.dayChange / 50) : (exitParams.stopLossPercent ?? slShort);
+          const sl2 = isStreak ? (row.dayChange / 25) : (exitParams.stopLoss2Percent ?? (exitParams.stopLossPercent ? exitParams.stopLossPercent * 2 : slShort * 2));
           activePositions.push({
             symbol: sym,
             side: 'SHORT',
@@ -368,7 +369,7 @@ async function run1245Backtest() {
             tp1Price: entryPrice * (1 - tp1 / 100),
             tp2Price: entryPrice * (1 - tp2 / 100),
             slPrice: entryPrice * (1 + sl / 100),
-            sl2Price: entryPrice * (1 + sl / 100),
+            sl2Price: entryPrice * (1 + sl2 / 100),
             st1Done: false,
             st2Done: false,
             netPnlPercent: 0,
@@ -404,7 +405,10 @@ async function run1245Backtest() {
             for (let k = prevMinIdx; k <= targetIdx; k++) if (highs[k] > midPeak) midPeak = highs[k];
             const midBounce = ((midPeak - prevMinLow) / prevMinLow) * 100;
             if (midBounce >= 1.5) {
-              if (closedBar.low <= prevMinLow * 1.005 && closedBar.low >= prevMinLow * 0.97) {
+              let midMin = Infinity;
+              for (let k = prevMinIdx; k <= targetIdx; k++) if (lows[k] < midMin) midMin = lows[k];
+              // 严格过滤底部不断降低：当前低点与中途最低均不破前底 (0.2%微弱误差容忍)
+              if (closedBar.low <= prevMinLow * 1.005 && closedBar.low >= prevMinLow * 0.998 && midMin >= prevMinLow * 0.998) {
                 if (dif[targetIdx] > dif[prevMinIdx] && hist[targetIdx] > hist[prevMinIdx]) {
                   const prevBar = fullBars[targetIdx - 1];
                   if (prevBar && closedBar.close > closedBar.open && closedBar.close > prevBar.high * 0.999) {
@@ -429,7 +433,7 @@ async function run1245Backtest() {
           tp1Price: entryPrice * (1 + tp1Long / 100),
           tp2Price: entryPrice * (1 + tp2Long / 100),
           slPrice: entryPrice * (1 - slLong / 100),
-          sl2Price: entryPrice * (1 - slLong / 100),
+          sl2Price: entryPrice * (1 - sl2Long / 100),
           st1Done: false,
           st2Done: false,
           netPnlPercent: 0,

@@ -96,7 +96,7 @@ test("paper summaries split complete trades by side, refresh 24h and survive rel
     for (const side of ["LONG", "SHORT"] as const) {
       const symbol = side;
       engine.openPosition({ symbol, side, signalType: side === "LONG" ? "kline_stats_long" : "kline_stats_short", signal,
-        dayChangePercent: 20, entryPrice: 100, entryTime: Date.now(), exitParams: { holdMinutes: 30, tp1Percent: 3, tp2Percent: 6, stopLossPercent: 5 } });
+        dayChangePercent: 20, entryPrice: 100, entryTime: Date.now(), exitParams: { holdMinutes: 30, tp1Percent: 3, tp2Percent: 6, stopLossPercent: 2.5, stopLoss2Percent: 5 } });
       engine.onTick({ symbol, price: side === "LONG" ? 103.1 : 105, qty: 1, time: Date.now() + 100 });
     }
     assert.equal(engine.getSummary().bySide!.LONG.totalTrades, 0, "partial trades are not yet wins");

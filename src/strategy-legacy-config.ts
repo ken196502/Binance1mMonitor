@@ -20,6 +20,7 @@ export interface PeakReboundLiveConfig {
   exitN: number; // Stage 2 SL multiplier (e.g. 2.0)
   exitM: number; // Stage 2 TP multiplier (e.g. 1.5)
   stopLossPercent?: number; // 显式大止损比例 (e.g. 10.0%)
+  stopLoss2Percent?: number; // 阶段二止损比例 (默认使用 stopLossPercent * exitN)
   tp1Percent?: number;      // 阶段一止盈比例 (e.g. 4.0%)
   tp2Percent?: number;      // 阶段二止盈比例 (e.g. 8.0%)
   moveSlToEntryAfterTp1?: boolean; // 阶段一达标后移动保本止损
@@ -156,6 +157,7 @@ export interface DeepReboundLiveConfig {
   exitN: number; // e.g. 2.0
   exitM: number; // e.g. 4.0 (胜率 87.5%, PF 7.15)
   stopLossPercent?: number; // 显式大止损比例 (默认 10.0%)
+  stopLoss2Percent?: number; // 阶段二止损比例 (默认使用 stopLossPercent * exitN)
   tp1Percent?: number;      // 阶段一止盈比例 (默认 4.0%)
   tp2Percent?: number;      // 阶段二止盈比例 (默认 8.0%)
   moveSlToEntryAfterTp1?: boolean; // 阶段一达标后移动保本止损
@@ -212,6 +214,7 @@ export interface HourlySuppressionLiveConfig {
   exitN: number;              // 动态退出止损倍数 N (默认 2.0)
   exitM: number;              // 动态退出止盈倍数 M (默认 3.0)
   stopLossPercent?: number;   // 显式止损比例 (深跌狂暴狙击默认 4.0%)
+  stopLoss2Percent?: number;  // 阶段二止损比例 (默认使用 stopLossPercent * exitN)
   tp1Percent?: number;        // 阶段一止盈比例 (深跌狂暴狙击默认 3.0%)
   tp2Percent?: number;        // 阶段二止盈比例 (深跌狂暴狙击默认 6.0%)
   moveSlToEntryAfterTp1?: boolean; // 阶段一止盈后移动保本止损 (默认 true)
@@ -363,11 +366,13 @@ export interface WBottomDivergenceLiveConfig {
   prevBottomMaxBars: number;  // 默认 25 (第一底距离当前最大根数)
   minNecklineBounce: number;  // 默认 1.5% (两底之间波峰反弹幅度 >= 1.5%)
   maxBottomToleranceRatio: number; // 默认 1.005 (当前底 <= 前低 * 1.005)
-  minBottomFloorRatio: number;     // 默认 0.970 (当前底 >= 前低 * 0.970，防止深跌破位)
+  minBottomFloorRatio: number;     // 默认 0.998 (当前底与中途最低 >= 前低 * 0.998，严格过滤底部降低)
+  filterLowerBottoms?: boolean;    // 默认 true (过滤底部不断降低/前底破位)
   requireMacdDivergence: boolean;  // 默认 true (DIF 和 Hist 双重抬高)
   requireCatapultBull: boolean;    // 默认 true (收阳且收盘突破前根高点)
   holdMinutes: number;        // 默认 30 分钟 (弹性好，见效快)
-  stopLossPercent: number;    // 默认 7.0%
+  stopLossPercent: number;    // 阶段一止损 默认 3.5%
+  stopLoss2Percent?: number;  // 阶段二止损 默认 7.0%
   tp1Percent: number;         // 默认 3.0%
   tp2Percent: number;         // 默认 8.0%
   moveSlToEntryAfterTp1: boolean; // 默认 true
@@ -383,11 +388,13 @@ export const W_BOTTOM_DIVERGENCE_DEFAULT_CONFIG: WBottomDivergenceLiveConfig = {
   prevBottomMaxBars: 25,
   minNecklineBounce: 1.5,
   maxBottomToleranceRatio: 1.005,
-  minBottomFloorRatio: 0.970,
+  minBottomFloorRatio: 0.998,
+  filterLowerBottoms: true,
   requireMacdDivergence: true,
   requireCatapultBull: true,
   holdMinutes: 30,
-  stopLossPercent: 7.0,
+  stopLossPercent: 3.5,
+  stopLoss2Percent: 7.0,
   tp1Percent: 3.0,
   tp2Percent: 8.0,
   moveSlToEntryAfterTp1: true,
@@ -419,6 +426,7 @@ export interface UnifiedLongLiveSignal {
   exitParams: {
     holdMinutes: number;
     stopLossPercent: number;
+    stopLoss2Percent?: number;
     tp1Percent: number;
     tp2Percent: number;
     moveSlToEntryAfterTp1: boolean;

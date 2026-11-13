@@ -149,8 +149,10 @@ async function main() {
           const midBounce = ((midPeak - prevMinLow) / prevMinLow) * 100;
 
           if (midBounce >= 1.5) {
-            // 第二底平齐或微创新低 (W 底特征)
-            if (lows[i] <= prevMinLow * 1.005 && lows[i] >= prevMinLow * 0.97) {
+            let midMin = Infinity;
+            for (let k = prevMinIdx; k <= i; k++) if (lows[k] < midMin) midMin = lows[k];
+            // 严格过滤底部不断降低：当前底与两底间最低点均不跌破前底 (0.2% 误差容忍)
+            if (lows[i] <= prevMinLow * 1.005 && lows[i] >= prevMinLow * 0.998 && midMin >= prevMinLow * 0.998) {
               // MACD DIF 快线抬高且 Hist 红柱显著收窄
               if (dif[i] > dif[prevMinIdx] && hist[i] > hist[prevMinIdx]) {
                 // 弹射阳线: 收盘突破前一根高点或收出实体阳线
@@ -175,7 +177,7 @@ async function main() {
   console.log(`收集信号: 右侧回调反弹 ${pullbackEvents.length} 笔, 左侧 3W 底背离 ${divEvents.length} 笔。\n`);
 
   for (const holdM of [30, 45, 60, 90]) {
-    for (const [tp1, tp2, sl] of [[3.0, 8.0, 7.0], [3.0, 8.0, 8.0], [2.5, 6.0, 5.0]]) {
+    for (const [tp1, tp2, sl, sl2] of [[3.0, 8.0, 3.5, 7.0], [3.0, 8.0, 4.0, 8.0], [2.5, 6.0, 2.5, 5.0]]) {
       const evalStrat = (events: CandidateSig[], name: string) => {
         events.sort((a, b) => a.entryTime - b.entryTime);
         const occ = new Map<string, number>();
@@ -191,7 +193,7 @@ async function main() {
           const tp1Price = entry * (1 + tp1 / 100);
           const tp2Price = entry * (1 + tp2 / 100);
           const slPrice = entry * (1 - sl / 100);
-          let sl2Price = slPrice;
+          let sl2Price = entry * (1 - sl2 / 100);
           let st1 = false, st2 = false;
           let net = 0;
           let exitT = ev.entryTime + holdM * MINUTE;
