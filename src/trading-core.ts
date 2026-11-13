@@ -29,18 +29,33 @@ export function orderMargin(equity: number, rate = DEFAULT_MARGIN_RATE): number 
 export function summarizeDirections(
   trades: readonly { side: TradeSide; totalNetPnlUsdt: number }[],
 ): Record<TradeSide, PaperDirectionStats> {
-  const empty = (): PaperDirectionStats => ({ totalTrades: 0, winningTrades: 0, losingTrades: 0, breakevenTrades: 0, winRate: 0, totalNetPnlUsdt: 0 });
+  const empty = (): PaperDirectionStats => ({ totalTrades: 0, winningTrades: 0, losingTrades: 0, breakevenTrades: 0, winRate: 0, totalNetPnlUsdt: 0, profitFactor: 0 });
   const result = { LONG: empty(), SHORT: empty() };
+  const grossGains = { LONG: 0, SHORT: 0 };
+  const grossLosses = { LONG: 0, SHORT: 0 };
   for (const trade of trades) {
     const stats = result[trade.side];
     stats.totalTrades++;
     stats.totalNetPnlUsdt += trade.totalNetPnlUsdt;
-    if (trade.totalNetPnlUsdt > 0.001) stats.winningTrades++;
-    else if (trade.totalNetPnlUsdt < -0.001) stats.losingTrades++;
-    else stats.breakevenTrades++;
+    if (trade.totalNetPnlUsdt > 0.001) {
+      stats.winningTrades++;
+      grossGains[trade.side] += trade.totalNetPnlUsdt;
+    } else if (trade.totalNetPnlUsdt < -0.001) {
+      stats.losingTrades++;
+      grossLosses[trade.side] += Math.abs(trade.totalNetPnlUsdt);
+    } else {
+      stats.breakevenTrades++;
+    }
   }
-  for (const stats of Object.values(result)) {
+  for (const side of ["LONG", "SHORT"] as const) {
+    const stats = result[side];
     stats.winRate = stats.totalTrades ? stats.winningTrades / stats.totalTrades * 100 : 0;
+    stats.profitFactor =
+      grossLosses[side] > 0
+        ? grossGains[side] / grossLosses[side]
+        : grossGains[side] > 0
+          ? Infinity
+          : 0;
   }
   return result;
 }

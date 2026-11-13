@@ -254,6 +254,7 @@ export interface PaperDirectionStats {
   breakevenTrades: number;
   winRate: number;
   totalNetPnlUsdt: number;
+  profitFactor?: number;
 }
 
 export interface PaperTradingStats {

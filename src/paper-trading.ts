@@ -320,6 +320,12 @@ export function formatPrice(price: number): string {
   return price.toFixed(8);
 }
 
+export function formatProfitFactor(pf?: number, trades?: number): string {
+  if (trades === 0 || pf == null) return "-";
+  if (!Number.isFinite(pf)) return pf === Infinity ? "∞" : "-";
+  return pf.toFixed(2);
+}
+
 export interface SignalMatchDetails {
   candle: Candle;
   streakCount: number;
@@ -1776,10 +1782,12 @@ export class PaperTradingEngine {
     );
 
     const label = formatSignalLabel(pos.signalType, pos.signalLabel);
+    const longPf = formatProfitFactor(this.stats.bySide.LONG.profitFactor, this.stats.bySide.LONG.totalTrades);
+    const shortPf = formatProfitFactor(this.stats.bySide.SHORT.profitFactor, this.stats.bySide.SHORT.totalTrades);
     console.log(
       `[paper-trading] 🏆 ${pos.symbol} [${label}] 订单结清 (${pos.finalReason}) | ` +
       `整单净盈亏: ${pos.totalNetPnlUsdt >= 0 ? "+" : ""}${pos.totalNetPnlUsdt.toFixed(2)} USDT (ROE: ${pos.roePercent >= 0 ? "+" : ""}${pos.roePercent.toFixed(1)}%) | ` +
-      `做多胜率: ${this.stats.bySide.LONG.winRate.toFixed(1)}% / 做空胜率: ${this.stats.bySide.SHORT.winRate.toFixed(1)}% | 账户最新余额: ${this.account.balanceUsdt.toFixed(2)} USDT`,
+      `做多 ${this.stats.bySide.LONG.totalTrades} 笔（胜率 ${this.stats.bySide.LONG.winRate.toFixed(1)}%，PF ${longPf}），做空 ${this.stats.bySide.SHORT.totalTrades} 笔（胜率 ${this.stats.bySide.SHORT.winRate.toFixed(1)}%，PF ${shortPf}） | 账户最新余额: ${this.account.balanceUsdt.toFixed(2)} USDT`,
     );
   }
 
@@ -2029,6 +2037,9 @@ export class PaperTradingEngine {
     const totSign = this.account.totalPnlUsdt >= 0 ? "+" : "";
     const label = formatSignalLabel(pos.signalType, pos.signalLabel);
     const dirStr = pos.side === "LONG" ? "做多" : "做空";
+    const longPf = formatProfitFactor(this.stats.bySide.LONG.profitFactor, this.stats.bySide.LONG.totalTrades);
+    const shortPf = formatProfitFactor(this.stats.bySide.SHORT.profitFactor, this.stats.bySide.SHORT.totalTrades);
+    const totPf = formatProfitFactor(this.stats.profitFactor, this.stats.totalTrades);
 
     const msg =
       `${headerIcon} <b>[模拟交易] 订单全额结清 (${reasonStr}) 【${formatDirectionAndSignal(dirStr, label)}】</b>\n` +
@@ -2040,7 +2051,7 @@ export class PaperTradingEngine {
       `• <b>成交明细</b>: 开 <code>${formatPrice(pos.entryPrice)}</code> → 平均 <code>${formatPrice(avgExitPrice)}</code>\n` +
       `• <b>整单净盈亏</b>: <b>${pnlSign}${pos.totalNetPnlUsdt.toFixed(2)} USDT (ROE: ${pnlSign}${pos.roePercent.toFixed(1)}%)</b>\n` +
       `• <b>模拟账户总览</b>: 余额 <b>${this.account.balanceUsdt.toFixed(2)} USDT</b> (净值 <b>${this.account.equityUsdt.toFixed(2)} USDT</b>, 累计回报 <b>${totSign}${this.account.accountRoiPercent.toFixed(2)}%</b>)\n` +
-      `• <b>累计模拟战绩</b>: 共 ${this.stats.totalTrades} 笔 | 做多 <b>${this.stats.bySide.LONG.winRate.toFixed(1)}%</b> (${this.stats.bySide.LONG.totalTrades}笔) / 做空 <b>${this.stats.bySide.SHORT.winRate.toFixed(1)}%</b> (${this.stats.bySide.SHORT.totalTrades}笔) | PF <b>${Number.isFinite(this.stats.profitFactor) ? this.stats.profitFactor.toFixed(2) : "∞"}</b>`;
+      `• <b>累计模拟战绩</b>: 共 ${this.stats.totalTrades} 笔 | 做多 ${this.stats.bySide.LONG.totalTrades} 笔（胜率 <b>${this.stats.bySide.LONG.winRate.toFixed(1)}%</b>，PF <b>${longPf}</b>），做空 ${this.stats.bySide.SHORT.totalTrades} 笔（胜率 <b>${this.stats.bySide.SHORT.winRate.toFixed(1)}%</b>，PF <b>${shortPf}</b>） | 综合 PF <b>${totPf}</b>`;
     await this.sendTg(msg, `订单结清 ${pos.symbol}`);
   }
 
