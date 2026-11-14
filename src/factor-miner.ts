@@ -3,6 +3,7 @@ import { FEATURE_VERSION, type FeatureVector } from "./features.ts";
 import { replayStrategies, type ReplayStrategy, type ReplayTrade } from "./strategy-replay.ts";
 import type { FactorDataset } from "./factor-data.ts";
 import type { StrategyDefinition } from "./strategy-definition.ts";
+import { getLeverageForWinRate } from "./trading-core.ts";
 import {
   streakPreset, hourlyPreset, deepReboundPreset, reboundPreset, wBottomPreset,
 } from "./strategy-presets.ts";
@@ -219,7 +220,10 @@ export function mineFactors(
       continue;
     }
     const { id, side: _, ...config } = best.strategy;
-    const candidate: FactorCandidate = { id, config: config as FactorCandidate["config"],
+    const holdoutWinRate = holdoutMetrics.winRate;
+    const effectiveWinRate = holdoutWinRate > 0 && holdoutMetrics.trades > 0 ? holdoutWinRate : best.train.winRate;
+    const candidateLeverage = getLeverageForWinRate(effectiveWinRate);
+    const candidate: FactorCandidate = { id, config: { ...(config as FactorCandidate["config"]), leverage: candidateLeverage },
       train: best.train, validation: best.validation, holdout: holdoutMetrics };
     result.sides[side] = { candidate, reason: "近期训练和留出检验通过" };
   }
@@ -282,10 +286,12 @@ export function mineFactors(
     }
 
     if (best) {
+      const bestWinRate = best.holdout?.winRate && best.holdout.trades > 0 ? best.holdout.winRate : best.train.winRate;
+      const strategyLeverage = getLeverageForWinRate(bestWinRate);
       result.strategies[strategyId] = {
         candidate: {
           strategyId,
-          config: best.config,
+          config: { ...best.config, leverage: strategyLeverage },
           train: best.train,
           validation: best.validation,
           holdout: best.holdout,

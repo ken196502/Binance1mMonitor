@@ -22,6 +22,8 @@ export interface StrategyDefinition {
   avoidBigBull1mBars?: number;
   /** 大阳线涨幅阈值 % (默认 5%) */
   avoidBigBull1mGain?: number;
+  /** 策略参考/实测胜率 % (0~100) */
+  winRate?: number;
 }
 export function validateStrategies(value: unknown): asserts value is StrategyDefinition[] {
   if (!Array.isArray(value) || value.length > 50) throw new Error("strategies 必须是最多 50 个策略的数组");
@@ -42,6 +44,7 @@ export function validateStrategies(value: unknown): asserts value is StrategyDef
     if (s.avoidBigBull1m !== undefined && typeof s.avoidBigBull1m !== "boolean") throw new Error("avoidBigBull1m 必须是布尔值");
     if (s.avoidBigBull1mBars !== undefined) number(s.avoidBigBull1mBars, 1, 1440, "avoidBigBull1mBars", true);
     if (s.avoidBigBull1mGain !== undefined) number(s.avoidBigBull1mGain, 0.1, 100, "avoidBigBull1mGain");
+    if (s.winRate !== undefined) number(s.winRate, 0, 100, "winRate");
     if (["kline_stats_long", "kline_stats_short"].includes(s.id) && s.factorManaged !== true) throw new Error("量化预设必须保留因子验证标记");
     if (s.factorManaged && s.id !== `kline_stats_${s.side.toLowerCase()}`) throw new Error("因子管理仅用于对应方向的量化预设");
     validateRules(s.entry);

@@ -15,6 +15,24 @@ export function calcTradeReturn(side: TradeSide, entry: number, exit: number, co
   return { grossPercent, feePercent, slippagePercent, netPercent: grossPercent - feePercent - slippagePercent };
 }
 
+/**
+ * 根据策略胜率动态计算开仓杠杆倍数:
+ * - 超过 80% 胜率: 10x
+ * - 超过 72% 胜率: 5x
+ * - 超过 65% 胜率: 3x
+ * - 65% 及以下胜率: 1x (不加杠杆防回撤)
+ * - 无胜率数据 / 未平仓过时使用 fallback (默认 3x)
+ */
+export function getLeverageForWinRate(winRate?: number | null, fallback = 3): number {
+  if (winRate === undefined || winRate === null || !Number.isFinite(winRate) || winRate <= 0) {
+    return fallback;
+  }
+  if (winRate > 80) return 10;
+  if (winRate > 72) return 5;
+  if (winRate > 65) return 3;
+  return 1;
+}
+
 /** The remaining leg breaks even after both entry and exit costs. */
 export function breakevenPrice(side: TradeSide, entry: number, costs = DEFAULT_COSTS): number {
   const cost = (costs.takerFeeBps + costs.slippageBps) / 10_000;

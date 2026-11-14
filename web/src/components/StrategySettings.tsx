@@ -50,7 +50,7 @@ export function StrategySettings({
                     {s.side === "LONG" ? "做多" : "做空"}
                   </span>
                   <span style={{ fontSize: "11px", color: "var(--text-muted, #94a3b8)", fontWeight: 400 }}>
-                    {s.exit.leverage ?? 3}x
+                    {typeof (s as any).winRate === "number" && (s as any).winRate > 0 ? `胜率 ${((s as any).winRate).toFixed(1)}% · ` : ""}{s.exit.leverage ?? 3}x
                   </span>
                 </label>
                 {fault && (

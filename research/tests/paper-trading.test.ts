@@ -942,3 +942,105 @@ test("PaperTradingEngine: updateConfig dynamically updates nested sub-strategy p
   assert.equal(updated.reboundConfig?.minGreenRatio20, 0.60);
   assert.equal(updated.streakConfig?.divergenceLookbackMax, 25);
 });
+
+test("getLeverageForWinRate: dynamically maps strategy win rate to leverage tiers", async () => {
+  const { getLeverageForWinRate } = await import("../../src/trading-core.ts");
+
+  // > 80% -> 10x
+  assert.equal(getLeverageForWinRate(81), 10);
+  assert.equal(getLeverageForWinRate(85), 10);
+  assert.equal(getLeverageForWinRate(100), 10);
+
+  // > 72% -> 5x
+  assert.equal(getLeverageForWinRate(72.5), 5);
+  assert.equal(getLeverageForWinRate(75), 5);
+  assert.equal(getLeverageForWinRate(80), 5);
+
+  // > 65% -> 3x
+  assert.equal(getLeverageForWinRate(66), 3);
+  assert.equal(getLeverageForWinRate(70), 3);
+  assert.equal(getLeverageForWinRate(72), 3);
+
+  // <= 65% -> 1x
+  assert.equal(getLeverageForWinRate(65), 1);
+  assert.equal(getLeverageForWinRate(60), 1);
+  assert.equal(getLeverageForWinRate(50), 1);
+
+  // Unknown / null -> fallback (default 3x)
+  assert.equal(getLeverageForWinRate(undefined), 3);
+  assert.equal(getLeverageForWinRate(null), 3);
+  assert.equal(getLeverageForWinRate(0), 3);
+});
+
+test("PaperTradingEngine: opens positions with leverage correlated with strategy win rate", () => {
+  const engine = new PaperTradingEngine({ storageFile: null });
+  const dummySignal = {
+    candle: { time: 1000, open: 10, high: 10.5, low: 9.8, close: 10.2, volume: 100 },
+    streakCount: 2,
+    amp30Percent: 5,
+    upperShadowRatio: 0.1,
+    greenRatio: 0.8,
+    consecutiveGreenBars: 2,
+  };
+
+  // 1. Fresh engine with no closed trades uses default 3x
+  const p1 = engine.openPosition({
+    symbol: "TEST1",
+    dayChangePercent: 20,
+    entryPrice: 100,
+    entryTime: 1000,
+    signalType: "streak",
+    signal: dummySignal,
+  });
+  assert.equal(p1.leverage, 3, "New strategy with no history defaults to 3x");
+
+  // 2. Simulate 4 winning trades and 1 losing trade for streak (80% win rate -> > 72% -> 5x)
+  // Let's close p1 with profit and inject closed positions
+  const now = 2000;
+  const closed = [
+    { side: "SHORT" as const, signalType: "strat_high", totalNetPnlUsdt: 1.5 },
+    { side: "SHORT" as const, signalType: "strat_high", totalNetPnlUsdt: 2.0 },
+    { side: "SHORT" as const, signalType: "strat_high", totalNetPnlUsdt: 0.8 },
+    { side: "SHORT" as const, signalType: "strat_high", totalNetPnlUsdt: 1.2 },
+    { side: "SHORT" as const, signalType: "strat_high", totalNetPnlUsdt: -0.5 }, // 4 wins / 5 trades = 80%
+    { side: "SHORT" as const, signalType: "strat_super", totalNetPnlUsdt: 1.0 },
+    { side: "SHORT" as const, signalType: "strat_super", totalNetPnlUsdt: 1.0 },
+    { side: "SHORT" as const, signalType: "strat_super", totalNetPnlUsdt: 1.0 },
+    { side: "SHORT" as const, signalType: "strat_super", totalNetPnlUsdt: 1.0 },
+    { side: "SHORT" as const, signalType: "strat_super", totalNetPnlUsdt: 1.0 },
+    { side: "SHORT" as const, signalType: "strat_super", totalNetPnlUsdt: -0.5 }, // 5 wins / 6 trades = 83.3% > 80% -> 10x
+    { side: "SHORT" as const, signalType: "strat_low", totalNetPnlUsdt: -1.0 },
+    { side: "SHORT" as const, signalType: "strat_low", totalNetPnlUsdt: 1.0 }, // 1 win / 2 trades = 50% <= 65% -> 1x
+  ];
+  (engine as any).closedPositions = closed;
+
+  assert.equal(engine.getStrategyWinRate("strat_high"), 80);
+  assert.equal(engine.getLeverageForSignal("strat_high" as any), 5, "80% win rate gets 5x (> 72%)");
+
+  assert.ok(engine.getStrategyWinRate("strat_super")! > 80);
+  assert.equal(engine.getLeverageForSignal("strat_super" as any), 10, "83.3% win rate gets 10x (> 80%)");
+
+  assert.equal(engine.getStrategyWinRate("strat_low"), 50);
+  assert.equal(engine.getLeverageForSignal("strat_low" as any), 1, "50% win rate gets 1x (<= 65%)");
+
+  // Opening new positions will use these dynamically calculated leverages
+  const pSuper = engine.openPosition({
+    symbol: "SUPERUSDT",
+    dayChangePercent: 20,
+    entryPrice: 100,
+    entryTime: now + 1000,
+    signalType: "strat_super" as any,
+    signal: dummySignal,
+  });
+  assert.equal(pSuper.leverage, 10, "Opens with 10x leverage");
+
+  const pLow = engine.openPosition({
+    symbol: "LOWUSDT",
+    dayChangePercent: 20,
+    entryPrice: 100,
+    entryTime: now + 2000,
+    signalType: "strat_low" as any,
+    signal: dummySignal,
+  });
+  assert.equal(pLow.leverage, 1, "Opens with 1x leverage");
+});

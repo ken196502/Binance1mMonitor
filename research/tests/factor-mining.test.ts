@@ -70,7 +70,7 @@ test("factor rejection retires new entries but preserves existing leverage, exit
   assert.equal(e.factorEntryAllowed("SHORT", now + M), false);
   e.onTick({ symbol: "A", price: pos.tp2Price - 0.1, qty: 1, time: now + M });
   assert.equal(pos.status, "CLOSED");
-  assert.equal(pos.leverage, 3);
+  assert.equal(pos.leverage, before.leverage);
 });
 
 test("retired factor limit orders cannot fill after a refresh or expiry", () => {

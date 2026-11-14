@@ -117,7 +117,7 @@ export class LiveTradingEngine {
       t.leverage ??= 1;
       t.marginBudgetUsdt ??= Number(t.requestedQuantity) * Number(t.limitPrice) * 1.02 / t.leverage;
       if (!t || !/^[A-Z0-9]+USDT$/.test(t.symbol) || !["LONG", "SHORT"].includes(t.side) || !["ENTERING", "OPEN", "CLOSED"].includes(t.status) || !t.entryOrderId?.startsWith("b1m_") || !Array.isArray(t.stopIds) || !t.stopIds.every(x => typeof x === "string" && x.startsWith("b1m_")) || !Array.isArray(t.exits)) throw new Error("持仓格式错误");
-      if (![1, 3, 5].includes(t.leverage) || !Number.isFinite(t.marginBudgetUsdt) || t.marginBudgetUsdt <= 0 || t.marginBudgetUsdt > LIVE_HARD_CAP_USDT) throw new Error("持仓保证金或杠杆无效");
+      if (![1, 3, 5, 10].includes(t.leverage) || !Number.isFinite(t.marginBudgetUsdt) || t.marginBudgetUsdt <= 0 || t.marginBudgetUsdt > LIVE_HARD_CAP_USDT) throw new Error("持仓保证金或杠杆无效");
       for (const n of [Number(t.requestedQuantity), Number(t.limitPrice), t.openedAt, t.timeoutAt, t.tp1Percent, t.tp2Percent, t.stopPercent]) if (!Number.isFinite(n) || n <= 0) throw new Error("持仓数值错误");
       for (const n of [t.entryPrice, t.initialQuantity, t.remainingQuantity, t.stopPrice]) if (!Number.isFinite(n) || n < 0) throw new Error("持仓数值错误");
       if (t.pendingClose && (!t.pendingClose.id.startsWith("b1m_") || !Number.isFinite(Number(t.pendingClose.quantity)) || Number(t.pendingClose.quantity) <= 0)) throw new Error("平仓意图错误");

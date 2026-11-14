@@ -145,7 +145,9 @@ export function passesFactorMetrics(metrics: FactorMetrics, minTrades: number, c
     metrics.grossProfit >= metrics.grossLoss * 1.15 && (!confidence || metrics.wilsonLow >= 20);
 }
 export function passesFactorCandidate(candidate: FactorCandidate): boolean {
-  return candidate.config.leverage === 3 && passesFactorMetrics(candidate.train, 3) &&
+  const lev = candidate.config.leverage;
+  const validLeverage = lev === undefined || [1, 2, 3, 5, 10].includes(lev);
+  return validLeverage && passesFactorMetrics(candidate.train, 3) &&
     (!candidate.validation || passesFactorMetrics(candidate.validation, 1, true)) && passesFactorMetrics(candidate.holdout, 1);
 }
 /** Stable comparison also invalidates approval after manual parameter edits. */

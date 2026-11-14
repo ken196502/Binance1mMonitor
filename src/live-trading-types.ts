@@ -5,7 +5,7 @@ export interface LiveTrade {
   symbol: string;
   side: "LONG" | "SHORT";
   strategy: string;
-  leverage: 1 | 3 | 5;
+  leverage: 1 | 3 | 5 | 10;
   marginBudgetUsdt: number;
   status: "ENTERING" | "OPEN" | "CLOSED";
   requestedQuantity: string;

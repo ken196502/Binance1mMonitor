@@ -19,7 +19,7 @@ import {
   appendSignalSnapshot,
   FEATURE_VERSION,
 } from "./features.ts";
-import { breakevenPrice, calcTradeReturn, FIRST_CLOSE_FRACTION, DEFAULT_MAX_POSITIONS, DEFAULT_MAX_PER_STRATEGY, orderMargin, summarizeDirections } from "./trading-core.ts";
+import { breakevenPrice, calcTradeReturn, FIRST_CLOSE_FRACTION, DEFAULT_MAX_POSITIONS, DEFAULT_MAX_PER_STRATEGY, orderMargin, summarizeDirections, getLeverageForWinRate } from "./trading-core.ts";
 import { sendTelegramMessage, telegramConfigured, escapeHtml } from "./telegram.ts";
 import {
   STREAK_LIVE_DEFAULT_CONFIG,
@@ -580,7 +580,42 @@ export class PaperTradingEngine {
     }
   }
 
-  public getLeverageForSignal(signalType?: PaperSignalType): number {
+  public getStrategyWinRate(strategyId?: string): number | null {
+    if (!strategyId) return null;
+
+    // 1. 优先基于该策略在当前模拟盘中的真实平仓统计计算胜率
+    const stratPositions = this.closedPositions.filter(
+      (p) => (p.signalType ?? "streak") === strategyId
+    );
+    if (stratPositions.length > 0) {
+      const wins = stratPositions.filter((p) => p.totalNetPnlUsdt > 0.001).length;
+      return (wins / stratPositions.length) * 100;
+    }
+
+    // 2. 若无平仓记录，检查该策略是否有因子挖掘验证通过的留出/训练胜率
+    const side = strategyId === "kline_stats_long" || strategyId === "w_bottom_divergence" ? "LONG" : "SHORT";
+    const factorCandidate = this.factorMiningState?.sides?.[side]?.active;
+    if (factorCandidate && (strategyId === `kline_stats_${side.toLowerCase()}` || strategyId === factorCandidate.id)) {
+      const holdout = factorCandidate.holdout;
+      if (holdout && holdout.trades > 0 && Number.isFinite(holdout.winRate)) return holdout.winRate;
+      if (factorCandidate.train && Number.isFinite(factorCandidate.train.winRate)) return factorCandidate.train.winRate;
+    }
+
+    // 3. 检查策略定义中是否显式标注了 winRate
+    const strat = this.config.strategies?.find((s) => s.id === strategyId);
+    if (strat && typeof strat.winRate === "number" && Number.isFinite(strat.winRate)) {
+      return strat.winRate;
+    }
+
+    return null;
+  }
+
+  public getLeverageForSignal(signalType?: PaperSignalType, exitParams?: PaperExitParams): number {
+    const winRate = this.getStrategyWinRate(signalType);
+    if (winRate !== null && winRate !== undefined && winRate > 0) {
+      return getLeverageForWinRate(winRate);
+    }
+    if (exitParams?.leverage !== undefined) return exitParams.leverage;
     const configured = this.config.strategies?.find(s => s.id === signalType)?.exit.leverage;
     if (configured !== undefined) return configured;
     if (signalType === "streak") {
@@ -816,8 +851,9 @@ export class PaperTradingEngine {
   private paperSignal(match: StrategyMatch) {
     const { strategy: s, monitor } = match;
     const read = (field: string) => Number(monitor.read(field, match.observation)) || 0;
+    const leverage = this.getLeverageForSignal(s.id as PaperSignalType, s.exit);
     return { side: s.side, type: s.id, label: s.label, entryPrice: monitor.bar!.close,
-      exitParams: { ...s.exit, factorRevision: s.factorManaged && this.config.factorMining?.enabled ? this.factorMiningState.sides[s.side].active?.revision : undefined },
+      exitParams: { ...s.exit, leverage, factorRevision: s.factorManaged && this.config.factorMining?.enabled ? this.factorMiningState.sides[s.side].active?.revision : undefined },
       signalDetails: { candle: monitor.bar!, streakCount: read("streak.0.count"), amp30Percent: read("surge.5"),
         upperShadowRatio: read("upperShadowRatio"), greenRatio: read("greenRatio.30"), consecutiveGreenBars: read("greenStreak") } };
   }
@@ -1189,7 +1225,7 @@ export class PaperTradingEngine {
 
     const signalType = params.signalType ?? "streak";
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
-    const leverage = exitParams?.leverage ?? this.getLeverageForSignal(signalType);
+    const leverage = this.getLeverageForSignal(signalType, exitParams);
     const marginUsdt = params.marginUsdt ?? this.calculateOrderMargin();
     this.assertOrderMargin(marginUsdt);
     const notionalUsdt = marginUsdt * leverage;
@@ -1384,7 +1420,7 @@ export class PaperTradingEngine {
     const timeoutAt = entryTime + holdMinutes * 60 * 1000;
 
     const signalLabel = formatSignalLabel(signalType, params.signalLabel);
-    const leverage = params.leverage ?? exitParams?.leverage ?? this.getLeverageForSignal(signalType);
+    const leverage = params.leverage ?? this.getLeverageForSignal(signalType, exitParams);
     const marginUsdt = params.marginUsdt ?? this.calculateOrderMargin();
     this.assertOrderMargin(marginUsdt);
     const notionalUsdt = marginUsdt * leverage;
@@ -2437,7 +2473,17 @@ export class PaperTradingEngine {
       activePositions: Array.from(this.activePositions.values()),
       stats24h: this.stats24h,
       config: {
-        strategies: this.strategyEngine.getStrategies(),
+        strategies: this.strategyEngine.getStrategies().map(s => {
+          const winRate = this.getStrategyWinRate(s.id);
+          const leverage = winRate !== null && winRate !== undefined && winRate > 0
+            ? getLeverageForWinRate(winRate)
+            : (s.exit.leverage ?? 3);
+          return {
+            ...s,
+            winRate: winRate ?? (s as any).winRate,
+            exit: { ...s.exit, leverage },
+          };
+        }),
         factorMining: this.config.factorMining,
         leverage: this.config.leverage,
         streakLeverage: this.config.streakLeverage ?? 3,
