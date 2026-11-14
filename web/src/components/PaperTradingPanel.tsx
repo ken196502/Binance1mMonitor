@@ -1128,16 +1128,6 @@ export function PaperTradingPanel({
               挂单中: <b>{pendingOrders.length}</b> 笔
             </span>
           )}
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "6px" }}>
-            <button
-              type="button"
-              className="btn-reset-paper"
-              onClick={openResetModal}
-              title="清空模拟持仓、挂单与历史平仓明细，账户恢复为初始 100 USDT"
-            >
-              🔄 重置账户
-            </button>
-          </div>
         </div>
         {dockTab === "positions" && (
           <div className="paper-body">
@@ -1321,14 +1311,6 @@ export function PaperTradingPanel({
         <div className="paper-header-actions">
           <button
             type="button"
-            className="btn-config-toggle"
-            onClick={openConfigModal}
-            title="通过 API 设置新高背离独立杠杆、顺势波段杠杆与保证金"
-          >
-            ⚙️ 策略参数设置
-          </button>
-          <button
-            type="button"
             className="btn-history-toggle"
             onClick={loadHistory}
           >
@@ -1345,14 +1327,6 @@ export function PaperTradingPanel({
               {isResettingFaults === "all" ? "重置中..." : `🔄 重置策略暂停 (${summary.strategyFaults.length})`}
             </button>
           )}
-          <button
-            type="button"
-            className="btn-reset-paper"
-            onClick={openResetModal}
-            title="清空所有模拟持仓、挂单与历史平仓明细，账户恢复为初始 100 USDT"
-          >
-            🔄 重置账户
-          </button>
         </div>
       </div>
 

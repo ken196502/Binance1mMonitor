@@ -101,28 +101,6 @@ export function TerminalDock({
             {factorMining?.running && <span className="dock-badge dock-badge-pulse">计算中</span>}
           </button>
         </div>
-
-        {/* 右侧快捷动作按钮 */}
-        <div className="dock-actions-group">
-          {onOpenResetModal && (
-            <button
-              type="button"
-              className="btn-reset-paper"
-              onClick={onOpenResetModal}
-              title="清空模拟持仓、挂单与历史平仓明细，账户恢复为初始 100 USDT"
-            >
-              🔄 重置账户
-            </button>
-          )}
-          <button
-            type="button"
-            className="btn-config-toggle"
-            onClick={onOpenConfigModal}
-            title="通过弹窗设置策略独立杠杆、顺势波段杠杆与保证金"
-          >
-            ⚙️ 策略参数设置
-          </button>
-        </div>
       </div>
 
       {/* 终端控制台内容区：独立纵向滚动，不撑高外层页面 */}
