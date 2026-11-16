@@ -31,18 +31,20 @@ export function presetStrategyCandidates(): Record<string, PresetCandidateItem[]
     ].map(c => ({ strategyId: "streak", config: c, definition: streakPreset(c) })),
 
     hourly_suppression: [
-      { minHighChange24h: 20, ampDivisor: 10, nGreenBars: 4, holdMinutes: 30, exitX: 50 },
-      { minHighChange24h: 20, ampDivisor: 8, nGreenBars: 3, holdMinutes: 20, exitX: 40 },
-      { minHighChange24h: 20, ampDivisor: 12, nGreenBars: 5, holdMinutes: 45, exitX: 60 },
-      { minHighChange24h: 20, ampDivisor: 10, nGreenBars: 3, holdMinutes: 30, exitX: 50 },
-      { minHighChange24h: 20, ampDivisor: 8, nGreenBars: 4, holdMinutes: 15, exitX: 40 },
+      // 对齐实盘默认：补齐 minDropFrom24h: 20 和 requireMa60GtMa10GtMa20: true
+      { minHighChange24h: 20, ampDivisor: 10, nGreenBars: 4, holdMinutes: 30, exitX: 50, minDropFrom24h: 20, requireMa60GtMa10GtMa20: true },
+      { minHighChange24h: 20, ampDivisor: 8,  nGreenBars: 3, holdMinutes: 20, exitX: 40, minDropFrom24h: 20, requireMa60GtMa10GtMa20: true },
+      { minHighChange24h: 20, ampDivisor: 12, nGreenBars: 5, holdMinutes: 45, exitX: 60, minDropFrom24h: 20, requireMa60GtMa10GtMa20: true },
+      { minHighChange24h: 20, ampDivisor: 10, nGreenBars: 3, holdMinutes: 30, exitX: 50, minDropFrom24h: 20, requireMa60GtMa10GtMa20: true },
+      { minHighChange24h: 20, ampDivisor: 8,  nGreenBars: 4, holdMinutes: 15, exitX: 40, minDropFrom24h: 20, requireMa60GtMa10GtMa20: true },
     ].map(c => ({ strategyId: "hourly_suppression", config: c, definition: hourlyPreset(c) })),
 
     deep_rebound: [
-      { pullbackX: 20, reboundY: 5, holdMinutes: 30 },
-      { pullbackX: 15, reboundY: 3, holdMinutes: 20 },
-      { pullbackX: 25, reboundY: 7, holdMinutes: 30 },
-      { pullbackX: 20, reboundY: 3, holdMinutes: 20 },
+      // 对齐实盘默认：补齐 requireMaSlopeDown: true
+      { pullbackX: 20, reboundY: 5, holdMinutes: 30, requireMaSlopeDown: true },
+      { pullbackX: 15, reboundY: 3, holdMinutes: 20, requireMaSlopeDown: true },
+      { pullbackX: 25, reboundY: 7, holdMinutes: 30, requireMaSlopeDown: true },
+      { pullbackX: 20, reboundY: 3, holdMinutes: 20, requireMaSlopeDown: true },
     ].map(c => ({ strategyId: "deep_rebound", config: c, definition: deepReboundPreset(c) })),
 
     rebound: [
@@ -52,9 +54,14 @@ export function presetStrategyCandidates(): Record<string, PresetCandidateItem[]
     ].map(c => ({ strategyId: "rebound", config: c, definition: reboundPreset(c) })),
 
     w_bottom_divergence: [
-      { minDropPercent: 10, minNecklineBounce: 5, holdMinutes: 30 },
-      { minDropPercent: 8, minNecklineBounce: 3, holdMinutes: 20 },
-      { minDropPercent: 12, minNecklineBounce: 6, holdMinutes: 30 },
+      // 宽松档（对齐实盘默认，确保训练集有足够触发样本）
+      { minDropPercent: 4, minNecklineBounce: 1.5, holdMinutes: 30 },
+      { minDropPercent: 5, minNecklineBounce: 2.0, holdMinutes: 20 },
+      // 中等档
+      { minDropPercent: 6, minNecklineBounce: 2.5, holdMinutes: 30 },
+      { minDropPercent: 8, minNecklineBounce: 3.0, holdMinutes: 20 },
+      // 严格档
+      { minDropPercent: 10, minNecklineBounce: 5.0, holdMinutes: 30 },
     ].map(c => ({ strategyId: "w_bottom_divergence", config: c, definition: wBottomPreset(c) })),
   };
 }
